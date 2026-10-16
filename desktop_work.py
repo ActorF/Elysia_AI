@@ -25,6 +25,9 @@ from work_tools.contracts import TOOL_CATALOG, ToolResult, descriptor_to_data, v
 from work_tools.executor import WorkToolExecutor
 from work_tools.workspace import WorkspaceBoundary
 from work_tools.writes import WriteCoordinator
+from core.work_assistant import FILE_TOOLS, WorkPermission, WorkResult, validate_work_call, work_call_allowed
+from core.exceptions import GenerationCancelledError
+import json
 
 
 class DesktopWorkRuntime:
@@ -141,6 +144,44 @@ class DesktopWorkRuntime:
         binding = self._bindings.get(str(chat.chat_id))
         return {"kind": "work.workspace", "chatId": str(chat.chat_id),
                 "workspacePath": None if binding is None else binding.root}
+
+    def run_generation_read(self, chat_id: str, tool: str, arguments: dict[str, Any],
+                            permission: WorkPermission, should_cancel: Callable[[], bool]) -> WorkResult:
+        """Execute a generation-owned read with the same scope and audit as manual tools.
+
+        Only the Backend's current generation callback enters this method;
+        public Work RPCs still reject a busy generation. Reacquiring canonical
+        ownership and the pinned boundary prevents this exception from opening
+        arbitrary paths or bypassing Work plans and audit requirements.
+        """
+        if should_cancel():
+            raise GenerationCancelledError("Work generation was cancelled.")
+        chat = self._chat_provider()
+        if (self._closed or str(chat.chat_id) != chat_id or chat.is_archived or chat.mode != "work"
+                or tool not in FILE_TOOLS or not work_call_allowed(permission, tool)
+                or self._plans.has_live_plan(chat_id) or self.is_busy()):
+            return {"status": "denied", "text": "当前 Work 权限或任务状态不允许读取。", "error": "permission_denied"}
+        _, arguments = validate_work_call(tool, arguments)
+        call = validate_tool_call({"toolId": tool, "arguments": arguments})
+        try:
+            result = WorkToolExecutor(self.boundary(chat_id)).run(call, should_cancel=should_cancel)
+            if should_cancel():
+                raise GenerationCancelledError("Work generation was cancelled.")
+            self._get_writes().record_read(chat_id, None if chat.project_id is None else str(chat.project_id), call, result)
+        except GenerationCancelledError:
+            raise
+        except (OSError, ValueError, PermissionError):
+            return {"status": "failed", "text": "无法读取工作区。请先选择允许访问的文件夹。", "error": "unavailable"}
+        if result.status not in {"succeeded", "partial"}:
+            return {"status": "denied" if result.status == "denied" else "failed",
+                    "text": result.to_data()["error"]["message"],
+                    "error": "permission_denied" if result.status == "denied" else "failed"}
+        text = json.dumps(result.to_data(), ensure_ascii=False)
+        # Retain a bounded prefix with an explicit truncation marker rather
+        # than letting a large directory or file overwhelm the next model pass.
+        if len(text.encode("utf-8")) > 32768:
+            text = text.encode("utf-8")[:32720].decode("utf-8", errors="ignore") + "\n[Tool result truncated; more data exists.]"
+        return {"status": "succeeded", "text": text, "error": None}
 
     def _plan_result(self, chat_id: str, plan: dict[str, Any] | None) -> dict[str, Any]:
         """Pair observational text with its exact plan; it cannot change execution facts."""

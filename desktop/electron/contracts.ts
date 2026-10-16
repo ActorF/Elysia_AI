@@ -5,6 +5,7 @@
  * the smaller capability-safe surface exposed to the sandboxed renderer.
  */
 
+import type { WorkActivity, WorkTurnOptions } from './work-agent-protocol.js'
 import type {
   SettingsStateResult,
   SettingsValues,
@@ -107,6 +108,8 @@ export interface BackendSnapshot {
   chatId?: string
   chatTitle?: string
   activeGeneration?: ActiveChatGeneration
+  /** Latest process for the active Work Chat, retained across renderer reloads. */
+  workActivity?: WorkActivity
   activeKnowledgeOperation?: ActiveKnowledgeOperation
   error?: string
 }
@@ -116,6 +119,8 @@ export interface ChatRequest {
   message: string
   attachmentIds: string[]
   useProjectKnowledge?: boolean
+  /** Explicit user choices for this Work turn only. */
+  workOptions?: WorkTurnOptions
   /** Opt this exact reply into managed speech; ordinary Chat sends false. */
   speakReply: boolean
 }
@@ -127,6 +132,8 @@ export interface RetryChatRequest {
   assistantMessageId: string
   message?: string
   useProjectKnowledge?: boolean
+  /** Retry may deepen the answer but never replay desktop effects. */
+  workOptions?: WorkTurnOptions
   /** Opt this exact replacement reply into managed speech. */
   speakReply: boolean
 }
@@ -488,6 +495,7 @@ export type MicrophonePermissionStatus =
   | 'unknown'
 
 export type BackendEvent =
+  | { type: 'work-progress'; activity: WorkActivity }
   | {
       type: 'snapshot'
       snapshot: BackendSnapshot

@@ -17,6 +17,7 @@ from .exceptions import (
     ChatModelResponseError,
 )
 from .ollama_chat_model import OllamaChatModel
+from .work_assistant import WorkThinkingUnavailableError
 from .local_ollama import (
     LOCAL_OLLAMA_MODEL_ERROR,
     is_cloud_ollama_model_name,
@@ -167,6 +168,22 @@ class LangChainOllamaChatModel:
         messages: list[ChatMessage],
     ) -> Iterator[str]:
         """Yield one reply through LangChain."""
+        return self._stream_reply(messages, thinking=False)
+
+    def stream_work_reply(self, messages: list[ChatMessage], *, thinking: bool) -> Iterator[str]:
+        """Set Ollama thinking for this request while yielding only answer text.
+
+        LangChain maps the invocation's reasoning flag to Ollama's think field
+        and keeps reasoning_content separate from content. The shared model is
+        never mutated, so a concurrent ordinary reply cannot inherit Work's
+        preference. Unsupported-model responses remain explicit model errors.
+        """
+        if type(thinking) is not bool:
+            raise ValueError("Thinking must be a boolean.")
+        return self._stream_reply(messages, thinking=thinking)
+
+    def _stream_reply(self, messages: list[ChatMessage], *, thinking: bool) -> Iterator[str]:
+        """Yield only public answer chunks from one explicitly configured request."""
         if not messages:
             raise ValueError(
                 "Chat messages cannot be empty."
@@ -203,7 +220,7 @@ class LangChainOllamaChatModel:
 
         try:
             for chunk in self._langchain_model.stream(
-                langchain_messages
+                langchain_messages, reasoning=thinking,
             ):
                 content = chunk.content
 
@@ -213,6 +230,11 @@ class LangChainOllamaChatModel:
                     )
 
                 if not content:
+                    # Thinking-only chunks still provide cancellation points
+                    # to the owning Brain/Work planner. Empty chunks are never
+                    # emitted to the renderer, persistence, or speech.
+                    if thinking:
+                        yield ""
                     continue
 
                 if content.strip():
@@ -230,6 +252,10 @@ class LangChainOllamaChatModel:
             ) from error
 
         except ResponseError as error:
+            if thinking:
+                raise WorkThinkingUnavailableError(
+                    "Deep thinking is unavailable for this model. Turn it off or choose a supported local model."
+                ) from error
             raise ChatModelResponseError(
                 f"Ollama request failed: {error}"
             ) from error

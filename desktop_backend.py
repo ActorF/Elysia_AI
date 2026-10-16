@@ -37,6 +37,10 @@ from attachments import (
 )
 from core.local_ollama import is_cloud_ollama_model_name, open_local_ollama_tags
 from core.internet_assistant import InternetEvidence, InternetLanguage, validate_internet_evidence
+from core.work_assistant import (
+    FILE_TOOLS, WorkOptions, WorkPhase, WorkResult, validate_work_call, validate_work_options,
+    validate_work_result, work_call_allowed, WorkThinkingUnavailableError,
+)
 from chats import (
     AttachmentId,
     AttachmentMetadata,
@@ -186,6 +190,7 @@ SpeechSelectionValidator = Callable[[AppSettings], bool]
 SERVER_NAME = "elysia-python"
 SERVER_VERSION = "0.1.0"
 SERVER_CAPABILITIES = (
+    "chat.work",
     "work.workspace",
     "work.tools",
     "work.read",
@@ -221,6 +226,7 @@ MAX_RECENT_REQUEST_IDS = 4096
 GENERATION_SHUTDOWN_TIMEOUT_SECONDS = 2.0
 TRANSCRIPTION_TIMEOUT_SECONDS = 120.0
 INTERNET_SEARCH_TIMEOUT_SECONDS = 60.0
+WORK_TOOL_TIMEOUT_SECONDS = 300.0
 _NATIVE_IMAGE_MAX_BYTES = 8 * 1024 * 1024
 _WORK_PHYSICAL_BUSY_METHODS = frozenset({
     "chat.create", "chat.open", "chat.rename", "chat.mode", "chat.pin",
@@ -264,6 +270,13 @@ class _GenerationTask:
     internet_ready: Event = field(default_factory=Event, repr=False)
     internet_result: InternetEvidence | None = field(default=None, repr=False)
     internet_waiting: bool = False
+    work_options: WorkOptions | None = None
+    work_sequence: int = 0
+    work_calls: int = 0
+    work_call_id: str | None = None
+    work_ready: Event = field(default_factory=Event, repr=False)
+    work_result: WorkResult | None = field(default=None, repr=False)
+    work_waiting: bool = False
     _lock: Lock = field(default_factory=Lock, repr=False)
 
     def request_cancel(self) -> bool:
@@ -844,6 +857,8 @@ class DesktopBackend:
                 self._start_chat_stream(request_id, params)
             elif method == "chat.internet.resolve":
                 self._resolve_chat_internet(request_id, params)
+            elif method == "chat.work.resolve":
+                self._resolve_chat_work(request_id, params)
             elif method == "chat.retry":
                 self._start_chat_retry(request_id, params)
             elif method == "chat.list":
@@ -3634,7 +3649,15 @@ class DesktopBackend:
                 attachment_ids,
             )
             run: Callable[[Brain, _GenerationTask], Iterable[str]]
-            if use_project_knowledge:
+            if task.work_options is not None:
+                run = lambda active_brain, active_task: active_brain.stream_chat(
+                    active_task.chat_id, raw_message, attachments=attachment_records,
+                    should_cancel=active_task.should_cancel, begin_commit=active_task.begin_commit,
+                    work_options=active_task.work_options,
+                    work_tool=lambda tool, arguments: self._run_work_tool(active_task, tool, arguments),
+                    work_progress=lambda phase, text: self._work_progress(active_task, phase, text),
+                )
+            elif use_project_knowledge:
                 answerer = self._require_knowledge_runtime().answers.answer
                 run = (
                     lambda active_brain, active_task: (
@@ -3686,6 +3709,99 @@ class DesktopBackend:
                 )
             self._abandon_generation_task(task)
             raise
+
+    def _work_progress(self, task: _GenerationTask, phase: WorkPhase, text: str) -> None:
+        """Publish bounded factual phases for the same still-running generation."""
+        with self._state_lock:
+            if (self._generation_task is not task or self._active_chat is None
+                    or self._active_chat.chat_id != task.chat_id or self._active_chat.mode != "work"):
+                raise GenerationCancelledError("Work owner changed.")
+        with task._lock:
+            if task.state is not _GenerationState.RUNNING:
+                raise GenerationCancelledError("Work generation was cancelled.")
+            if task.work_sequence >= 64:
+                return
+            task.work_sequence += 1
+            sequence = task.work_sequence
+        self._emit_event("chat.work.progress", request_id=task.request_id,
+                         data={"chatId": str(task.chat_id), "sequence": sequence, "phase": phase, "text": text[:1000]})
+
+    def _run_work_tool(self, task: _GenerationTask, tool: str, arguments: dict[str, Any]) -> WorkResult:
+        """Execute one closed action under the generation's frozen Work authority."""
+        tool, arguments = validate_work_call(tool, arguments)
+        with self._state_lock:
+            if self._generation_task is not task or self._active_chat is None or self._active_chat.chat_id != task.chat_id:
+                raise GenerationCancelledError("Work owner changed.")
+        with task._lock:
+            if task.state is not _GenerationState.RUNNING:
+                raise GenerationCancelledError("Work generation was cancelled.")
+            options = task.work_options
+            if (options is None or task.method != "chat.stream" or task.work_calls >= 4
+                    or not work_call_allowed(options["permission"], tool)):
+                return {"status": "denied", "text": "当前权限不允许此工具。", "error": "permission_denied"}
+            task.work_calls += 1
+        canonical = self._work_active_chat()
+        if canonical.chat_id != task.chat_id or canonical.mode != "work":
+            return {"status": "denied", "text": "工具需要当前 Work 会话。", "error": "permission_denied"}
+        if tool in FILE_TOOLS:
+            with self._state_lock:
+                if self._work_runtime is None:
+                    self._work_runtime = DesktopWorkRuntime(
+                        self._runtime_settings.data_layout.workspace / "work", self._work_active_chat,
+                        protected_roots=(self._runtime_settings.data_layout.root, self._runtime_settings.base_dir),
+                        nodes_factory=self._make_workflow_nodes,
+                    )
+                runtime = self._work_runtime
+            return runtime.run_generation_read(str(task.chat_id), tool, arguments, options["permission"], task.should_cancel)
+
+        with task._lock:
+            if task.state is not _GenerationState.RUNNING:
+                raise GenerationCancelledError("Work generation was cancelled.")
+            task.work_call_id = "work_call_" + uuid4().hex
+            task.work_ready.clear()
+            task.work_result = None
+            task.work_waiting = True
+            call_id = task.work_call_id
+        try:
+            self._emit_event("chat.work.request", request_id=task.request_id, data={
+                "chatId": str(task.chat_id), "callId": call_id, "tool": tool, "arguments": arguments,
+            })
+            deadline = monotonic() + WORK_TOOL_TIMEOUT_SECONDS
+            while True:
+                if task.should_cancel():
+                    raise GenerationCancelledError("Work generation was cancelled.")
+                with self._state_lock:
+                    if (self._generation_task is not task or self._active_chat is None
+                            or self._active_chat.chat_id != task.chat_id or self._active_chat.mode != "work"):
+                        raise GenerationCancelledError("Work owner changed.")
+                remaining = deadline - monotonic()
+                if remaining <= 0 or task.work_ready.wait(min(0.05, remaining)):
+                    break
+            with task._lock:
+                if task.state is not _GenerationState.RUNNING:
+                    raise GenerationCancelledError("Work generation was cancelled.")
+                return task.work_result or {"status": "failed", "text": "工具等待超时，无法确认操作结果。", "error": "timeout"}
+        finally:
+            with task._lock:
+                task.work_waiting = False
+                task.work_result = None
+
+    def _resolve_chat_work(self, request_id: str, params: JsonObject) -> None:
+        """Consume one Main receipt only for its live generation and unique call."""
+        result = validate_work_result(params["result"])
+        accepted = False
+        with self._state_lock:
+            task = self._generation_task
+            if (task is not None and task.request_id == params["requestId"]
+                    and str(task.chat_id) == params["chatId"] and self._active_chat is not None
+                    and self._active_chat.chat_id == task.chat_id and self._active_chat.mode == "work"):
+                with task._lock:
+                    if (task.state is _GenerationState.RUNNING and task.work_waiting
+                            and task.work_call_id == params["callId"] and not task.work_ready.is_set()):
+                        task.work_result = result
+                        task.work_ready.set()
+                        accepted = True
+        self._emit_response(request_id, {"kind": "chat.work.resolved", "accepted": accepted})
 
     def _request_chat_internet(
         self,
@@ -3833,6 +3949,17 @@ class DesktopBackend:
             bool,
             params.get("useProjectKnowledge", False),
         )
+        if "workOptions" in params:
+            self._start_generation(
+                request_id, params, method="chat.retry",
+                run=lambda brain, task: brain.stream_retry(
+                    task.chat_id, user_message_id, assistant_message_id, message,
+                    should_cancel=task.should_cancel, begin_commit=task.begin_commit,
+                    work_options=task.work_options,
+                    work_progress=lambda phase, text: self._work_progress(task, phase, text),
+                ),
+            )
+            return
         self._start_generation(
             request_id,
             params,
@@ -3924,12 +4051,21 @@ class DesktopBackend:
                     "Project Sources require an active Project Chat.",
                 )
 
+            work_options = None
+            if "workOptions" in params:
+                work_options = validate_work_options(params["workOptions"])
+                if active_chat.mode != "work" or active_chat.is_archived:
+                    raise ProtocolValidationError("work.denied", "Work options require the active Work conversation.")
+                if uses_project_knowledge:
+                    raise ProtocolValidationError("work.denied", "Turn off Project Sources before using Work thinking or tools.")
+
             task = _GenerationTask(
                 request_id=request_id,
                 chat_id=ChatId(raw_chat_id),
                 method=method,
                 speak_reply=speak_reply,
                 uses_project_knowledge=uses_project_knowledge,
+                work_options=work_options,
             )
             if (
                 task.uses_project_knowledge
@@ -4234,6 +4370,10 @@ class DesktopBackend:
                 str(error),
                 retryable=True,
             )
+        except WorkThinkingUnavailableError:
+            self._finish_generation_task(task)
+            self._emit_error(task.request_id, "chat.thinking_unavailable",
+                             "当前模型无法使用深度思考，请关闭深度思考或选择支持的本地模型。")
         except Exception:
             logger.exception(
                 "Desktop generation failed: method=%s request_id=%s.",

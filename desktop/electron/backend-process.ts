@@ -13,6 +13,9 @@ import { randomBytes, randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
 import { Readable } from 'node:stream'
+import { parseWorkTurnOptions, parseWorkToolResult, parseWorkResolved,
+  type WorkTurnOptions, type WorkActivity, type WorkRequestEvent, type WorkProgressEvent,
+  type WorkToolCall as WorkAgentCall, type WorkToolResult as WorkAgentResult } from './work-agent-protocol.js'
 
 import type {
   ArchiveChatRequest,
@@ -126,6 +129,8 @@ type EventSink = (event: BackendEvent) => void
 
 /** Inject only Main-owned research; neither this callback nor its opt-in reaches Renderer. */
 export interface BackendNativeOptions {
+  /** Execute one exact Work turn's validated native call under its frozen user permission. */
+  onWorkTool?: (request: WorkAgentCall, signal: AbortSignal) => Promise<WorkAgentResult>
   /** Resolve one authenticated generation's query and retain physical ownership until settlement. */
   onInternetSearch?: (
     request: ChatInternetRequestEventMessage['data'] & { requestId: string },
@@ -382,6 +387,13 @@ interface PendingRequest {
   internetSearchId?: string
   internetAbort?: AbortController
   internetClosed?: boolean
+  workOptions?: WorkTurnOptions
+  workProjectId?: string | null
+  workActivity?: WorkActivity
+  workCallIds?: Set<string>
+  workCurrentCallId?: string
+  workAbort?: AbortController
+  workClosed?: boolean
   nextSequence: number
   streamCompleted: boolean
   streamedReply: string
@@ -674,6 +686,7 @@ export class BackendProcess {
     modelName: string
   } | null = null
   private dataRoot: string | undefined
+  private readonly workActivities = new Map<string, WorkActivity>()
   private snapshot: BackendSnapshot = {
     revision: 0,
     status: 'stopped',
@@ -695,6 +708,7 @@ export class BackendProcess {
 
   /** Return an immutable renderer snapshot including the active generation ID. */
   getSnapshot(): BackendSnapshot {
+    const activity = this.snapshot.chatId === undefined ? undefined : this.workActivities.get(this.snapshot.chatId)
     const activeEntry = [...this.pendingRequests.entries()].find(
       ([, pending]) => CHAT_GENERATION_METHODS.has(pending.method),
     )
@@ -753,6 +767,7 @@ export class BackendProcess {
           )
         : [...this.snapshot.capabilities],
       models: [...this.snapshot.models],
+      ...(activity === undefined ? {} : { workActivity: structuredClone(activity) }),
       ...(activeGeneration === undefined ? {} : { activeGeneration }),
       ...(activeKnowledgeOperation === undefined
         ? {}
@@ -1050,11 +1065,13 @@ export class BackendProcess {
       && this.snapshot.capabilities.includes('chat.internet')
       && this.nativeOptions.onInternetSearch !== undefined
 
+    const workOptions = this.admitWorkOptions(request.workOptions, request.chatId, request.useProjectKnowledge === true)
     const requestId = this.sendRequest('chat.stream', {
       chatId: request.chatId,
       message,
       attachmentIds: [...request.attachmentIds],
       speakReply: request.speakReply,
+      ...(workOptions === undefined ? {} : { workOptions }),
       ...(internetEnabled ? { automaticInternet: true } : {}),
       ...(request.useProjectKnowledge === undefined
         ? {}
@@ -1062,12 +1079,14 @@ export class BackendProcess {
     }, request.chatId, {
       usesProjectKnowledge: request.useProjectKnowledge === true,
       automaticInternet: internetEnabled,
+      ...(workOptions === undefined ? {} : { workOptions, workProjectId: this.canonicalWorkChat?.projectId ?? null }),
       generation: {
         kind: 'send',
         userText: message,
         speakReply: request.speakReply,
       },
     })
+    if (workOptions !== undefined) this.startWorkActivity(requestId, request.chatId, workOptions)
     if (
       request.speakReply
       && this.snapshot.capabilities.includes('voice.speech')
@@ -1332,6 +1351,9 @@ export class BackendProcess {
       throw new Error('Retry message is invalid.')
     }
 
+    const selectedWork = this.admitWorkOptions(request.workOptions, request.chatId, request.useProjectKnowledge === true)
+    // Retrying an answer must never replay an already-applied desktop effect.
+    const workOptions: WorkTurnOptions | undefined = selectedWork === undefined ? undefined : { ...selectedWork, permission: 'none' }
     const requestId = this.sendRequest(
       'chat.retry',
       {
@@ -1339,6 +1361,7 @@ export class BackendProcess {
         userMessageId: request.userMessageId,
         assistantMessageId: request.assistantMessageId,
         speakReply: request.speakReply,
+        ...(workOptions === undefined ? {} : { workOptions }),
         ...(message === undefined ? {} : { message }),
         ...(request.useProjectKnowledge === undefined
           ? {}
@@ -1347,6 +1370,7 @@ export class BackendProcess {
       request.chatId,
       {
         usesProjectKnowledge: request.useProjectKnowledge === true,
+        ...(workOptions === undefined ? {} : { workOptions, workProjectId: this.canonicalWorkChat?.projectId ?? null }),
         generation: {
           kind: 'retry',
           ...(message === undefined ? {} : { userText: message }),
@@ -1356,6 +1380,7 @@ export class BackendProcess {
         },
       },
     )
+    if (workOptions !== undefined) this.startWorkActivity(requestId, request.chatId, workOptions)
     if (
       request.speakReply
       && this.snapshot.capabilities.includes('voice.speech')
@@ -1555,6 +1580,7 @@ export class BackendProcess {
 
     if (CHAT_GENERATION_METHODS.has(target.method)) {
       target.internetAbort?.abort()
+      target.workAbort?.abort()
       this.speechDelivery?.cancelTurn(requestId)
     }
 
@@ -2853,6 +2879,8 @@ export class BackendProcess {
       | 'knowledgeExpectedExport'
       | 'usesProjectKnowledge'
       | 'automaticInternet'
+      | 'workOptions'
+      | 'workProjectId'
       | 'resolveAttachmentNativeSource'
       | 'rejectAttachmentNativeSource'
       | 'resolveKnowledgeState'
@@ -3075,6 +3103,8 @@ export class BackendProcess {
         parseVoiceSpeechCancellationResult(message.result)
       } else if (pending.method === 'chat.internet.resolve') {
         parseChatInternetResolvedResult(message.result)
+      } else if (pending.method === 'chat.work.resolve') {
+        parseWorkResolved(message.result)
       } else if (pending.method === 'attachment.native_source') {
         parseAttachmentNativeSourceResult(message.result)
       } else if (ATTACHMENT_METHODS.has(pending.method)) {
@@ -3101,6 +3131,10 @@ export class BackendProcess {
     }
 
     pending.internetAbort?.abort()
+    pending.workAbort?.abort()
+    if (pending.workActivity !== undefined) {
+      this.settleWorkActivity(pending, message.ok ? 'complete' : message.error.code === 'request.cancelled' ? 'cancelled' : 'error')
+    }
     this.pendingRequests.delete(message.id)
     if (pending.timeout !== undefined) {
       clearTimeout(pending.timeout)
@@ -3123,7 +3157,7 @@ export class BackendProcess {
     // These private RPCs never publish arbitrary response data to Renderer.
     // A stale search acknowledgement is benign; the generation owns its own
     // cancellation. Image bytes are returned only while the Chat is still live.
-    if (pending.method === 'chat.internet.resolve') return
+    if (pending.method === 'chat.internet.resolve' || pending.method === 'chat.work.resolve') return
     if (pending.method === 'attachment.native_source') {
       const owner = this.getCanonicalVisionChat()
       if (!message.ok || owner === null || owner.chatId !== pending.chatId) {
@@ -3955,6 +3989,105 @@ export class BackendProcess {
     })
   }
 
+  private admitWorkOptions(value: WorkTurnOptions | undefined, chatId: string, grounded: boolean): WorkTurnOptions | undefined {
+    if (value === undefined) return undefined
+    const options = parseWorkTurnOptions(value), owner = this.getCanonicalWorkChat()
+    if (!this.snapshot.capabilities.includes('chat.work') || owner?.chatId !== chatId || owner.mode !== 'work') {
+      throw new Error('Work assistance requires the active Work conversation and an updated Backend.')
+    }
+    if (grounded) throw new Error('Use Project Sources or Work assistance for this reply, one at a time.')
+    return options
+  }
+
+  private startWorkActivity(requestId: string, chatId: string, options: WorkTurnOptions): void {
+    const pending = this.pendingRequests.get(requestId)
+    if (pending === undefined) return
+    pending.workActivity = { requestId, chatId, options: { ...options }, entries: [], status: 'running' }
+    pending.workCallIds = new Set()
+    this.publishWorkActivity(pending.workActivity)
+  }
+
+  private publishWorkActivity(activity: WorkActivity): void {
+    // Retain only recent process summaries in Main memory. These are not a
+    // second durable Chat history and never feed speech or retry prompt text.
+    this.workActivities.delete(activity.chatId)
+    this.workActivities.set(activity.chatId, structuredClone(activity))
+    while (this.workActivities.size > 32) this.workActivities.delete(this.workActivities.keys().next().value!)
+    this.emitToRenderer({ type: 'work-progress', activity: structuredClone(activity) })
+  }
+
+  private settleWorkActivity(pending: PendingRequest, status: WorkActivity['status']): void {
+    pending.workClosed = true
+    pending.workAbort?.abort()
+    if (pending.workActivity === undefined) return
+    // A success lifecycle event precedes its durable terminal response; leave
+    // final success to that response so a failed commit cannot look completed.
+    pending.workActivity.status = status
+    this.publishWorkActivity(pending.workActivity)
+  }
+
+  /** Recheck a native callback against its exact live generation without admitting unrelated work. */
+  isWorkToolCurrent(request: WorkAgentCall): boolean {
+    const pending = this.pendingRequests.get(request.requestId), owner = this.getCanonicalWorkChat()
+    return pending?.method === 'chat.stream' && pending.chatId === request.chatId
+      && pending.workCurrentCallId === request.callId && pending.workClosed !== true
+      && pending.workAbort?.signal.aborted === false && pending.cancelAccepted !== true
+      && owner?.chatId === request.chatId && owner.mode === 'work' && owner.projectId === pending.workProjectId
+      && pending.workOptions?.thinking === request.options.thinking && pending.workOptions.permission === request.options.permission
+      && ![...this.pendingRequests.values()].some(entry => entry.cancelTargetId === request.requestId)
+  }
+
+  private acceptWorkProgress(message: WorkProgressEvent): void {
+    const pending = this.pendingRequests.get(message.requestId), activity = pending?.workActivity
+    if (pending === undefined || activity === undefined || activity.chatId !== message.data.chatId
+      || pending.workClosed || pending.cancelAccepted || !CHAT_GENERATION_METHODS.has(pending.method)
+      || this.snapshot.status !== 'ready') return
+    // A user may inspect another Chat while this generation winds down. Keep
+    // the original owner's sequence complete; only presentation follows the
+    // selected Chat, otherwise returning could turn a harmless gap into failure.
+    if (message.data.sequence !== activity.entries.length + 1) {
+      this.protocolFailure('Work progress is out of sequence.')
+      return
+    }
+    const { sequence, phase, text } = message.data
+    activity.entries.push({ sequence, phase, text })
+    this.publishWorkActivity(activity)
+  }
+
+  private acceptWorkRequest(message: WorkRequestEvent): void {
+    const pending = this.pendingRequests.get(message.requestId), owner = this.getCanonicalWorkChat()
+    if (pending?.method !== 'chat.stream' || pending.chatId !== message.data.chatId || pending.workOptions === undefined
+      || pending.workCallIds === undefined || pending.workClosed || pending.workCurrentCallId !== undefined
+      || pending.workCallIds.has(message.data.callId) || pending.workCallIds.size >= 4 || pending.cancelAccepted
+      || owner?.chatId !== message.data.chatId || owner.mode !== 'work' || owner.projectId !== pending.workProjectId
+      || [...this.pendingRequests.values()].some(entry => entry.cancelTargetId === message.requestId)) return
+    pending.workCallIds.add(message.data.callId)
+    pending.workCurrentCallId = message.data.callId
+    pending.workAbort = new AbortController()
+    const request: WorkAgentCall = { requestId: message.requestId, ...message.data,
+      arguments: { ...message.data.arguments }, options: { ...pending.workOptions } }
+    void this.resolveWorkRequest(request, pending, pending.workAbort)
+  }
+
+  private async resolveWorkRequest(request: WorkAgentCall, pending: PendingRequest, controller: AbortController): Promise<void> {
+    let result: WorkAgentResult = { status: 'denied', text: '当前权限不允许此工具。', error: 'permission_denied' }
+    const isRead = request.tool === 'list_apps' || request.tool === 'get_volume'
+    // The local model can select only tools covered by the user's frozen grant.
+    // Main's adapter repeats this check before each actual native effect.
+    if (request.options.permission !== 'none' && (isRead || request.options.permission !== 'read')) {
+      try {
+        result = this.nativeOptions.onWorkTool === undefined
+          ? { status: 'failed', text: '此桌面工具暂不可用。', error: 'unavailable' }
+          : parseWorkToolResult(await this.nativeOptions.onWorkTool(request, controller.signal))
+      } catch { result = { status: 'failed', text: '桌面操作未能完成。', error: 'failed' } }
+    }
+    if (controller.signal.aborted || !this.isWorkToolCurrent(request)) return
+    pending.workCurrentCallId = undefined
+    try { this.sendRequest('chat.work.resolve', { requestId: request.requestId, chatId: request.chatId,
+      callId: request.callId, result }, request.chatId) }
+    catch { controller.abort() }
+  }
+
   private acceptInternetRequest(message: ChatInternetRequestEventMessage): void {
     const pending = this.pendingRequests.get(message.requestId)
     if (pending?.method !== 'chat.stream' || pending.chatId !== message.data.chatId
@@ -4001,6 +4134,8 @@ export class BackendProcess {
   }
 
   private handleBackendEvent(message: ProtocolEventMessage): void {
+    if (message.event === 'chat.work.request') { this.acceptWorkRequest(message); return }
+    if (message.event === 'chat.work.progress') { this.acceptWorkProgress(message); return }
     if (message.event === 'chat.internet.request') {
       this.acceptInternetRequest(message)
       return
@@ -4057,6 +4192,9 @@ export class BackendProcess {
       if (message.event !== 'chat.started') {
         pending.internetClosed = true
         pending.internetAbort?.abort()
+        pending.workClosed = true
+        pending.workAbort?.abort()
+        if (message.event === 'chat.cancelled') this.settleWorkActivity(pending, 'cancelled')
       }
       this.emitToRenderer({
         type: 'protocol-event',
@@ -4234,6 +4372,8 @@ export class BackendProcess {
     this.timedOutSpeechStartRequestIds.clear()
     for (const pending of this.pendingRequests.values()) {
       pending.internetAbort?.abort()
+      if (pending.workActivity?.status === 'running') this.settleWorkActivity(pending, 'error')
+      pending.workAbort?.abort()
       if (pending.timeout !== undefined) {
         clearTimeout(pending.timeout)
       }
@@ -4308,6 +4448,8 @@ export class BackendProcess {
 
     for (const pending of this.pendingRequests.values()) {
       pending.internetAbort?.abort()
+      if (pending.workActivity?.status === 'running') this.settleWorkActivity(pending, 'error')
+      pending.workAbort?.abort()
       if (pending.timeout !== undefined) {
         clearTimeout(pending.timeout)
         pending.timeout = undefined

@@ -1,0 +1,15 @@
+/* Keep native-reported Work progress readable in a compact disclosure that fits the conversation at every width. */
+
+.work-thinking-panel { width: 100%; min-width: 0; color: var(--color-text-secondary); font-size: var(--font-size-sm); }
+.work-thinking-panel details { border-radius: var(--radius-lg); background: color-mix(in srgb, var(--color-accent-soft) 45%, transparent); }
+.work-thinking-panel summary { display: flex; align-items: center; gap: .6rem; padding: .8rem 1rem; cursor: pointer; list-style: none; }
+.work-thinking-panel summary::-webkit-details-marker { display: none; }
+.work-thinking-panel summary > svg { flex: 0 0 1rem; width: 1rem; height: 1rem; color: var(--color-accent-secondary); }
+.work-thinking-title { flex: 0 0 auto; }
+.work-thinking-status { margin-left: auto; font-size: var(--font-size-xs); color: var(--color-text-muted); text-align: right; }
+.work-thinking-panel details[open] summary > svg:last-child { transform: rotate(90deg); }
+.work-thinking-panel ol { display: grid; gap: .75rem; max-height: 22rem; overflow: auto; margin: 0; padding: .25rem 1rem .8rem; list-style: none; }
+.work-thinking-panel li { display: grid; grid-template-columns: 2.4rem minmax(0, 1fr); gap: .55rem; align-items: baseline; }
+.work-thinking-phase { color: var(--color-accent-secondary); font-size: var(--font-size-xs); }
+.work-thinking-panel li p { margin: 0; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.work-thinking-note { margin: 0; padding: .25rem 1rem .8rem; color: var(--color-text-muted); font-size: var(--font-size-xs); }

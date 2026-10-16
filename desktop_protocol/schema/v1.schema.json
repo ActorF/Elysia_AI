@@ -10,6 +10,8 @@
     "U+3000", "U+FEFF"
   ],
   "x-elysia-runtimeInvariants": [
+    "Work result text is at most 32768 UTF-8 bytes; progress is at most 1000 code points and 4000 UTF-8 bytes. Neither accepts NUL or unpaired surrogates",
+    "Work options require canonical Work mode; permissions are frozen per generation, only four closed calls are allowed, retries never execute tools, and receipts bind request/chat/call identities",
     "chat.internet.resolve sources contain at most five exact source records with UTF-8 byte limits title 2048, URL 4096, snippet 4096, and compact sources JSON 32768; error is null or sources is empty",
     "Internet source URLs are HTTPS with no credentials, non-default port, backslash, whitespace or control bytes; fetchedAt is canonical valid UTC ISO with milliseconds",
     "Internet query is nonblank and at most 2048 UTF-8 bytes; automaticInternet is Main-only and ignored for Project Sources or non-Chat mode",
@@ -80,6 +82,7 @@
     { "$ref": "#/$defs/handshakeRequest" },
     { "$ref": "#/$defs/initializeRequest" },
     { "$ref": "#/$defs/chatStreamRequest" },
+    { "$ref": "#/$defs/chatWorkResolveRequest" },
     { "$ref": "#/$defs/chatInternetResolveRequest" },
     { "$ref": "#/$defs/attachmentNativeSourceRequest" },
     { "$ref": "#/$defs/chatRetryRequest" },
@@ -568,6 +571,7 @@
             "handshake",
             "initialize",
             "chat.stream",
+            "chat.work.resolve",
             "chat.internet.resolve",
             "attachment.native_source",
             "chat.retry",
@@ -665,6 +669,7 @@
           "uniqueItems": true
         },
         "automaticInternet": { "type": "boolean" },
+        "workOptions": { "$ref": "#/$defs/chatWorkOptions" },
         "useProjectKnowledge": { "type": "boolean" },
         "speakReply": { "type": "boolean" }
       },
@@ -830,6 +835,7 @@
           "maxLength": 1000000,
           "pattern": "[^\\u0009-\\u000D\\u0020\\u0085\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF]"
         },
+        "workOptions": { "$ref": "#/$defs/chatWorkOptions" },
         "useProjectKnowledge": { "type": "boolean" },
         "speakReply": { "type": "boolean" }
       },
@@ -1358,6 +1364,310 @@
     },
     "internetSearchId": {
       "type": "string", "pattern": "^internet_search_[0-9a-f]{32}$"
+    },
+    "chatWorkOptions": {
+      "type": "object",
+      "properties": {
+        "thinking": {
+          "enum": [
+            "off",
+            "deep"
+          ]
+        },
+        "permission": {
+          "enum": [
+            "none",
+            "read",
+            "ask",
+            "auto"
+          ]
+        }
+      },
+      "required": [
+        "thinking",
+        "permission"
+      ],
+      "additionalProperties": false
+    },
+    "chatWorkCallId": {
+      "type": "string",
+      "pattern": "^work_call_[0-9a-f]{32}$"
+    },
+    "chatWorkResult": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "enum": [
+            "succeeded",
+            "denied",
+            "failed",
+            "cancelled"
+          ]
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 32768,
+          "pattern": "^[^\\u0000]*$"
+        },
+        "error": {
+          "enum": [
+            null,
+            "permission_denied",
+            "unavailable",
+            "invalid_request",
+            "cancelled",
+            "failed",
+            "timeout"
+          ]
+        }
+      },
+      "required": [
+        "status",
+        "text",
+        "error"
+      ],
+      "additionalProperties": false,
+      "if": {
+        "properties": {
+          "status": {
+            "const": "succeeded"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "error": {
+            "type": "null"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "error": {
+            "not": {
+              "type": "null"
+            }
+          }
+        }
+      }
+    },
+    "chatWorkResolveParams": {
+      "type": "object",
+      "properties": {
+        "requestId": {
+          "$ref": "#/$defs/identifier"
+        },
+        "chatId": {
+          "$ref": "#/$defs/workChatId"
+        },
+        "callId": {
+          "$ref": "#/$defs/chatWorkCallId"
+        },
+        "result": {
+          "$ref": "#/$defs/chatWorkResult"
+        }
+      },
+      "required": [
+        "requestId",
+        "chatId",
+        "callId",
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    "chatWorkResolveRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/requestEnvelope"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "chat.work.resolve"
+            },
+            "params": {
+              "$ref": "#/$defs/chatWorkResolveParams"
+            }
+          }
+        }
+      ]
+    },
+    "chatWorkResolvedResult": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "chat.work.resolved"
+        },
+        "accepted": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "kind",
+        "accepted"
+      ],
+      "additionalProperties": false
+    },
+    "chatWorkRequestData": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "chatId": {
+              "$ref": "#/$defs/workChatId"
+            },
+            "callId": {
+              "$ref": "#/$defs/chatWorkCallId"
+            },
+            "tool": {
+              "const": "list_apps"
+            },
+            "arguments": {
+              "type": "object",
+              "properties": {},
+              "required": [],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "chatId",
+            "callId",
+            "tool",
+            "arguments"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "chatId": {
+              "$ref": "#/$defs/workChatId"
+            },
+            "callId": {
+              "$ref": "#/$defs/chatWorkCallId"
+            },
+            "tool": {
+              "const": "get_volume"
+            },
+            "arguments": {
+              "type": "object",
+              "properties": {},
+              "required": [],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "chatId",
+            "callId",
+            "tool",
+            "arguments"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "chatId": {
+              "$ref": "#/$defs/workChatId"
+            },
+            "callId": {
+              "$ref": "#/$defs/chatWorkCallId"
+            },
+            "tool": {
+              "const": "open_app"
+            },
+            "arguments": {
+              "type": "object",
+              "properties": {
+                "application": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+                }
+              },
+              "required": [
+                "application"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "chatId",
+            "callId",
+            "tool",
+            "arguments"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "chatId": {
+              "$ref": "#/$defs/workChatId"
+            },
+            "callId": {
+              "$ref": "#/$defs/chatWorkCallId"
+            },
+            "tool": {
+              "const": "set_volume"
+            },
+            "arguments": {
+              "type": "object",
+              "properties": {
+                "level": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 100
+                }
+              },
+              "required": [
+                "level"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "chatId",
+            "callId",
+            "tool",
+            "arguments"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "chatWorkProgressData": {
+      "type": "object",
+      "properties": {
+        "chatId": {
+          "$ref": "#/$defs/workChatId"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64
+        },
+        "phase": {
+          "enum": [
+            "thinking",
+            "planning",
+            "tool",
+            "result",
+            "answering"
+          ]
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 1000,
+          "pattern": "^[^\\u0000]*$"
+        }
+      },
+      "required": [
+        "chatId",
+        "sequence",
+        "phase",
+        "text"
+      ],
+      "additionalProperties": false
     },
     "chatInternetSource": {
       "type": "object", "properties": {
@@ -3103,6 +3413,7 @@
             { "$ref": "#/$defs/workApprovalResult" },
             { "$ref": "#/$defs/handshakeResult" },
             { "$ref": "#/$defs/initializeResult" },
+            { "$ref": "#/$defs/chatWorkResolvedResult" },
             { "$ref": "#/$defs/chatInternetResolvedResult" },
             { "$ref": "#/$defs/attachmentNativeSourceResult" },
             { "$ref": "#/$defs/chatResult" },
@@ -3261,6 +3572,62 @@
     },
     "event": {
       "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "event"
+            },
+            "protocol": {
+              "$ref": "#/$defs/protocol"
+            },
+            "event": {
+              "const": "chat.work.request"
+            },
+            "requestId": {
+              "$ref": "#/$defs/identifier"
+            },
+            "data": {
+              "$ref": "#/$defs/chatWorkRequestData"
+            }
+          },
+          "required": [
+            "type",
+            "protocol",
+            "event",
+            "requestId",
+            "data"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "event"
+            },
+            "protocol": {
+              "$ref": "#/$defs/protocol"
+            },
+            "event": {
+              "const": "chat.work.progress"
+            },
+            "requestId": {
+              "$ref": "#/$defs/identifier"
+            },
+            "data": {
+              "$ref": "#/$defs/chatWorkProgressData"
+            }
+          },
+          "required": [
+            "type",
+            "protocol",
+            "event",
+            "requestId",
+            "data"
+          ],
+          "additionalProperties": false
+        },
         {
           "type": "object",
           "properties": {

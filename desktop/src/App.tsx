@@ -55,6 +55,7 @@ import {
 } from '../electron/song-cover-contracts.ts'
 import type { VoiceCallWindowState } from '../electron/voice-call-contracts.ts'
 import type { VisionContext } from '../electron/vision-context-protocol.ts'
+import type { WorkActivity, WorkTurnOptions } from '../electron/work-agent-protocol.ts'
 import {
   hasNonBlankCodePoint,
   trimProtocolBlankCharacters,
@@ -124,6 +125,7 @@ const MAX_PERSISTED_DRAFT_LENGTH = 1_000_000
 const MAX_AUTOMATIC_VOICE_CAPTURE_RECOVERY_ATTEMPTS = 2
 const VOICE_CAPTURE_RECOVERY_DELAY_MS = 500
 const VOICE_CAPTURE_STABLE_LISTENING_MS = 2_000
+const DEFAULT_WORK_OPTIONS: WorkTurnOptions = { permission: 'ask', thinking: 'off' }
 const LOCAL_SONG_COVER_UNAVAILABLE: SongCoverReadiness = Object.freeze({
   status: 'unavailable',
   reason: 'local-runtime-unavailable',
@@ -1064,6 +1066,12 @@ function App() {
   const [projectKnowledgeByChat, setProjectKnowledgeByChat] = useState<
     Record<string, string>
   >({})
+  // Permissions are explicit session choices, never durable authority. Reloads
+  // return to ask/off even when Main restores a previous run's activity log.
+  const [workOptionsByChat, setWorkOptionsByChat] = useState<Record<string, WorkTurnOptions>>({})
+  const [workActivitiesByChat, setWorkActivitiesByChat] = useState<Record<string, WorkActivity>>({})
+  const workActivitiesRef = useRef<Record<string, WorkActivity>>({})
+  const pendingWorkActivitiesRef = useRef(new Map<string, WorkActivity>())
   const [notice, setNotice] = useState<ChatNotice | null>(null)
   const [callPreviewOpen, setCallPreviewOpen] = useState(false)
   const [voiceCallId, setVoiceCallId] = useState<string | null>(null)
@@ -1271,7 +1279,15 @@ function App() {
   const projectKnowledgeAvailable = knowledgeManagementAvailable
     && activeChatProject !== undefined
     && !activeChatProject.archived
+  const workTurnAvailable = chatState?.activeChat.mode === 'work'
+    && snapshot.capabilities.includes('chat.work')
+  const activeWorkOptions = activeChatId === undefined
+    ? DEFAULT_WORK_OPTIONS
+    : workOptionsByChat[activeChatId] ?? DEFAULT_WORK_OPTIONS
+  const workOptionsBlockSources = workTurnAvailable
+    && (activeWorkOptions.permission !== 'none' || activeWorkOptions.thinking !== 'off')
   const useProjectKnowledge = projectKnowledgeAvailable
+    && !workOptionsBlockSources
     && activeChatId !== undefined
     && projectKnowledgeByChat[activeChatId] === activeChatProjectId
   const displayedMessages = useMemo(() => overlayTurn(
@@ -2728,6 +2744,49 @@ function App() {
     voiceSessionController,
   ])
 
+  const acceptWorkActivity = useCallback((activity: WorkActivity, fromSnapshot = false): void => {
+    const turn = inFlightTurnRef.current
+    if (turn?.chatId === activity.chatId) {
+      if (turn.requestId === null && generationIsBusy(turn)) {
+        // Progress may beat IPC acknowledgement. Buffer by request identity;
+        // only the eventual send/retry receipt may select the visible record.
+        const pending = pendingWorkActivitiesRef.current.get(activity.requestId)
+        if (pending !== undefined && (
+          (pending.entries.at(-1)?.sequence ?? -1) > (activity.entries.at(-1)?.sequence ?? -1)
+          || pending.status !== 'running' && activity.status === 'running'
+        )) return
+        pendingWorkActivitiesRef.current.set(activity.requestId, activity)
+        if (pendingWorkActivitiesRef.current.size > 16) {
+          const oldest = pendingWorkActivitiesRef.current.keys().next().value
+          if (oldest !== undefined) pendingWorkActivitiesRef.current.delete(oldest)
+        }
+        return
+      }
+      if (turn.requestId !== activity.requestId) return
+    } else if (!fromSnapshot) return
+    const previous = workActivitiesRef.current[activity.chatId]
+    if (previous?.requestId === activity.requestId && (
+      (previous.entries.at(-1)?.sequence ?? -1) > (activity.entries.at(-1)?.sequence ?? -1)
+      || previous.status !== 'running' && activity.status === 'running'
+    )) return
+    workActivitiesRef.current = { ...workActivitiesRef.current, [activity.chatId]: activity }
+    setWorkActivitiesByChat(workActivitiesRef.current)
+  }, [])
+
+  const clearWorkActivity = useCallback((chatId: string): void => {
+    const next = { ...workActivitiesRef.current }
+    delete next[chatId]
+    workActivitiesRef.current = next
+    setWorkActivitiesByChat(next)
+    pendingWorkActivitiesRef.current.clear()
+  }, [])
+
+  const acknowledgeWorkActivity = useCallback((requestId: string): void => {
+    const activity = pendingWorkActivitiesRef.current.get(requestId)
+    pendingWorkActivitiesRef.current.clear()
+    if (activity !== undefined) acceptWorkActivity(activity)
+  }, [acceptWorkActivity])
+
   const acceptSnapshot = useCallback((nextSnapshot: BackendSnapshot): boolean => {
     if (nextSnapshot.revision < acceptedSnapshotRevisionRef.current) {
       return false
@@ -2764,9 +2823,12 @@ function App() {
     backendStatusRef.current = acceptedSnapshot.status
     backendChatIdRef.current = acceptedSnapshot.chatId
     if (acceptedSnapshot.status !== 'ready' || acceptedSnapshot.chatId !== activeChatIdRef.current) setSelectedWorkVisionContext(null)
+    if (acceptedSnapshot.workActivity !== undefined && acceptedSnapshot.workActivity.chatId === acceptedSnapshot.chatId) {
+      acceptWorkActivity(acceptedSnapshot.workActivity, true)
+    }
     setSnapshot(acceptedSnapshot)
     return true
-  }, [])
+  }, [acceptWorkActivity])
 
   const markGenerationSettled = useCallback((requestId: string): void => {
     const settledIds = settledGenerationRequestIdsRef.current
@@ -5141,6 +5203,10 @@ function App() {
       })
 
     const unsubscribe = desktopApi.onBackendEvent((event: BackendEvent) => {
+      if (event.type === 'work-progress') {
+        acceptWorkActivity(event.activity)
+        return
+      }
       if (event.type === 'snapshot') {
         if (!acceptSnapshot(event.snapshot)) {
           return
@@ -5816,6 +5882,7 @@ function App() {
     acceptChatState,
     acceptKnowledgeState,
     acceptSnapshot,
+    acceptWorkActivity,
     acknowledgeManagedSpeechTurn,
     clearPendingChatSend,
     clearRetryEditDraft,
@@ -6076,6 +6143,15 @@ function App() {
     const speakReply = intent.source === 'voice' && voiceCallSpeechEnabled
     const attachmentItems = intent.attachmentItems
     const attachmentIds = attachmentItems.map((item) => item.attachmentId)
+    const workOptions: WorkTurnOptions | undefined = activeChatModeRef.current === 'work'
+      && snapshot.capabilities.includes('chat.work')
+      ? intent.source === 'voice'
+        ? { permission: 'none', thinking: 'off' }
+        : { ...(workOptionsByChat[chatId] ?? DEFAULT_WORK_OPTIONS) }
+      : undefined
+    const usesSources = intent.useProjectKnowledge && (
+      workOptions === undefined || workOptions.permission === 'none' && workOptions.thinking === 'off'
+    )
     const generationRecoveryBlocked = pendingChatSendRef.current !== null
       || retryEditDraftRef.current !== null
       || generationReconcilePendingRef.current
@@ -6129,6 +6205,7 @@ function App() {
       })
     }
     setNotice(null)
+    clearWorkActivity(chatId)
     streamingRef.current = true
     setStreaming(true)
     updateInFlightTurn(() => ({
@@ -6143,7 +6220,7 @@ function App() {
       userText: message,
       assistantText: '',
       originalAssistantText: '',
-      useProjectKnowledge: intent.useProjectKnowledge,
+      useProjectKnowledge: usesSources,
       phase: 'starting',
     }))
     beginManagedSpeechTurn(
@@ -6160,7 +6237,10 @@ function App() {
           message,
           attachmentIds,
           speakReply,
-          useProjectKnowledge: intent.useProjectKnowledge,
+          useProjectKnowledge: usesSources,
+          // Sources use the dedicated grounded-answer path; even none/off
+          // Work options must be omitted to avoid an unsupported combination.
+          ...(workOptions === undefined || usesSources ? {} : { workOptions }),
         })
         if (
           intent.source === 'voice'
@@ -6206,6 +6286,7 @@ function App() {
             assistantMessageId: `assistant-${requestId}`,
           }
         })
+        acknowledgeWorkActivity(requestId)
         return requestId
       } catch (error: unknown) {
         const normalized = error instanceof Error
@@ -6321,13 +6402,16 @@ function App() {
       userMessageId: pair.userMessageId,
       assistantMessageId: pair.assistantMessageId,
       speakReply: false,
-      useProjectKnowledge: (
-        projectKnowledgeAvailable
-        && projectKnowledgeByChat[pair.chatId] === activeChatProjectId
-      ),
+      useProjectKnowledge,
+      // A retry is another answer to the existing turn, never permission to
+      // repeat side effects. Preserve only the selected thinking preference.
+      ...(workTurnAvailable && !useProjectKnowledge ? {
+        workOptions: { permission: 'none' as const, thinking: activeWorkOptions.thinking },
+      } : {}),
       ...(editedMessage === undefined ? {} : { message: editedMessage }),
     }
     setNotice(null)
+    clearWorkActivity(pair.chatId)
     streamingRef.current = true
     setStreaming(true)
     updateInFlightTurn(() => ({
@@ -6372,6 +6456,7 @@ function App() {
           }
           return { ...current, requestId }
         })
+        acknowledgeWorkActivity(requestId)
       } catch (error) {
         if (inFlightTurnRef.current?.operationId === operationId) {
           clearManagedSpeechTurn(operationId)
@@ -8351,6 +8436,21 @@ function App() {
         workspaceAttentionKey={workspaceAttentionKey}
         conversationAttentionRevision={conversationAttentionRevision}
         workBusy={workLeaseRef.current}
+        workOptions={workTurnAvailable ? activeWorkOptions : null}
+        workOptionsDisabled={workControlsDisabled || workOperationPending || modelSelectionPending || retryPending || snapshot.chatId !== activeChatId}
+        workActivity={chatState?.activeChat.mode === 'work' && activeChatId !== undefined && snapshot.chatId === activeChatId
+          ? workActivitiesByChat[activeChatId] ?? null : null}
+        onWorkOptionsChange={(options) => {
+          if (!workTurnAvailable || activeChatId === undefined || workControlsDisabled || workOperationPending || modelSelectionPending || retryPending || snapshot.chatId !== activeChatId) return
+          setWorkOptionsByChat(current => ({ ...current, [activeChatId]: { ...options } }))
+          if (options.permission !== 'none' || options.thinking !== 'off') {
+            setProjectKnowledgeByChat(current => {
+              const next = { ...current }
+              delete next[activeChatId]
+              return next
+            })
+          }
+        }}
         workPanel={activeChatId === undefined ? undefined : (
           <WorkPanel
             key={activeChatId}
@@ -8452,7 +8552,7 @@ function App() {
               type="checkbox"
               role="switch"
               checked={useProjectKnowledge}
-              disabled={sessionUiPending || generationBusy}
+              disabled={sessionUiPending || generationBusy || workOptionsBlockSources}
               onChange={(event) => {
                 const enabled = event.currentTarget.checked
                 setProjectKnowledgeByChat((current) => {
@@ -8468,7 +8568,9 @@ function App() {
             />
             <span>
               <strong>Use Project Sources</strong>
-              <small>Require indexed Project evidence and show citations.</small>
+              <small>{workOptionsBlockSources
+                ? '使用 Sources 前，请选择「仅对话」并关闭深度思考。'
+                : 'Require indexed Project evidence and show citations.'}</small>
             </span>
           </label>
         )}

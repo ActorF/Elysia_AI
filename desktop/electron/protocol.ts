@@ -5,6 +5,8 @@
  * Python is parsed here before the Electron process updates UI state.
  */
 
+import { parseWorkTurnOptions, parseWorkNativeRequest, parseWorkProgress, parseWorkResolveParams, parseWorkResolved,
+  type WorkTurnOptions, type WorkResolveParams, type WorkRequestEvent, type WorkProgressEvent } from './work-agent-protocol.js'
 import {
   codePointLength,
   hasNonBlankCodePoint,
@@ -260,6 +262,7 @@ export interface ChatStreamParams {
   useProjectKnowledge?: boolean
   speakReply: boolean
   automaticInternet?: boolean
+  workOptions?: WorkTurnOptions
 }
 
 /** Main-approved, bounded evidence returned to one waiting Chat generation. */
@@ -295,6 +298,7 @@ export interface AttachmentNativeSourceResult {
 }
 
 export interface ChatRetryParams {
+  workOptions?: WorkTurnOptions
   chatId: string
   userMessageId: string
   assistantMessageId: string
@@ -528,6 +532,7 @@ export interface RequestParamsByMethod {
   handshake: HandshakeParams
   initialize: Record<string, never>
   'chat.stream': ChatStreamParams
+  'chat.work.resolve': WorkResolveParams
   'chat.internet.resolve': ChatInternetResolveParams
   'chat.retry': ChatRetryParams
   'chat.list': ChatListParams
@@ -752,6 +757,8 @@ export interface KnowledgeOperationEventMessage {
 }
 
 export type ProtocolEventMessage =
+  | (WorkRequestEvent & { protocol: ProtocolDescriptor })
+  | (WorkProgressEvent & { protocol: ProtocolDescriptor })
   | ChatLifecycleEventMessage
   | ChatInternetRequestEventMessage
   | VoiceTranscriptionLifecycleEventMessage
@@ -1416,6 +1423,11 @@ function parseHandshakeParams(
   }
 }
 
+function parseWorkWire<T>(parser: (value: unknown) => T, value: unknown, code = 'protocol.invalid_params'): T {
+  try { return parser(value) }
+  catch { return fail(code, 'Work data does not match the bounded protocol.') }
+}
+
 function parseChatStreamParams(
   value: unknown,
 ): ChatStreamParams {
@@ -1424,7 +1436,7 @@ function parseChatStreamParams(
     params,
     ['chatId', 'message', 'speakReply'],
     'chat.stream params',
-    ['attachmentIds', 'useProjectKnowledge', 'automaticInternet'],
+    ['attachmentIds', 'useProjectKnowledge', 'automaticInternet', 'workOptions'],
   )
   const message = readString(params, 'message', 'chat.stream params', {
     minimum: 0,
@@ -1464,6 +1476,7 @@ function parseChatStreamParams(
     message,
     attachmentIds,
     speakReply: readBoolean(params, 'speakReply', 'chat.stream params'),
+    ...(Object.hasOwn(params, 'workOptions') ? { workOptions: parseWorkWire(parseWorkTurnOptions, params.workOptions) } : {}),
     ...(Object.hasOwn(params, 'automaticInternet')
       ? { automaticInternet: readBoolean(params, 'automaticInternet', 'chat.stream params') }
       : {}),
@@ -1488,7 +1501,7 @@ function parseChatRetryParams(
     params,
     ['chatId', 'userMessageId', 'assistantMessageId', 'speakReply'],
     context,
-    ['message', 'useProjectKnowledge'],
+    ['message', 'useProjectKnowledge', 'workOptions'],
   )
   const message = params.message === undefined
     ? undefined
@@ -1508,6 +1521,7 @@ function parseChatRetryParams(
       context,
     ),
     speakReply: readBoolean(params, 'speakReply', context),
+    ...(Object.hasOwn(params, 'workOptions') ? { workOptions: parseWorkWire(parseWorkTurnOptions, params.workOptions) } : {}),
     ...(message === undefined ? {} : { message }),
     ...(Object.hasOwn(params, 'useProjectKnowledge')
       ? {
@@ -2701,6 +2715,9 @@ export function parseClientRequest(value: unknown): ClientRequest {
     maximum: MAX_METHOD_LENGTH,
   })
 
+  if (method === 'chat.work.resolve') {
+    return { type: 'request', protocol, id, method, params: parseWorkWire(parseWorkResolveParams, request.params) }
+  }
   if (method === 'chat.internet.resolve') {
     return { type: 'request', protocol, id, method, params: parseChatInternetResolveParams(request.params) }
   }
@@ -3414,6 +3431,12 @@ function parseEvent(
   )
   const event = readIdentifier(message, 'event', 'event')
   const requestId = readIdentifier(message, 'requestId', 'event')
+  if (event === 'chat.work.request') {
+    return { type: 'event', protocol, event, requestId, data: parseWorkWire(parseWorkNativeRequest, message.data, 'protocol.invalid_message') }
+  }
+  if (event === 'chat.work.progress') {
+    return { type: 'event', protocol, event, requestId, data: parseWorkWire(parseWorkProgress, message.data, 'protocol.invalid_message') }
+  }
   if (event === 'chat.internet.request') {
     return { type: 'event', protocol, event, requestId, data: parseChatInternetRequestData(message.data) }
   }
@@ -5616,6 +5639,10 @@ export function parseImageGalleryOpenResult(value: unknown): ImageGalleryOpenRes
 
 function validateSuccessResult(value: unknown): Record<string, unknown> {
   const result = asRecord(value, 'response.result')
+  if (result.kind === 'chat.work.resolved') {
+    parseWorkWire(parseWorkResolved, result, 'protocol.invalid_message')
+    return result
+  }
   if (result.kind === 'chat.internet.resolved') {
     parseChatInternetResolvedResult(result)
     return result

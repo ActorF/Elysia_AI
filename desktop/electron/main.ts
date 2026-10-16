@@ -5,6 +5,8 @@
  * surfaces fail independently so they cannot destabilize core Backend work.
  */
 
+import { parseWorkTurnOptions, type WorkToolCall as WorkAgentCall, type WorkToolResult as WorkAgentResult } from './work-agent-protocol.js'
+import { createWorkAgentNativeTools } from './work-agent-native.js'
 import {
   app,
   BrowserWindow,
@@ -257,6 +259,7 @@ let workDesktopController: WorkDesktopController | null = null
 let workDesktopStorage: { root: string; store: WorkDesktopStorage } | null = null
 let workDesktopScope: { chatId: string; projectId: string | null; workspacePath: string | null } | null = null
 const workDesktopRequests = new Set<Promise<unknown>>()
+const workAgentAborts = new Set<AbortController>()
 let visionImageController: VisionImageController | null = null
 let visionAnalysisController: VisionAnalysisController | null = null
 let visionCaptureController: VisionCaptureController | null = null
@@ -1321,6 +1324,7 @@ function parseChatRequest(value: unknown): ChatRequest {
     'attachmentIds',
     'useProjectKnowledge',
     'speakReply',
+    'workOptions',
   ])
   if (
     !['chatId', 'message', 'attachmentIds', 'speakReply'].every((field) => (
@@ -1364,6 +1368,7 @@ function parseChatRequest(value: unknown): ChatRequest {
     message: request.message,
     attachmentIds: attachmentIds as string[],
     speakReply: request.speakReply,
+    ...(Object.hasOwn(request, 'workOptions') ? { workOptions: parseWorkTurnOptions(request.workOptions) } : {}),
     ...(Object.hasOwn(request, 'useProjectKnowledge')
       ? { useProjectKnowledge: request.useProjectKnowledge === true }
       : {}),
@@ -1389,6 +1394,7 @@ function parseRetryChatRequest(value: unknown): RetryChatRequest {
     ...requiredFields,
     'message',
     'useProjectKnowledge',
+    'workOptions',
   ])
   if (
     requiredFields.some((field) => !Object.hasOwn(request, field))
@@ -1423,6 +1429,7 @@ function parseRetryChatRequest(value: unknown): RetryChatRequest {
     userMessageId: parseChatId(request.userMessageId),
     assistantMessageId: parseChatId(request.assistantMessageId),
     speakReply: request.speakReply,
+    ...(Object.hasOwn(request, 'workOptions') ? { workOptions: parseWorkTurnOptions(request.workOptions) } : {}),
     ...(hasMessage
       ? { message: trimProtocolBlankCharacters(message as string) }
       : {}),
@@ -2135,6 +2142,31 @@ function requireBackend(): BackendProcess {
 
 function hasActiveDesktopWork(): boolean {
   return workDesktopRequests.size > 0 || workDesktopController?.hasActiveWork() === true
+}
+
+function resolveWorkAgent(request: WorkAgentCall, signal: AbortSignal): Promise<WorkAgentResult> {
+  const backend = requireBackend(), owner = backend.getCanonicalVisionChat()
+  const unavailable: WorkAgentResult = { status: 'failed', text: '桌面工具暂不可用，请先结束其他操作。', error: 'unavailable' }
+  if (hasActiveComputerWork() || owner?.chatId !== request.chatId || owner.mode !== 'work') return Promise.resolve(unavailable)
+  // This callback alone may run inside its own generation. Unrelated desktop,
+  // capture, storage, voice and plan work still uses the ordinary busy gates.
+  const nativeAbort = new AbortController()
+  const nativeSignal = AbortSignal.any([signal, nativeAbort.signal])
+  const isCurrent = (): boolean => backend === backendProcess && !nativeSignal.aborted && !shutdownStarted
+    && dataStorageOperation === null && !presenceVoiceSessionActive && songCoverManager?.hasActiveWork() !== true
+    && !hasActiveVisionWork() && !hasActiveInternetWork() && backend.isWorkToolCurrent(request)
+    && backend.getCanonicalVisionChat()?.projectId === owner.projectId
+    && backend.getCanonicalVisionChat()?.chatId === request.chatId
+  if (!isCurrent()) return Promise.resolve(unavailable)
+  const execute = createWorkAgentNativeTools({ isCurrent, getWindow: requireMainWindow })
+  const operation = Promise.resolve().then(() => execute(request, nativeSignal))
+  // Hold the physical native lease through cancellation until the process or
+  // native dialog actually settles, even if Python already stops its turn.
+  workDesktopRequests.add(operation)
+  workAgentAborts.add(nativeAbort)
+  const settled = (): void => { workDesktopRequests.delete(operation); workAgentAborts.delete(nativeAbort) }
+  void operation.then(settled, settled)
+  return operation
 }
 
 function hasActiveVisionWork(): boolean {
@@ -3411,7 +3443,7 @@ function registerIpcHandlers(): void {
       const parsed = parseChatRequest(request), backend = requireBackend()
       const documentGeneration = internetResearchGeneration, policy = requireInternetPolicy().getState()
       let owner = backend.getCanonicalVisionChat()
-      if (owner === null && policy.enabled && !parsed.useProjectKnowledge) owner = await backend.hydrateVisionOwner()
+      if (owner === null && (parsed.workOptions !== undefined || policy.enabled && !parsed.useProjectKnowledge)) owner = await backend.hydrateVisionOwner()
       if (backend !== requireBackend() || documentGeneration !== internetResearchGeneration) throw new Error('Chat owner changed.')
       const currentPolicy = requireInternetPolicy().getState()
       const enabled = policy.enabled && currentPolicy.enabled && policy.revision === currentPolicy.revision
@@ -4803,7 +4835,7 @@ if (!hasSingleInstanceLock) {
       activeDataRoot,
       hasActiveDesktopWork,
       () => hasActiveVisionWork() || hasActiveInternetWork(),
-      { onInternetSearch: resolveAutomaticInternet },
+      { onInternetSearch: resolveAutomaticInternet, onWorkTool: resolveWorkAgent },
     )
     workDesktopController = new WorkDesktopController(createWorkDesktopNativeCallbacks({
       getOwner: desktopOwner, getStorage: desktopStore, getWindow: requireMainWindow,
@@ -4892,6 +4924,9 @@ if (!hasSingleInstanceLock) {
       return
     }
     shutdownStarted = true
+    // Revoke native dialogs/helpers before waiting for their physical leases.
+    // Backend.stop runs after that drain and cannot be the sole abort source.
+    for (const controller of workAgentAborts) controller.abort()
     retireInternetResearch()
     internetPolicyService?.shutdown()
     visionContextStore.clear()

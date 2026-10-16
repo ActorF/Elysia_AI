@@ -20,6 +20,7 @@ from urllib.parse import urlsplit
 
 from attachments.domain import validate_file_name, validate_media_type
 from core.internet_assistant import validate_internet_evidence, validate_internet_query
+from core.work_assistant import DESKTOP_TOOLS, validate_work_call, validate_work_options, validate_work_result as validate_chat_work_result
 from work_tools.wire import validate_work_params, validate_work_result
 
 PROTOCOL_NAME: Final = "elysia.desktop"
@@ -172,6 +173,8 @@ _IMAGE_GENERATION_PROGRESS: Final[dict[str, int]] = {
 }
 
 ProtocolEventName: TypeAlias = Literal[
+    "chat.work.request",
+    "chat.work.progress",
     "chat.internet.request",
     "chat.started",
     "chat.completed",
@@ -221,6 +224,8 @@ _PROTOCOL_EVENT_NAMES: Final = (
     _CHAT_LIFECYCLE_EVENTS
     | _TRANSCRIPTION_LIFECYCLE_EVENTS
     | frozenset({
+        "chat.work.request",
+        "chat.work.progress",
         "chat.internet.request",
         "voice.speech.clip",
         "voice.speech.failure",
@@ -231,6 +236,7 @@ _PROTOCOL_EVENT_NAMES: Final = (
 )
 
 ProtocolMethod = Literal[
+    "chat.work.resolve",
     "chat.internet.resolve",
     "attachment.native_source",
     "work.workspace.get",
@@ -296,6 +302,7 @@ ProtocolMethod = Literal[
     "shutdown",
 ]
 SUPPORTED_METHODS: Final[tuple[ProtocolMethod, ...]] = (
+    "chat.work.resolve",
     "chat.internet.resolve",
     "attachment.native_source",
     "work.workspace.get",
@@ -409,6 +416,7 @@ class ChatStreamParams(TypedDict):
     attachmentIds: NotRequired[list[str]]
     useProjectKnowledge: NotRequired[bool]
     automaticInternet: NotRequired[bool]
+    workOptions: NotRequired[dict[str, str]]
 
 
 class AttachmentScope(TypedDict):
@@ -447,6 +455,7 @@ class ChatRetryParams(TypedDict):
     speakReply: bool
     message: NotRequired[str]
     useProjectKnowledge: NotRequired[bool]
+    workOptions: NotRequired[dict[str, str]]
 
 
 class ChatListParams(TypedDict):
@@ -1410,7 +1419,7 @@ def _validate_chat_params(params: JsonObject) -> None:
         params,
         {"chatId", "message", "speakReply"},
         context,
-        optional={"attachmentIds", "useProjectKnowledge", "automaticInternet"},
+        optional={"attachmentIds", "useProjectKnowledge", "automaticInternet", "workOptions"},
     )
     _require_identifier(params, "chatId", context)
     _require_boolean(params, "speakReply", context)
@@ -1431,6 +1440,61 @@ def _validate_chat_params(params: JsonObject) -> None:
         _require_boolean(params, "useProjectKnowledge", context)
     if "automaticInternet" in params:
         _require_boolean(params, "automaticInternet", context)
+    _validate_work_options_param(params)
+
+
+def _validate_work_options_param(params: JsonObject) -> None:
+    if "workOptions" in params:
+        try:
+            validate_work_options(params["workOptions"])
+        except ValueError:
+            raise ProtocolValidationError("protocol.invalid_params", "Work options are invalid.") from None
+
+
+def _validate_work_identity(value: JsonObject, context: str) -> None:
+    chat_id = _require_identifier(value, "chatId", context)
+    if re.fullmatch(r"chat_[A-Za-z0-9_-]+", chat_id) is None:
+        raise ProtocolValidationError("protocol.invalid_params", "Work Chat identity is invalid.")
+    call_id = _require_string(value, "callId", context, maximum=42)
+    if re.fullmatch(r"work_call_[0-9a-f]{32}", call_id) is None:
+        raise ProtocolValidationError("protocol.invalid_params", "Work call identity is invalid.")
+
+
+def _validate_work_resolve_params(params: JsonObject) -> None:
+    context = "chat.work.resolve params"
+    _require_fields(params, {"requestId", "chatId", "callId", "result"}, context)
+    _require_identifier(params, "requestId", context)
+    _validate_work_identity(params, context)
+    try:
+        validate_chat_work_result(params["result"])
+    except ValueError:
+        raise ProtocolValidationError("protocol.invalid_params", "Work result is invalid.") from None
+
+
+def _validate_work_request_data(data: JsonObject) -> None:
+    context = "chat.work.request data"
+    _require_fields(data, {"chatId", "callId", "tool", "arguments"}, context)
+    _validate_work_identity(data, context)
+    try:
+        tool, _ = validate_work_call(data["tool"], data["arguments"])
+        if tool not in DESKTOP_TOOLS:
+            raise ValueError("Only native tools cross this bridge.")
+    except (ValueError, TypeError):
+        raise ProtocolValidationError("protocol.invalid_message", "Native Work request is invalid.") from None
+
+
+def _validate_work_progress_data(data: JsonObject) -> None:
+    context = "chat.work.progress data"
+    _require_fields(data, {"chatId", "sequence", "phase", "text"}, context)
+    chat_id = _require_identifier(data, "chatId", context)
+    if re.fullmatch(r"chat_[A-Za-z0-9_-]+", chat_id) is None:
+        raise ProtocolValidationError("protocol.invalid_message", "Work Chat identity is invalid.")
+    if (type(data["sequence"]) is not int or not 1 <= data["sequence"] <= 64
+            or data["phase"] not in ("thinking", "planning", "tool", "result", "answering")):
+        raise ProtocolValidationError("protocol.invalid_message", "Work progress is invalid.")
+    text = _require_string(data, "text", context, minimum=0, maximum=1000)
+    if "\0" in text:
+        raise ProtocolValidationError("protocol.invalid_message", "Work progress text is invalid.")
 
 
 def _validate_internet_identity(value: JsonObject, context: str) -> None:
@@ -1742,12 +1806,13 @@ def _validate_chat_retry_params(params: JsonObject) -> None:
         params,
         {"chatId", "userMessageId", "assistantMessageId", "speakReply"},
         context,
-        optional={"message", "useProjectKnowledge"},
+        optional={"message", "useProjectKnowledge", "workOptions"},
     )
     _require_identifier(params, "chatId", context)
     _require_identifier(params, "userMessageId", context)
     _require_identifier(params, "assistantMessageId", context)
     _require_boolean(params, "speakReply", context)
+    _validate_work_options_param(params)
     if "message" in params:
         message = _require_string(params, "message", context)
         if not any(
@@ -2587,6 +2652,8 @@ def parse_client_request(value: object) -> ClientRequest:
         _validate_chat_params(params)
     elif method == "chat.internet.resolve":
         _validate_internet_resolve_params(params)
+    elif method == "chat.work.resolve":
+        _validate_work_resolve_params(params)
     elif method == "attachment.native_source":
         _validate_attachment_remove_params(params)
         if params["scope"]["kind"] != "chat":
@@ -4081,6 +4148,10 @@ def _validate_image_gallery_open_result(result: JsonObject) -> ImageGalleryOpenR
 
 
 def _validate_success_result(result: JsonObject) -> None:
+    if result.get("kind") == "chat.work.resolved":
+        _require_fields(result, {"kind", "accepted"}, "Work resolve result")
+        _require_boolean(result, "accepted", "Work resolve result")
+        return
     if result.get("kind") == "chat.internet.resolved":
         _require_fields(result, {"kind", "accepted"}, "Internet resolve result")
         _require_boolean(result, "accepted", "Internet resolve result")
@@ -4999,6 +5070,10 @@ def _validate_event(message: JsonObject) -> EventMessage:
     data = _as_object(message["data"], "event.data")
     if event == "chat.internet.request":
         _validate_internet_request_data(data)
+    elif event == "chat.work.request":
+        _validate_work_request_data(data)
+    elif event == "chat.work.progress":
+        _validate_work_progress_data(data)
     elif event in _CHAT_LIFECYCLE_EVENTS:
         _validate_chat_lifecycle_event_data(data)
     elif event in _TRANSCRIPTION_LIFECYCLE_EVENTS:

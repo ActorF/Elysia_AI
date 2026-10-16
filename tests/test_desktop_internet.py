@@ -192,7 +192,7 @@ def test_project_sources_routing_ignores_automatic_internet_flag(tmp_path: Path,
         return iter(["Grounded answer"])
     brain = SimpleNamespace(stream_grounded_chat=_grounded,
                             stream_chat=lambda *_args, **_kwargs: pytest.fail("ordinary Chat called"))
-    task = SimpleNamespace(chat_id=chat.chat_id, should_cancel=lambda: False, begin_commit=lambda: True)
+    task = SimpleNamespace(chat_id=chat.chat_id, should_cancel=lambda: False, begin_commit=lambda: True, work_options=None)
     monkeypatch.setattr(backend, "_reserve_generation", lambda *_args, **_kwargs: (brain, task))
     monkeypatch.setattr(backend, "_require_knowledge_runtime", lambda: SimpleNamespace(answers=SimpleNamespace(answer="local-answerer")))
     monkeypatch.setattr(backend, "_launch_reserved_generation", lambda owner, task, run: list(run(owner, task)))

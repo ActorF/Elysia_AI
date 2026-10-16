@@ -31,6 +31,30 @@
 
 .composer-zone .elysia-model-mark { display: block; width: 1.1rem; height: 1.1rem; flex-basis: 1.1rem; }
 .composer-zone .composer-toolbar { flex-wrap: wrap; }
+.composer-zone .composer-tools { flex-wrap: wrap; min-width: 0; }
+.composer-zone .composer-tools:has(.composer-work-options) { flex: 1 1 22rem; }
+.composer-work-options { display: flex; align-items: center; flex-wrap: wrap; gap: .3rem; min-width: 0; }
+.composer-permission-select,
+.composer-thinking-button {
+  min-height: 2rem;
+  max-width: 100%;
+  padding: .35rem .55rem;
+  border: 0;
+  border-radius: var(--radius-full);
+  color: var(--color-text-secondary);
+  background: var(--color-bg-soft);
+  font: inherit;
+  font-size: var(--font-size-xs);
+}
+.composer-thinking-button { display: inline-flex; align-items: center; gap: .3rem; }
+.composer-thinking-button svg { width: .9rem; height: .9rem; }
+.composer-thinking-button[aria-pressed="true"] { color: var(--color-accent-secondary); background: var(--color-accent-soft); }
+.composer-permission-select:disabled,
+.composer-thinking-button:disabled { opacity: var(--opacity-disabled); cursor: not-allowed; }
+.composer-work-help { color: var(--color-text-muted); font-size: var(--font-size-xs); text-align: left; }
+.composer-work-help summary { width: fit-content; margin: .35rem auto 0; cursor: pointer; }
+.composer-work-help > div { max-width: 46rem; margin: .5rem auto; line-height: 1.6; }
+.composer-work-help p { margin: .3rem 0; }
 .composer-zone .voice-tools { margin-left: auto; }
 .composer-screenshot-label { display: none; }
 

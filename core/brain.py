@@ -56,6 +56,7 @@ from project_sources import ProjectSourceAnswer
 from .active_conversation import ActiveConversationService
 from .chat_model import ChatMessage, ChatModel
 from .internet_assistant import InternetResearch, add_internet_evidence, internet_provenance_suffix, plan_internet_research
+from .work_assistant import WorkOptions, WorkProgress, WorkTool, prepare_work_messages, stream_work_reply, validate_work_options
 from .exceptions import (
     ChatModelMismatchError,
     GenerationCancelledError,
@@ -849,6 +850,9 @@ class Brain:
         should_cancel: Callable[[], bool] | None = None,
         begin_commit: Callable[[], bool] | None = None,
         internet_research: InternetResearch | None = None,
+        work_options: WorkOptions | None = None,
+        work_tool: WorkTool | None = None,
+        work_progress: WorkProgress | None = None,
     ) -> Generator[str, None, None]:
         """Yield chunks, then commit a complete turn to the named Chat.
 
@@ -892,6 +896,14 @@ class Brain:
                 project=active_conversation.project,
             )
 
+            if work_options is not None:
+                if active_conversation.chat_session.mode != "work":
+                    raise ValueError("Work options require Work mode.")
+                work_options = validate_work_options(work_options)
+                chat_messages = prepare_work_messages(
+                    self._chat_model, chat_messages, work_options, work_tool, work_progress, should_cancel,
+                )
+
             research_suffix = ""
             if internet_research is not None and active_conversation.chat_session.mode == "chat":
                 recent = [
@@ -915,6 +927,7 @@ class Brain:
             reply = yield from self._stream_model_reply(
                 chat_messages,
                 should_cancel=should_cancel,
+                work_thinking=None if work_options is None else work_options["thinking"] == "deep",
                 preserve_stage_directions=(
                     _preserve_requested_stage_content(cleaned_user_message)
                 ),
@@ -1019,6 +1032,8 @@ class Brain:
         *,
         should_cancel: Callable[[], bool] | None = None,
         begin_commit: Callable[[], bool] | None = None,
+        work_options: WorkOptions | None = None,
+        work_progress: WorkProgress | None = None,
     ) -> Generator[str, None, None]:
         """Regenerate the persisted tail turn and replace it only on success.
 
@@ -1073,9 +1088,17 @@ class Brain:
                 chat_session=prompt_session,
                 project=active_conversation.project,
             )
+            if work_options is not None:
+                if active_conversation.chat_session.mode != "work":
+                    raise ValueError("Work options require Work mode.")
+                work_options = validate_work_options(work_options)
+                chat_messages = prepare_work_messages(
+                    self._chat_model, chat_messages, work_options, None, work_progress, should_cancel, retry=True,
+                )
             reply = yield from self._stream_model_reply(
                 chat_messages,
                 should_cancel=should_cancel,
+                work_thinking=None if work_options is None else work_options["thinking"] == "deep",
                 preserve_stage_directions=(
                     _preserve_requested_stage_content(effective_user_message)
                 ),
@@ -1178,6 +1201,7 @@ class Brain:
         *,
         should_cancel: Callable[[], bool] | None,
         preserve_stage_directions: bool = False,
+        work_thinking: bool | None = None,
     ) -> Generator[str, None, str]:
         """Yield and return one identical normalized, outer-trimmed reply.
 
@@ -1202,7 +1226,8 @@ class Brain:
         reply_normalizer = AssistantReplyStreamNormalizer(
             preserve_stage_directions=preserve_stage_directions,
         )
-        stream_source = self._chat_model.stream_reply(chat_messages)
+        stream_source = (self._chat_model.stream_reply(chat_messages) if work_thinking is None else
+                         stream_work_reply(self._chat_model, chat_messages, thinking=work_thinking))
         self._raise_if_generation_cancelled(should_cancel)
         model_stream: Iterator[str] = iter(stream_source)
         try:

@@ -18,7 +18,9 @@ import type {
   BackendSnapshot,
 } from '../../electron/contracts.ts'
 import type { SongCoverState } from '../../electron/song-cover-contracts.ts'
+import type { WorkActivity, WorkTurnOptions } from '../../electron/work-agent-protocol.ts'
 import { Composer } from './Composer.tsx'
+import { WorkThinkingPanel } from './WorkThinkingPanel.tsx'
 import { MessageView } from './MessageView.tsx'
 import type {
   ChatMessage,
@@ -46,6 +48,9 @@ interface ChatViewProps {
   chatMode: 'chat' | 'work'
   /** Explain why task ownership temporarily blocks sending from the conversation. */
   workBusy: boolean
+  workOptions: WorkTurnOptions | null
+  workOptionsDisabled: boolean
+  workActivity: WorkActivity | null
   modeSelectionDisabled: boolean
   chatTitle: string
   dictationActive: boolean
@@ -97,6 +102,7 @@ interface ChatViewProps {
   onRetryEditChange(pair: RetryableChatPair, message: string): void
   onRetryConnection(): void
   onSelectModel(modelName: string): void
+  onWorkOptionsChange(options: WorkTurnOptions): void
   onSelectMode(mode: 'chat' | 'work'): void
   onCancelSongCover(): void
   onExportSongCover(): void
@@ -143,6 +149,9 @@ export function ChatView({
   canSend,
   chatMode,
   workBusy,
+  workOptions,
+  workOptionsDisabled,
+  workActivity,
   modeSelectionDisabled,
   chatTitle,
   dictationActive,
@@ -191,6 +200,7 @@ export function ChatView({
   onRetryEditChange,
   onRetryConnection,
   onSelectModel,
+  onWorkOptionsChange,
   onSelectMode,
   onCancelSongCover,
   onExportSongCover,
@@ -353,7 +363,7 @@ export function ChatView({
     if (scroller !== null && stickToBottomRef.current) {
       scroller.scrollTop = scroller.scrollHeight
     }
-  }, [messages, songCoverState?.stage, songCoverState?.jobId, workspaceVisible])
+  }, [messages, workActivity, songCoverState?.stage, songCoverState?.jobId, workspaceVisible])
 
   return (
     <div className={'chat-surface' + (chatMode === 'work' ? ' chat-surface-work' : '')}>
@@ -428,7 +438,9 @@ export function ChatView({
 
         <div className="visually-hidden" id="chat-mode-capabilities" role="status">
           {chatMode === 'work'
-            ? 'Work: discuss tasks and review tools in Workspace. File changes require your approval.'
+            ? workOptions === null
+              ? 'Work: discuss tasks and review tools in Workspace. File changes require your approval.'
+              : 'Work: choose permissions for each task. Workspace contains folder access and manual tools.'
             : 'Chat: conversation and answers. Computer tools are disabled.'}
         </div>
       <div ref={bodyRef} className="chat-body" data-workspace-open={workspaceVisible} data-workspace-modal={narrowWorkspace}>
@@ -478,13 +490,13 @@ export function ChatView({
               className="conversation-empty"
               icon="sparkles"
               title={chatMode === 'work' ? '想一起完成什么？' : '今天，想聊些什么？'}
-              description={chatMode === 'work' ? '先聊清楚目标，再在 Workspace 中规划和检查改动。' : '一个想法，一件小事，都可以从这里开始。'}
+              description={chatMode === 'work' ? workOptions === null ? '先聊清楚目标，再在 Workspace 中规划和检查改动。' : '选择权限后，查找文件、调节音量，或打开支持的应用。' : '一个想法，一件小事，都可以从这里开始。'}
             />
           )}
 
           {messages.length === 0 && snapshot.status === 'ready' && draft.length === 0 && (
             <div className="conversation-starters" role="group" aria-label="Conversation ideas">
-              {(chatMode === 'work' ? ['梳理一个任务', '一起看段代码', '规划下一步'] : ['聊聊今天', '帮我整理想法', '一起写点什么']).map((idea) => (
+              {(chatMode === 'work' ? workOptions === null ? ['梳理一个任务', '一起看段代码', '规划下一步'] : ['查找目录中的文件', '把音量调到 30%', '打开记事本'] : ['聊聊今天', '帮我整理想法', '一起写点什么']).map((idea) => (
                 <button
                   type="button"
                   key={idea}
@@ -518,6 +530,7 @@ export function ChatView({
               onRetryEditChange={onRetryEditChange}
             />
           ))}
+          {chatMode === 'work' && workActivity !== null && <WorkThinkingPanel key={workActivity.requestId} activity={workActivity} />}
         </div>
       </main>
 
@@ -539,6 +552,8 @@ export function ChatView({
         generationBusy={generationBusy}
         modelSelectionPending={modelSelectionPending}
         modelOptions={modelOptions}
+        workOptions={workOptions}
+        workOptionsDisabled={workOptionsDisabled}
         notice={notice}
         retryPending={retryPending}
         snapshot={snapshot}
@@ -559,6 +574,7 @@ export function ChatView({
         onReviewImage={onReviewImage}
         onRetryConnection={onRetryConnection}
         onSelectModel={onSelectModel}
+        onWorkOptionsChange={onWorkOptionsChange}
         onCancelSongCover={onCancelSongCover}
         onExportSongCover={onExportSongCover}
         onOpenSongCoverSetup={onOpenSongCoverSetup}

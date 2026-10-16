@@ -54,6 +54,8 @@ room for Ollama and GPT-SoVITS. Model directories stay Git-ignored.
 | --- | --- |
 | `Ctrl+,` / `Ctrl+K` / `Ctrl+B` | Settings / Chat search / toggle navigation. |
 | Enter / Shift+Enter | Send / new line; IME composition never sends. |
+| Work permissions | Beside the model: conversation only, read-only, ask before actions (default), or allow supported desktop actions. File access stays inside the selected Workspace. |
+| Deep thinking | Enables the local model's thinking mode for this Work reply. The collapsible activity log shows actual stages and tool results; retrying an answer never repeats actions. |
 | Dictate | Listens continuously, transcribes bounded segments in order, and appends final text to the draft without sending. Stop closes the microphone and drains pending transcription. |
 | Voice Call | Opens a separate window and automatically sends each completed utterance to the current Chat. Mute pauses capture; End call or Escape releases its audio resources. |
 | Read aloud | Speaks one persisted Assistant reply. Ordinary text Chat is silent by default. |

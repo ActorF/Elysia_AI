@@ -18,6 +18,7 @@ import type {
   BackendSnapshot,
 } from '../../electron/contracts.ts'
 import type { SongCoverState } from '../../electron/song-cover-contracts.ts'
+import type { WorkTurnOptions } from '../../electron/work-agent-protocol.ts'
 import { AttachmentSurface } from '../attachments/AttachmentSurface.tsx'
 import { InlineAlert } from '../design-system/Feedback.tsx'
 import { Icon } from '../design-system/Icon.tsx'
@@ -46,6 +47,8 @@ interface ComposerProps {
   generationBusy: boolean
   modelSelectionPending: boolean
   modelOptions: string[]
+  workOptions: WorkTurnOptions | null
+  workOptionsDisabled: boolean
   notice: ChatNotice | null
   retryPending: boolean
   snapshot: BackendSnapshot
@@ -68,6 +71,7 @@ interface ComposerProps {
   onReviewImage?(attachmentId: string): void
   onRetryConnection(): void
   onSelectModel(modelName: string): void
+  onWorkOptionsChange(options: WorkTurnOptions): void
   onCancelSongCover(): void
   onExportSongCover(): void
   onOpenSongCoverSetup(): void
@@ -98,6 +102,8 @@ export function Composer({
   generationBusy,
   modelSelectionPending,
   modelOptions,
+  workOptions,
+  workOptionsDisabled,
   notice,
   retryPending,
   snapshot,
@@ -118,6 +124,7 @@ export function Composer({
   onReviewImage,
   onRetryConnection,
   onSelectModel,
+  onWorkOptionsChange,
   onCancelSongCover,
   onExportSongCover,
   onOpenSongCoverSetup,
@@ -270,6 +277,36 @@ export function Composer({
               }
               onChange={onSelectModel}
             />
+            {mode === 'work' && workOptions !== null && <div className="composer-work-options">
+              <select
+                className="composer-permission-select"
+                aria-label="Work permissions"
+                aria-describedby="work-options-help"
+                value={workOptions.permission}
+                disabled={workOptionsDisabled}
+                onChange={(event) => onWorkOptionsChange({
+                  ...workOptions,
+                  permission: event.currentTarget.value as WorkTurnOptions['permission'],
+                })}
+              >
+                <option value="none">仅对话</option>
+                <option value="read">只读</option>
+                <option value="ask">操作前询问</option>
+                <option value="auto">允许桌面操作</option>
+              </select>
+              <button
+                type="button"
+                className="composer-thinking-button"
+                aria-label="Deep thinking"
+                aria-pressed={workOptions.thinking === 'deep'}
+                aria-describedby="work-options-help"
+                disabled={workOptionsDisabled}
+                onClick={() => onWorkOptionsChange({
+                  ...workOptions,
+                  thinking: workOptions.thinking === 'deep' ? 'off' : 'deep',
+                })}
+              ><Icon name="sparkles" /><span>深度思考</span></button>
+            </div>}
           </div>
 
           <div className="voice-tools">
@@ -362,6 +399,14 @@ export function Composer({
           </div>
         </div>
       </AttachmentSurface>
+      {mode === 'work' && workOptions !== null && <details className="composer-work-help">
+        <summary>权限与思考说明</summary>
+        <div id="work-options-help">
+          <p>仅对话不调用工具；只读可查找文件、查看应用列表和音量。操作前询问会在更改前确认；允许桌面操作会直接执行支持的操作。</p>
+          <p>文件限已选目录；桌面仅支持已提供的工具，不含任意命令或管理员权限。深度思考需要模型支持。工具或深度思考不能与 Project Sources 同用。</p>
+          <p>重试只重新回答，不重复操作。语音通话仅对话，不继承桌面操作权限。</p>
+        </div>
+      </details>}
       <p className="composer-note" id="composer-help">
         Enter sends · Shift+Enter for a new line
       </p>

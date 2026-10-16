@@ -2,6 +2,7 @@
 
 import logging
 import requests
+from collections.abc import Iterator
 
 from typing import Any, cast
 from .chat_model import ChatMessage
@@ -102,8 +103,12 @@ class OllamaChatModel:
     def generate_reply(
         self,
         messages: list[ChatMessage],
+        *,
+        thinking: bool = False,
     ) -> str:
         """Generate one non-streaming Ollama reply."""
+        if type(thinking) is not bool:
+            raise ValueError("Thinking must be a boolean.")
         if not messages:
             raise ValueError(
                 "Chat messages cannot be empty."
@@ -131,7 +136,7 @@ class OllamaChatModel:
             "model": self._model_name,
             "messages": cleaned_messages,
             "stream": False,
-            "think": False,
+            "think": thinking,
         }
 
         response_data = self._request_json(
@@ -162,6 +167,14 @@ class OllamaChatModel:
             )
 
         return cleaned_reply
+
+    def stream_work_reply(self, messages: list[ChatMessage], *, thinking: bool) -> Iterator[str]:
+        """Expose the direct adapter's complete answer with request-local thinking.
+
+        The direct transport does not stream tokens, but yields only content;
+        Ollama's separate thinking field is never persisted or spoken.
+        """
+        yield self.generate_reply(messages, thinking=thinking)
 
     def _request_json(
         self,

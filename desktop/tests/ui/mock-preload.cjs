@@ -3663,6 +3663,9 @@ const testControl = {
         internetResearchState = null; internetResearchOwnerKey = null; internetResearchEpoch += 1; internetResearchCancellation = true
       }
     }
+    if (nextEvent.type === 'work-progress' && nextEvent.activity.chatId === snapshot.chatId) {
+      snapshot = { ...snapshot, workActivity: clone(nextEvent.activity) }
+    }
     if (
       nextEvent.type === 'chat-chunk'
       && snapshot.activeGeneration?.requestId === nextEvent.requestId

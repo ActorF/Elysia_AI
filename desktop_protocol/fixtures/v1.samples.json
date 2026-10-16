@@ -5,6 +5,71 @@
   },
   "validClientMessages": [
     {
+      "name": "Work options",
+      "message": {
+        "type": "request",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "Work-options",
+        "method": "chat.stream",
+        "params": {
+          "chatId": "chat_fixture",
+          "message": "调低音量",
+          "speakReply": false,
+          "workOptions": {
+            "thinking": "deep",
+            "permission": "ask"
+          }
+        }
+      }
+    },
+    {
+      "name": "Work retry options",
+      "message": {
+        "type": "request",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "Work-retry-options",
+        "method": "chat.retry",
+        "params": {
+          "chatId": "chat_fixture",
+          "userMessageId": "user_fixture",
+          "assistantMessageId": "assistant_fixture",
+          "speakReply": false,
+          "workOptions": {
+            "thinking": "deep",
+            "permission": "ask"
+          }
+        }
+      }
+    },
+    {
+      "name": "Work native receipt",
+      "message": {
+        "type": "request",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "Work-native-receipt",
+        "method": "chat.work.resolve",
+        "params": {
+          "requestId": "work-generation",
+          "chatId": "chat_fixture",
+          "callId": "work_call_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "result": {
+            "status": "succeeded",
+            "text": "Volume is 40%",
+            "error": null
+          }
+        }
+      }
+    },
+    {
       "name": "automatic Internet Chat request",
       "message": {
         "type": "request",
@@ -967,6 +1032,60 @@
     }
   ],
   "validServerMessages": [
+    {
+      "name": "chat.work.request",
+      "message": {
+        "type": "event",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "requestId": "work-generation",
+        "event": "chat.work.request",
+        "data": {
+          "chatId": "chat_fixture",
+          "callId": "work_call_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tool": "set_volume",
+          "arguments": {
+            "level": 40
+          }
+        }
+      }
+    },
+    {
+      "name": "chat.work.progress",
+      "message": {
+        "type": "event",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "requestId": "work-generation",
+        "event": "chat.work.progress",
+        "data": {
+          "chatId": "chat_fixture",
+          "sequence": 1,
+          "phase": "thinking",
+          "text": "正在思考"
+        }
+      }
+    },
+    {
+      "name": "Work receipt accepted",
+      "message": {
+        "type": "response",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "resolve-work",
+        "ok": true,
+        "result": {
+          "kind": "chat.work.resolved",
+          "accepted": true
+        }
+      }
+    },
     {
       "name": "automatic Internet search event",
       "message": {
@@ -4093,6 +4212,27 @@
   ],
   "invalidClientMessages": [
     {
+      "name": "Work rejects elevated permission",
+      "message": {
+        "type": "request",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "Work-options",
+        "method": "chat.stream",
+        "params": {
+          "chatId": "chat_fixture",
+          "message": "调低音量",
+          "speakReply": false,
+          "workOptions": {
+            "thinking": "deep",
+            "permission": "admin"
+          }
+        }
+      }
+    },
+    {
       "name": "automatic Internet requires boolean",
       "message": {
         "type": "request",
@@ -5161,6 +5301,26 @@
     }
   ],
   "invalidServerMessages": [
+    {
+      "name": "Work rejects out of range volume",
+      "message": {
+        "type": "event",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "requestId": "work-generation",
+        "event": "chat.work.request",
+        "data": {
+          "chatId": "chat_fixture",
+          "callId": "work_call_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tool": "set_volume",
+          "arguments": {
+            "level": 101
+          }
+        }
+      }
+    },
     {
       "name": "native image rejects noncanonical base64",
       "runtimeOnly": true,
