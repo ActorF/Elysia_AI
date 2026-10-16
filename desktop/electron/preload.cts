@@ -948,6 +948,8 @@ const desktopApi: DesktopApi = {
 
   /** Request only an opaque artifact; Main owns transport and URL lifetime. */
   openImagePreview: (artifactId: string) => ipcRenderer.invoke('elysia:image:preview', artifactId),
+  /** Native paths remain inside Main's Save dialog. */
+  exportImageArtifact: (artifactId: string) => ipcRenderer.invoke('elysia:image:export', artifactId),
   getSnapshot: () =>
     ipcRenderer.invoke(
       'backend:get-snapshot',

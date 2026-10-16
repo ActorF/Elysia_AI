@@ -13,4 +13,6 @@ export interface ImagePreviewCapability {
 export interface ImageClient {
   /** Revalidate a Gallery artifact and authorize one short-lived preview URL. */
   openImagePreview(artifactId: string): Promise<ImagePreviewCapability>
+  /** Open a native Save dialog and export reverified pixels without disclosing paths. */
+  exportImageArtifact(artifactId: string): Promise<{ artifactId: string; exported: boolean }>
 }

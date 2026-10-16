@@ -165,9 +165,11 @@ Electron Main 创建并拥有 fd4，Python 接管前验证它是 Pipe 并关闭�
 
 ## 待接线工作
 
+原生导出已由 Main 接管：Renderer 仅提交 Gallery artifact ID，Main 显示 Save Dialog 后，重新通过 Backend/Gallery 和 fd4 获取验证后的 PNG。`ImageExportOwner` 在所选目录创建排他的临时文件、刷新后原子发布；已有目标保留回滚副本，失败时恢复原文件。路径和原生错误不进入 Python 或 Renderer。取消对话框不会读取图片；应用关闭中止等待并排空临时文件清理。路径身份检查拒绝链接、非普通文件和替换，但纯 Node 在最终身份检查与 rename 系统调用之间仍无 handle-relative 比较交换保证。
+
 下一步需要：
 
-- Settings 配置受信安装、模型和尺寸；原生导出只接收 artifact ID，由 Main 保存对话框决定路径并原子写入。
+- Settings 配置受信安装、模型和尺寸，并提供 Generator 与 Gallery 产品入口。
 - 建立与 Ollama、Voice、Song Cover 共用的重型 GPU 准入，提供有上限的可取消等待，并按 job 在失败/重启/关闭时释放 lease。
 - 完成真实 ComfyUI/模型/GPU smoke 与 soak、依赖树认证和可见的崩溃残留恢复。
 

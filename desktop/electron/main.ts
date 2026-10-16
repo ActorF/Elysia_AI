@@ -31,6 +31,7 @@ import {
 import { lstat, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { ImageExportOwner } from './image-export.js'
 
 import { BackendProcess } from './backend-process.js'
 import { InternetPolicyService } from './internet-policy.js'
@@ -308,6 +309,8 @@ let speechPlaybackOwner: PreloadSpeechPlaybackOwner | null = null
 const speechPlaybackRouter = new ReplaceableSpeechPlaybackOwner()
 let musicPlaybackOwner: PreloadMusicPlaybackOwner | null = null
 let songCoverManager: SongCoverManager | null = null
+let imageExportOwner: ImageExportOwner | null = null
+let imageExportInFlight = false
 let tray: Tray | null = null
 let desktopPetRepository: DesktopPetPreferencesRepository | null = null
 let desktopPetPreferences: LoadedDesktopPetPreferences | null = null
@@ -2145,7 +2148,7 @@ function requireBackend(): BackendProcess {
 }
 
 function hasActiveDesktopWork(): boolean {
-  return workDesktopRequests.size > 0 || workDesktopController?.hasActiveWork() === true
+  return imageExportInFlight || workDesktopRequests.size > 0 || workDesktopController?.hasActiveWork() === true
 }
 
 function resolveWorkAgent(request: WorkAgentCall, signal: AbortSignal): Promise<WorkAgentResult> {
@@ -3078,6 +3081,31 @@ function requireMainWindow(): BrowserWindow {
 }
 
 function registerIpcHandlers(): void {
+  ipcMain.handle('elysia:image:export', async (event, artifactId: unknown) => {
+    assertTrustedSender(event)
+    if (shutdownStarted || dataStorageOperation !== null || imageExportInFlight
+      || typeof artifactId !== 'string' || !/^gallery_[0-9a-f]{32}$/u.test(artifactId)) {
+      throw new Error('Image export is unavailable or the artifact identity is invalid.')
+    }
+    imageExportOwner ??= new ImageExportOwner({
+      chooseSavePath: async (id, signal) => {
+        if (signal.aborted) return null
+        const selected = await dialog.showSaveDialog(requireMainWindow(), {
+          title: '导出生成的图片', defaultPath: `${id}.png`,
+          filters: [{ name: 'PNG image', extensions: ['png'] }],
+          properties: ['showOverwriteConfirmation', 'dontAddToRecent'],
+        })
+        return signal.aborted || selected.canceled ? null : selected.filePath ?? null
+      },
+      getVerifiedImage: async (id, signal) => {
+        if (signal.aborted) throw new Error('Image export was cancelled.')
+        return requireBackend().openVerifiedImage(id)
+      },
+    })
+    imageExportInFlight = true
+    try { return await imageExportOwner.export(artifactId) }
+    finally { imageExportInFlight = false }
+  })
   ipcMain.handle('elysia:image:preview', async (event, artifactId: unknown) => {
     assertTrustedSender(event)
     if (typeof artifactId !== 'string' || !/^gallery_[0-9a-f]{32}$/u.test(artifactId)) {
@@ -4963,7 +4991,12 @@ if (!hasSingleInstanceLock) {
     // Backend shutdown can await other work or fail and leave Main running.
     // Notify its live renderer now so capture cannot outlive the call controls.
     voiceCallWindowManager.endCurrent()
-    const stopSongCover = songCoverManager?.shutdown() ?? Promise.resolve()
+    const closingImageExport = imageExportOwner
+    imageExportOwner = null
+    const stopSongCover = Promise.all([
+      songCoverManager?.shutdown() ?? Promise.resolve(),
+      closingImageExport?.close() ?? Promise.resolve(),
+    ])
     void stopSongCover.then(() => {
       mainWindow?.hide()
       presenceReminderSchedulingStarted = false
