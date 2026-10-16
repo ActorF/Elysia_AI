@@ -550,6 +550,246 @@ def test_close_cancels_running_inference_and_waits_for_terminal_cleanup() -> Non
     assert gallery.closed is True
 
 
+def test_request_shutdown_cancels_running_work_before_a_late_core_result() -> None:
+    """Stop admission immediately and prevent ignored cancellation from committing."""
+
+    core = _FakeCore()
+    core.wait_for_release = True
+    core.ignore_cancellation = True
+    core.release.clear()
+    service, _core, gallery = _service(core=core)
+    operation_id = service.create_operation_id()
+    worker, outcome = _run_in_thread(
+        lambda: service.generate(operation_id, _spec()),
+    )
+    assert core.entered.wait(2)
+
+    assert service.request_shutdown() is False
+    assert service.request_shutdown() is False
+    assert worker.is_alive()
+    assert service.cancel(operation_id) is ImageGenerationCancelOutcome.REQUESTED
+    assert core.close_calls == 0
+    assert gallery.close_calls == 0
+    with pytest.raises(ImageGenerationApplicationClosedError):
+        service.generate(service.create_operation_id(), _spec())
+    with pytest.raises(ImageGenerationApplicationClosedError):
+        service.list()
+
+    core.release.set()
+    worker.join(2)
+    assert len(outcome) == 1
+    assert isinstance(outcome[0], ImageGenerationCancelledError)
+    assert gallery.created == []
+    service.close()
+    assert core.close_calls == 1
+    assert gallery.close_calls == 1
+
+
+def test_request_shutdown_reports_and_preserves_an_existing_gallery_commit() -> None:
+    """Identify irreversible publication without waiting or closing storage beneath it."""
+
+    gallery = _FakeGallery()
+    gallery.create_release.clear()
+    service, core, _gallery = _service(gallery=gallery)
+    operation_id = service.create_operation_id()
+    worker, outcome = _run_in_thread(
+        lambda: service.generate(operation_id, _spec()),
+    )
+    assert gallery.create_entered.wait(2)
+
+    assert service.request_shutdown() is True
+    assert service.request_shutdown() is True
+    assert worker.is_alive()
+    assert service.cancel(operation_id) is ImageGenerationCancelOutcome.TOO_LATE
+    assert core.close_calls == 0
+    assert gallery.close_calls == 0
+    with pytest.raises(ImageGenerationApplicationClosedError):
+        service.list()
+
+    gallery.create_release.set()
+    worker.join(2)
+    assert outcome == [gallery.item]
+    assert len(gallery.created) == 1
+    assert service.request_shutdown() is False
+    service.close()
+    assert core.closed is True
+    assert gallery.closed is True
+
+
+def test_request_shutdown_is_idempotent_and_keeps_every_admission_closed() -> None:
+    """Keep a stopped idle service closed before and after resource teardown."""
+
+    service, core, gallery = _service()
+
+    assert service.request_shutdown() is False
+    assert service.request_shutdown() is False
+    assert core.close_calls == 0
+    assert gallery.close_calls == 0
+    with pytest.raises(ImageGenerationApplicationClosedError):
+        service.generate(service.create_operation_id(), _spec())
+    with pytest.raises(ImageGenerationApplicationClosedError):
+        service.list()
+    with pytest.raises(ImageGenerationApplicationClosedError):
+        service.get(gallery.item.artifact_id)
+    with pytest.raises(ImageGenerationApplicationClosedError):
+        service.open(gallery.item.artifact_id)
+    with pytest.raises(ImageGenerationApplicationClosedError):
+        service.delete(gallery.item.artifact_id)
+
+    service.close()
+    assert service.request_shutdown() is False
+    service.close()
+    assert core.close_calls == 1
+    assert gallery.close_calls == 1
+
+
+def test_request_shutdown_rejects_generation_callback_without_changing_admission() -> None:
+    """Reject callback self-shutdown in inference and commit without closing the gate."""
+
+    service, core, gallery = _service()
+    observed: list[Exception] = []
+
+    def callback(_event: ImageGenerationProgress) -> None:
+        """Capture the rejected shutdown while allowing publication to finish."""
+
+        try:
+            service.request_shutdown()
+        except Exception as error:
+            observed.append(error)
+
+    for _ in range(2):
+        assert service.generate(
+            service.create_operation_id(), _spec(), on_progress=callback,
+        ) is gallery.item
+
+    assert len(observed) == 4
+    assert all(isinstance(error, ImageGenerationApplicationBusyError) for error in observed)
+    assert core.closed is False
+    assert gallery.closed is False
+    assert core.calls == 2
+    assert len(gallery.created) == 2
+
+
+def test_request_shutdown_does_not_wait_for_an_admitted_gallery_read() -> None:
+    """Freeze future work while leaving an existing read and its owners untouched."""
+
+    gallery = _FakeGallery()
+    gallery.list_release.clear()
+    service, core, _gallery = _service(gallery=gallery)
+    worker, outcome = _run_in_thread(service.list)
+    assert gallery.list_entered.wait(2)
+
+    assert service.request_shutdown() is False
+    assert worker.is_alive()
+    assert core.close_calls == 0
+    assert gallery.close_calls == 0
+    gallery.list_release.set()
+    worker.join(2)
+    assert outcome == [(gallery.item,)]
+    service.close()
+
+
+def test_commit_barrier_returns_before_independent_resource_cleanup() -> None:
+    """Wait for durable publication without inheriting a blocked Core teardown."""
+
+    core = _FakeCore()
+    core.close_release.clear()
+    gallery = _FakeGallery()
+    gallery.create_release.clear()
+    service, _core, _gallery = _service(core=core, gallery=gallery)
+    generation, generation_outcome = _run_in_thread(
+        lambda: service.generate(service.create_operation_id(), _spec()),
+    )
+    assert gallery.create_entered.wait(2)
+    assert service.request_shutdown() is True
+    closer, close_outcome = _run_in_thread(service.close)
+    waiter, wait_outcome = _run_in_thread(service.wait_for_commit)
+    waiter.join(0.05)
+    assert waiter.is_alive()
+
+    gallery.create_release.set()
+    generation.join(2)
+    assert generation_outcome == [gallery.item]
+    assert core.close_entered.wait(2)
+    waiter.join(2)
+    assert not waiter.is_alive()
+    assert wait_outcome == [None]
+    assert closer.is_alive()
+    assert not core.closed
+    assert not gallery.closed
+
+    core.close_release.set()
+    closer.join(2)
+    assert close_outcome == [None]
+    assert core.closed
+    assert gallery.closed
+
+
+def test_commit_barrier_without_work_keeps_admission_and_resources_open() -> None:
+    """Return immediately for an idle service without changing its lifecycle."""
+
+    service, core, gallery = _service()
+
+    service.wait_for_commit()
+    assert core.close_calls == 0
+    assert gallery.close_calls == 0
+    assert service.generate(service.create_operation_id(), _spec()) is gallery.item
+    service.wait_for_commit()
+    service.close()
+
+
+def test_commit_barrier_does_not_wait_for_running_inference() -> None:
+    """Keep cancellable inference outside the shutdown durability barrier."""
+
+    core = _FakeCore()
+    core.wait_for_release = True
+    core.release.clear()
+    service, _core, gallery = _service(core=core)
+    operation_id = service.create_operation_id()
+    generation, outcome = _run_in_thread(
+        lambda: service.generate(operation_id, _spec()),
+    )
+    assert core.entered.wait(2)
+
+    service.wait_for_commit()
+    assert generation.is_alive()
+    assert core.close_calls == 0
+    assert gallery.close_calls == 0
+    assert service.cancel(operation_id) is ImageGenerationCancelOutcome.REQUESTED
+    core.release.set()
+    generation.join(2)
+    assert len(outcome) == 1
+    assert isinstance(outcome[0], ImageGenerationCancelledError)
+    service.close()
+
+
+def test_commit_barrier_rejects_self_wait_only_during_commit_callback() -> None:
+    """Avoid waiting on the publishing thread while preserving harmless idle checks."""
+
+    service, _core, gallery = _service()
+    observed: list[tuple[ImageGenerationStage, object]] = []
+
+    def callback(event: ImageGenerationProgress) -> None:
+        """Record the barrier outcome from inference and committed callbacks."""
+
+        try:
+            service.wait_for_commit()
+            observed.append((event.stage, None))
+        except Exception as error:
+            observed.append((event.stage, error))
+
+    assert service.generate(
+        service.create_operation_id(), _spec(), on_progress=callback,
+    ) is gallery.item
+
+    assert observed[0] == (ImageGenerationStage.VALIDATING, None)
+    assert observed[1][0] is ImageGenerationStage.COMPLETED
+    assert isinstance(observed[1][1], ImageGenerationApplicationBusyError)
+    assert len(gallery.created) == 1
+    assert service.generate(service.create_operation_id(), _spec()) is gallery.item
+    service.close()
+
+
 def test_close_waits_for_non_cancellable_gallery_commit() -> None:
     """Let an admitted commit finish instead of reporting false cancellation."""
 

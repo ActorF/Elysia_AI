@@ -280,12 +280,19 @@ class ImageGenerationApplicationService:
 
         self._call_gallery(lambda: self._gallery.delete(artifact_id))
 
-    def close(self) -> None:
-        """Cancel running inference, drain admitted work, and release resources.
+    def request_shutdown(self) -> bool:
+        """Stop admission and cancel inference without waiting or releasing owners.
 
-        A progress callback executes on the generation thread.  Closing from
-        that callback would wait on itself, so the call is rejected while the
-        callback failure remains advisory to generation.
+        Return whether an active Gallery commit already owns publication.  The
+        admission gate and cancellation phase change under the commit lock, so
+        a false result guarantees that running inference cannot start a later
+        commit.  Shutdown coordinators can therefore distinguish a commit that
+        must finish from cancellable inference before starting asynchronous
+        resource teardown.  Calls are idempotent and never reopen admission.
+
+        A generation callback cannot request shutdown of its own service.  This
+        preserves the same reentrancy contract as ``close`` without allowing a
+        rejected callback request to partially close the admission gate.
         """
 
         with self._condition:
@@ -302,6 +309,21 @@ class ImageGenerationApplicationService:
                     and active.phase is not _GenerationPhase.COMMITTING
                 ):
                     active.phase = _GenerationPhase.CANCEL_REQUESTED
+            return (
+                active is not None
+                and active.phase is _GenerationPhase.COMMITTING
+            )
+
+    def close(self) -> None:
+        """Cancel running inference, drain admitted work, and release resources.
+
+        A progress callback executes on the generation thread.  Closing from
+        that callback would wait on itself, so the call is rejected while the
+        callback failure remains advisory to generation.
+        """
+
+        self.request_shutdown()
+        with self._condition:
             # Every closer waits on the real drain predicate.  There is no
             # distinguished drain owner whose interruption could strand the
             # remaining callers behind a separate flag.
@@ -310,6 +332,31 @@ class ImageGenerationApplicationService:
             self._closed = True
 
         self._close_resources()
+
+    def wait_for_commit(self) -> None:
+        """Wait only for the currently committing operation to retire, if any.
+
+        This durability barrier never stops admission or waits for inference,
+        Gallery reads, or resource cleanup.  A shutdown coordinator must call
+        ``request_shutdown`` first so a later generation cannot start another
+        commit after this snapshot.  Retain the exact operation identity so
+        unrelated work admitted by other callers cannot prolong this wait.
+        A commit callback cannot wait for its own operation to retire.
+        """
+
+        with self._condition:
+            operation = self._active
+            if (
+                operation is None
+                or operation.phase is not _GenerationPhase.COMMITTING
+            ):
+                return
+            if operation.owner_thread_id == get_ident():
+                raise ImageGenerationApplicationBusyError(
+                    "Image generation cannot wait for its own commit."
+                )
+            while self._active is operation:
+                self._condition.wait()
 
     @staticmethod
     def _validate_operation_id(value: object) -> str:

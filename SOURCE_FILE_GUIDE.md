@@ -18,7 +18,7 @@ React UI
 | React | 页面、草稿、流式显示与交互状态 | [App.tsx](./desktop/src/App.tsx) |
 | Preload | 向 Renderer 暴露固定能力 | [preload.cts](./desktop/electron/preload.cts) |
 | Electron Main | 窗口、原生权限、路径与子进程 | [main.ts](./desktop/electron/main.ts) |
-| Backend | 请求路由、生命周期与错误转换 | [desktop_backend.py](./desktop_backend.py) |
+| Backend | 请求路由、生命周期与错误转换；图片任务与私有预览协调 | [desktop_backend.py](./desktop_backend.py)、[desktop_images.py](./desktop_images.py) |
 | Core | 组装模型、会话与记忆，完成一次对话 | [start.py](./start.py)、[brain.py](./core/brain.py) |
 | Persistence | Domain 校验、Repository 与原子存储 | [chats](./chats/)、[projects](./projects/)、[memory](./memory/) |
 

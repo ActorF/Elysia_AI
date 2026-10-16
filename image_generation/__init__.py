@@ -22,7 +22,10 @@ from .comfyui import (
     ComfyPromptHandle,
     ComfyUiConfig,
 )
-from .composition import create_managed_image_generation_core
+from .composition import (
+    create_managed_image_application_service,
+    create_managed_image_generation_core,
+)
 from .domain import ImageGenerationSpec, ImageIntent
 from .exceptions import (
     ImageGenerationCancelledError,
@@ -65,6 +68,7 @@ __all__ = [
     "ComfyOutputDescriptor",
     "ComfyPromptHandle",
     "ComfyUiConfig",
+    "create_managed_image_application_service",
     "create_managed_image_generation_core",
     "ImageGenerationApplicationBusyError",
     "ImageGenerationApplicationClosedError",

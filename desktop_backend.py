@@ -1,8 +1,10 @@
-"""Expose the existing Python Brain to Electron over newline-delimited JSON.
+"""Expose Python Chat, Work, and trusted image services to Electron.
 
 The bridge delegates conversation persistence to Brain and explicit Work
 capabilities to DesktopWorkRuntime. It validates typed requests and emits one
 JSON object per line so Electron can monitor startup and forward reply chunks.
+Image generation and Gallery operations use a separate coordinator; preview
+pixels travel only through an injected private binary writer.
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ from threading import Event, Lock, RLock, Thread
 from time import monotonic
 from typing import Any, Literal, TextIO, cast
 from uuid import uuid4
+from weakref import ref
 
 from attachments import (
     AttachmentConflictError,
@@ -142,6 +145,9 @@ from desktop_speech import (
 )
 from start import create_brain, validate_settings
 from desktop_work import DesktopWorkRuntime
+from desktop_images import DesktopImageCoordinator
+from desktop_protocol.image_channel import ImageChannelWriter
+from image_generation import ImageGenerationApplicationService
 from voice import (
     FasterWhisperConfig,
     FasterWhisperStatus,
@@ -634,6 +640,8 @@ class DesktopBackend:
         ),
         audio_writer: AudioChannelWriter | None = None,
         speech_coordinator: DesktopSpeechCoordinator | None = None,
+        image_service: ImageGenerationApplicationService | None = None,
+        image_writer: ImageChannelWriter | None = None,
         input_stream: TextIO = sys.stdin,
         output_stream: TextIO = sys.stdout,
         expected_session_token: str | None = None,
@@ -746,6 +754,22 @@ class DesktopBackend:
         # daemon or optional native inference.
         self._speech_lifecycle_lock = RLock()
         self._speech_closing = False
+        # Trusted composition and the preview transport are startup-owned
+        # dependencies. Until both exist, every image request is refused and
+        # handshake makes no claim of an available image capability.
+        backend_ref = ref(self)
+
+        def _emit_image(message: ServerMessage) -> None:
+            """Forward image output without retaining the Backend after run exits."""
+
+            backend = backend_ref()
+            if backend is not None:
+                backend._emit(message)
+
+        # A bound emitter would create Backend -> coordinator -> Backend and
+        # delay release of unrelated process leases until cyclic GC. Workers
+        # already retain their image owners for the full asynchronous drain.
+        self._images = DesktopImageCoordinator(image_service, image_writer, _emit_image)
 
     def _active_chat_snapshot(self) -> ChatSession | None:
         """Read the active Chat under the worker coordination lock."""
@@ -764,6 +788,17 @@ class DesktopBackend:
 
     def run(self) -> None:
         """Read requests until shutdown or end-of-input."""
+
+        try:
+            self._read_requests()
+        finally:
+            # Input/output exceptions must release image owners too. Explicit
+            # shutdown and EOF already claimed the output gate; this final
+            # non-waiting pass can retry a failed resource close safely.
+            self._images.close(timeout=0.0)
+
+    def _read_requests(self) -> None:
+        """Dispatch input and claim asynchronous output gates before teardown."""
 
         for raw_line in self._input_stream:
             line = raw_line.removesuffix("\n").removesuffix("\r")
@@ -784,6 +819,7 @@ class DesktopBackend:
         # has no valid consumer. Close admission immediately and suppress every
         # callback that loses the EOF race; daemon workers may drain native I/O
         # without delaying process teardown.
+        self._images.close()
         self._prepare_transcription_shutdown()
         self._prepare_speech_shutdown()
         self._prepare_knowledge_shutdown()
@@ -847,6 +883,7 @@ class DesktopBackend:
             if method == "handshake":
                 self._handshake(request_id, request)
             elif method == "shutdown":
+                self._images.close()
                 self._prepare_transcription_shutdown()
                 self._prepare_speech_shutdown()
                 self._prepare_generation_shutdown()
@@ -869,6 +906,10 @@ class DesktopBackend:
                 self._get_voice_settings(request_id)
             elif method == "voice.settings.update":
                 self._update_voice_settings(request_id, params)
+            elif method.startswith("image."):
+                self._images.dispatch(request_id, method, params)
+            elif method == "request.cancel":
+                self._cancel_request(request_id, params)
             elif self._brain is None or self._active_chat_snapshot() is None:
                 raise ProtocolValidationError(
                     "protocol.not_initialized",
@@ -948,12 +989,17 @@ class DesktopBackend:
                 self._start_knowledge_operation(request_id, params, method)
             elif method == "knowledge.source.export":
                 self._export_project_source(request_id, params)
-            elif method == "request.cancel":
-                self._cancel_request(request_id, params)
             elif method == "permission.respond":
                 raise ProtocolValidationError(
                     "permission.not_found",
                     "No Backend permission request is pending.",
+                )
+            else:
+                # Parsing a new protocol method must never silently consume
+                # its request when a Backend implementation is still missing.
+                raise ProtocolValidationError(
+                    "protocol.unsupported_method",
+                    "This Backend does not implement the requested method.",
                 )
         except ProtocolValidationError as error:
             self._emit_error(request_id, error.code, str(error))
@@ -1181,7 +1227,7 @@ class DesktopBackend:
                     "name": SERVER_NAME,
                     "version": SERVER_VERSION,
                 },
-                "capabilities": list(SERVER_CAPABILITIES),
+                "capabilities": [*SERVER_CAPABILITIES, *self._images.capabilities],
             },
         )
 
@@ -4437,9 +4483,12 @@ class DesktopBackend:
         request_id: str,
         params: JsonObject,
     ) -> None:
-        """Cancel one matching Chat, Knowledge, or transcription request."""
+        """Cancel a matching image, Chat, Knowledge, or transcription request."""
 
         target_request_id = cast(str, params["requestId"])
+        if self._images.cancel(target_request_id):
+            self._emit_response(request_id, {"stopped": True})
+            return
         with self._state_lock:
             generation = self._generation_task
             generation_stopped = (

@@ -1,6 +1,6 @@
 # 本地图片生成
 
-已实现受信生成核心、私有 ComfyUI 监督器、持久 Gallery、应用服务和 Desktop Protocol 合同。**尚未接通 Backend 路由、Electron 预览管道或 React 界面**，普通用户还不能从应用中直接使用；真实模型/GPU 验收和跨模型 GPU 调度也未完成。
+已实现受信生成核心、私有 ComfyUI 监督器、持久 Gallery、应用服务、Desktop Protocol 合同和 Python Backend 图片路由。**Electron 预览管道、受信安装配置和 React 界面尚未接通**，普通用户还不能从应用中直接使用；真实模型/GPU 验收和跨模型 GPU 调度也未完成。
 
 ## 架构与责任
 
@@ -11,7 +11,8 @@
   → 关联结果、验证 PNG、停止进程、清理任务目录
   → 应用服务裁决取消或提交
   → 私有 Gallery
-  → Desktop Protocol / 二进制预览合同（运行时待接线）
+  → Python Desktop Backend / 二进制预览 Writer
+  → Electron 私有管道与 React（待接线）
 ```
 
 | 层 | 责任 |
@@ -139,15 +140,28 @@ RUNNING → CANCEL_REQUESTED → 丢弃结果，不创建 Gallery
 
 关闭先永久停止准入：运行任务协作取消，提交中的任务完成短提交，已接纳 Gallery 调用排空后释放资源。并发关闭共享结果；失败时后续 close 只重试未释放资源，不重新开放准入。
 
-## Desktop 合同与待接线工作
+## Python Desktop Backend 与预览合同
 
-Protocol v1 已定义 `image.generate` 和 `image.gallery.list/get/delete/open`，但不代表已有产品入口。请求禁止路径、任意 Graph、图片字节或内容模式字段；Backend 固定 `new-character`。
+Protocol v1 已定义并接通 `image.generate` 和 `image.gallery.list/get/delete/open`，但不代表已有产品入口。请求禁止路径、任意 Graph、图片字节或内容模式字段；Backend 固定 `new-character`。图片请求只要求已完成认证握手，不依赖 Brain、Ollama 或 Chat 初始化，也不会将提示词交给语音模块。
+
+`create_managed_image_application_service(profiles, config, data_root)` 为受信启动组合入口：对所有 Profile 完成解释器、入口和 Checkpoint 文件/Hash 预检，再打开固定的 `<data-root>/workspace/gallery`，并组合现有 Core 与应用服务。预检不启动 ComfyUI，不代表真实 GPU/API 验收；每次生成仍重新验证资产并检查私有 ComfyUI API。私有运行根与 Gallery 不得重叠，构造失败分别关闭已分配的 Runtime 和 Gallery，公开错误不保留私有异常链。
+
+启动宿主将返回的服务和独立 `ImageChannelWriter` 分别注入 `DesktopBackend(image_service=..., image_writer=...)`，Backend 接管两者的关闭责任。只有两者都存在时，握手才广告五项图片 Capability；缺少任一依赖时，所有合法图片请求明确返回 `image.unavailable`。当前 `main()` 尚无受信安装配置或 Electron 图片 Pipe，因此默认不创建图片服务，也不广告图片能力。请求解析成功但尚未实现的其他方法同样有明确的兜底拒绝。
+
+`desktop_images.py` 将同步生成和 Gallery I/O 放在独立工作线程，保持请求读取和取消可响应。生成只准入一个任务，以请求 ID 关联内部单次 `imageop_<uuid>`；预留与应用服务准入之间的取消意图会保留，并在首次进度回调后重送，避免立即取消丢失。最终取消或提交仍由应用服务裁决，过期请求 ID 不能取消后续任务。
+
+协议进度固定为 `validating=5 → probing=15 → submitting=25 → sampling=35 → verifying=90 → completed=100`，`total=100`。只映射已审查的阶段，不转发 Runtime 诊断；100 仍只在 Gallery 提交成功后出现。Gallery 分页读取 `limit + 1` 条判断 `hasMore`，每个 Backend 最多一个 Gallery 工作线程，限制阻塞预览期间的内存占用。
 
 Open 的 JSON 只含 artifact ID、一次性 64-hex token、尺寸、长度、摘要与 `image/png`。实际像素通过 `ELYSIMG1` v1：88-byte little-endian header + payload。读取前限制 32 MiB、单边 2048 和总像素；收到后核对 SHA-256、signature 与 IHDR。Writer 最多一帧，部分写入/篡改/关闭失败使通道拒绝后续操作；Reader 每次返回一帧及精确消费量，便于保留后缀和背压。
 
+Gallery Open 在读取时重新验证 PNG，由 Writer 创建一次性 Token；先发送 JSON Metadata，再在工作线程写入准确的一帧，避免 Main 等待 Token 而 Writer 被 Pipe 背压阻塞。已发送 Metadata 后的写入失败不会再次发送矛盾的 JSON 终态；通道失败后停止图片准入并撤销后续握手中的图片 Capability。PNG 不进入 NDJSON，也不转为 Base64。
+
+关闭、stdin EOF 和读取异常都先关闭图片输出 Gate，并通过应用服务 `request_shutdown()` 原子停止准入。已经获胜的 Gallery Commit 必须排空后才确认关闭；其余推理和预览关闭使用有界等待，后台所有者继续持有资源直到排空。Runtime 经由应用服务/Core 关闭，不能提前直接关闭在用 Runtime。Writer 在独立关闭线程等待已有写入结束，不阻塞 Runtime 清理；Electron 下一模块必须在退出/失败时销毁私有 Pipe 读端，释放可能阻塞的 Writer。关闭失败保留所有者供后续调用重试；有界等待结束不表示资源已证明释放。
+
+## 待接线工作
+
 下一步需要：
 
-- Backend 组合 Profile、Managed Runtime、Gallery 和应用服务，绑定 Operation ID；接通后才在 handshake 广告 capability。
 - Main 拥有私有预览 pipe，核对 token 后给 Renderer 短期预览能力；PNG 不通过 Base64 进入 NDJSON。
 - Settings 配置受信安装、模型和尺寸；原生导出只接收 artifact ID，由 Main 保存对话框决定路径并原子写入。
 - 建立与 Ollama、Voice、Song Cover 共用的重型 GPU 准入，提供有上限的可取消等待，并按 job 在失败/重启/关闭时释放 lease。
@@ -166,7 +180,7 @@ Open 的 JSON 只含 artifact ID、一次性 64-hex token、尺寸、长度、�
 离线测试覆盖结构化请求、固定 Graph、PNG、HTTP 所有权/期限、受管进程与清理、Gallery 恢复/容量、取消提交竞争，以及 Python/TypeScript 共享协议和二进制分片。测试不安装 ComfyUI、不加载真实模型或使用 GPU。
 
 ```text
-python -m pytest tests/test_image_generation_core.py tests/test_comfyui_client.py tests/test_managed_comfyui.py tests/test_private_run_directory.py tests/test_windows_loopback_owner.py tests/test_image_gallery_store.py tests/test_image_application_service.py tests/test_desktop_image_channel.py tests/test_desktop_protocol.py
+python -m pytest tests/test_image_generation_core.py tests/test_comfyui_client.py tests/test_managed_comfyui.py tests/test_private_run_directory.py tests/test_windows_loopback_owner.py tests/test_image_gallery_store.py tests/test_image_application_service.py tests/test_desktop_image_composition.py tests/test_desktop_backend_images.py tests/test_desktop_backend.py tests/test_desktop_image_channel.py tests/test_desktop_protocol.py
 cd desktop
 npm run test:contract
 ```
