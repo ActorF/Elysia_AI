@@ -15,11 +15,13 @@ interface WorkHistoryProps {
   refreshKey: number
   /** Hold the shell conflict gate while an inverse write awaits its truthful result. */
   onBusyChange(busy: boolean): void
+  /** Publish validated owner history or clear it when this mounted history loses authority. */
+  onHistoryChange?(chatId: string, history: WorkAuditState | null): void
 }
 
 /** Read bounded owner history and require explicit consent for each conditional inverse write. */
 export function WorkHistory({ api, chatId, ready, disabled, workspacePath, undoAvailable,
-  refreshKey, onBusyChange }: WorkHistoryProps) {
+  refreshKey, onBusyChange, onHistoryChange }: WorkHistoryProps) {
   const [history, setHistory] = useState<WorkAuditState | null>(null)
   const [selection, setSelection] = useState<WorkAuditEntry | null>(null)
   const [loading, setLoading] = useState(false)
@@ -40,22 +42,31 @@ export function WorkHistory({ api, chatId, ready, disabled, workspacePath, undoA
       if (token === operationRef.current) {
         if (next.entries.some((entry) => entry.chatId !== chatId)) throw new Error('History has another owner.')
         setHistory(next)
+        onHistoryChange?.(chatId, next)
       }
     } catch {
-      if (token === operationRef.current) setError('Could not load Work history. Refresh to try again.')
+      if (token === operationRef.current) {
+        setHistory(null)
+        onHistoryChange?.(chatId, null)
+        setError('Could not load Work history. Refresh to try again.')
+      }
     } finally {
       if (token === operationRef.current) setLoading(false)
     }
-  }, [api, chatId, ready])
+  }, [api, chatId, ready, onHistoryChange])
 
   useEffect(() => {
     const token = ++operationRef.current
     queueMicrotask(() => {
       if (token !== operationRef.current) return
       setHistory(null); setSelection(null); setResult(null)
+      onHistoryChange?.(chatId, null)
     })
-    return () => { operationRef.current += 1 }
-  }, [chatId, ready])
+    return () => {
+      operationRef.current += 1
+      onHistoryChange?.(chatId, null)
+    }
+  }, [api, chatId, ready, onHistoryChange])
 
   useEffect(() => {
     // Refresh only after the producer releases its lease. Reading while the

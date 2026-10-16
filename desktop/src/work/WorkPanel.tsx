@@ -15,7 +15,7 @@ import type {
 import type { WorkToolClient, WorkToolsState } from '../../electron/work-tool-protocol.ts'
 import type { WorkToolCall } from '../../electron/work-tool-protocol.ts'
 import type { WorkPlanClient } from '../../electron/work-plan-protocol.ts'
-import type { WorkAuditClient } from '../../electron/work-audit-protocol.ts'
+import type { WorkAuditClient, WorkAuditState } from '../../electron/work-audit-protocol.ts'
 import type { WorkDesktopClient } from '../../electron/work-desktop-protocol.ts'
 import type { VisionContext } from '../../electron/vision-context-protocol.ts'
 import { ToolTabs, ToolTabPanel } from '../design-system/ToolPanel.tsx'
@@ -48,11 +48,13 @@ interface WorkPanelProps {
   onBusyChange(busy: boolean): void
   /** Reveal a newly prepared approval or recovery notice in an otherwise hidden workspace. */
   onAttention?(key: string): void
+  /** Share canonical history with the conversation without issuing another history request. */
+  onHistoryChange?(chatId: string, history: WorkAuditState | null): void
 }
 
 /** Present compact task tools while preserving mounted operation owners and explicit directory access. */
 export function WorkPanel({ api, chatId, ready, disabled, readAvailable, previewAvailable, confirmAvailable,
-  planAvailable, auditAvailable, undoAvailable, visionContext = null, onClearVisionContext, onBusyChange, onAttention }: WorkPanelProps) {
+  planAvailable, auditAvailable, undoAvailable, visionContext = null, onClearVisionContext, onBusyChange, onAttention, onHistoryChange }: WorkPanelProps) {
   const [activeTab, setActiveTab] = useState<WorkspaceTab>(planAvailable ? 'plan' : 'files')
   const attentionKeysRef = useRef(new Set<string>())
   const revealAttention = useCallback((tab: WorkspaceTab, key: string): void => {
@@ -269,7 +271,7 @@ export function WorkPanel({ api, chatId, ready, disabled, readAvailable, preview
         <WorkHistory api={api} chatId={chatId} ready={ready}
           disabled={disabled || pending || consoleBusy || planLeased || desktopBusy}
           workspacePath={visibleScope?.workspacePath ?? null} undoAvailable={undoAvailable}
-          refreshKey={historyRevision} onBusyChange={updateUndoBusy} />
+          refreshKey={historyRevision} onBusyChange={updateUndoBusy} onHistoryChange={onHistoryChange} />
       </ToolTabPanel>}
       {typeof api?.getWorkDesktopState === 'function' && <ToolTabPanel idPrefix="work-workspace" value="desktop" activeValue={visibleTab}>
         <DesktopToolsPanel api={api} chatId={chatId}

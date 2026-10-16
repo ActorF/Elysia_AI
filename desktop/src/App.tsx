@@ -56,6 +56,7 @@ import {
 import type { VoiceCallWindowState } from '../electron/voice-call-contracts.ts'
 import type { VisionContext } from '../electron/vision-context-protocol.ts'
 import type { WorkActivity, WorkTurnOptions } from '../electron/work-agent-protocol.ts'
+import type { WorkAuditState } from '../electron/work-audit-protocol.ts'
 import {
   hasNonBlankCodePoint,
   trimProtocolBlankCharacters,
@@ -1070,6 +1071,9 @@ function App() {
   // return to ask/off even when Main restores a previous run's activity log.
   const [workOptionsByChat, setWorkOptionsByChat] = useState<Record<string, WorkTurnOptions>>({})
   const [workActivitiesByChat, setWorkActivitiesByChat] = useState<Record<string, WorkActivity>>({})
+  const [workHistory, setWorkHistory] = useState<{ chatId: string; projectId: string | null; history: WorkAuditState } | null>(null)
+  const [workHistoryEpoch, setWorkHistoryEpoch] = useState(0)
+  const workHistoryEpochRef = useRef(0)
   const workActivitiesRef = useRef<Record<string, WorkActivity>>({})
   const pendingWorkActivitiesRef = useRef(new Map<string, WorkActivity>())
   const [notice, setNotice] = useState<ChatNotice | null>(null)
@@ -2744,6 +2748,27 @@ function App() {
     voiceSessionController,
   ])
 
+  const invalidateWorkHistory = useCallback((): void => {
+    workHistoryEpochRef.current += 1
+    setWorkHistoryEpoch(workHistoryEpochRef.current)
+    setWorkHistory(null)
+  }, [])
+
+  const acceptWorkHistory = useCallback((chatId: string, history: WorkAuditState | null): void => {
+    // A reconnect can disappear inside a batched ready -> error -> ready render.
+    // Retire old callbacks immediately, then let the existing history owner
+    // refresh; never turn an old read into current evidence after reconnection.
+    if (workHistoryEpoch !== workHistoryEpochRef.current) return
+    if (history === null) {
+      setWorkHistory(current => current?.chatId === chatId ? null : current)
+      return
+    }
+    if (backendStatusRef.current !== 'ready' || backendChatIdRef.current !== chatId
+      || activeChatIdRef.current !== chatId || activeChatModeRef.current !== 'work'
+      || activeChatArchivedRef.current || history.entries.some(entry => entry.chatId !== chatId)) return
+    setWorkHistory({ chatId, projectId: activeChatProjectIdRef.current, history })
+  }, [workHistoryEpoch])
+
   const acceptWorkActivity = useCallback((activity: WorkActivity, fromSnapshot = false): void => {
     const turn = inFlightTurnRef.current
     if (turn?.chatId === activity.chatId) {
@@ -2819,6 +2844,7 @@ function App() {
     // Updating props, rather than remounting the panel, retains physical leases.
     if (acceptedSnapshot.status !== 'ready' || acceptedSnapshot.chatId !== backendChatIdRef.current) {
       setInternetLifecycleEpoch(current => current + 1)
+      invalidateWorkHistory()
     }
     backendStatusRef.current = acceptedSnapshot.status
     backendChatIdRef.current = acceptedSnapshot.chatId
@@ -2828,7 +2854,7 @@ function App() {
     }
     setSnapshot(acceptedSnapshot)
     return true
-  }, [acceptWorkActivity])
+  }, [acceptWorkActivity, invalidateWorkHistory])
 
   const markGenerationSettled = useCallback((requestId: string): void => {
     const settledIds = settledGenerationRequestIdsRef.current
@@ -2876,6 +2902,8 @@ function App() {
     visionProjectAllowedRef.current = ownerProjectId === null || ownerProject !== undefined && !ownerProject.archived
     if (activeChatIdRef.current !== nextState.activeChat.chatId || activeChatProjectIdRef.current !== nextState.activeChat.projectId
       || nextState.activeChat.archived || !visionProjectAllowedRef.current) setSelectedWorkVisionContext(null)
+    if (activeChatIdRef.current !== nextState.activeChat.chatId || activeChatProjectIdRef.current !== nextState.activeChat.projectId
+      || activeChatModeRef.current !== nextState.activeChat.mode || nextState.activeChat.archived) invalidateWorkHistory()
     for (const chat of [...nextState.chats, nextState.activeChat]) {
       const knownCount = knownChatMessageCountsRef.current.get(chat.chatId) ?? 0
       knownChatMessageCountsRef.current.set(
@@ -2892,7 +2920,7 @@ function App() {
     }
     setChatState(nextState)
     setMessages(presentChatMessages(nextState.activeChat))
-  }, [])
+  }, [invalidateWorkHistory])
 
   const acceptProjectState = useCallback((nextState: ProjectState): void => {
     // Archiving a Project can retain the exact Chat/Project identifiers. Revoke
@@ -8440,6 +8468,10 @@ function App() {
         workOptionsDisabled={workControlsDisabled || workOperationPending || modelSelectionPending || retryPending || snapshot.chatId !== activeChatId}
         workActivity={chatState?.activeChat.mode === 'work' && activeChatId !== undefined && snapshot.chatId === activeChatId
           ? workActivitiesByChat[activeChatId] ?? null : null}
+        workHistory={chatState?.activeChat.mode === 'work' && snapshot.status === 'ready'
+          && snapshot.chatId === activeChatId && snapshot.capabilities.includes('work.audit')
+          && workHistory !== null && workHistory.chatId === activeChatId && workHistory.projectId === activeChatProjectId
+          ? workHistory.history : null}
         onWorkOptionsChange={(options) => {
           if (!workTurnAvailable || activeChatId === undefined || workControlsDisabled || workOperationPending || modelSelectionPending || retryPending || snapshot.chatId !== activeChatId) return
           setWorkOptionsByChat(current => ({ ...current, [activeChatId]: { ...options } }))
@@ -8470,6 +8502,7 @@ function App() {
             onClearVisionContext={() => { setSelectedWorkVisionContext(null) }}
             onBusyChange={updateWorkBusy}
             onAttention={revealWorkAttention}
+            onHistoryChange={acceptWorkHistory}
           />
         )}
         screenshotControl={activeChatId === undefined || typeof desktopApi?.getVisionState !== 'function' ? undefined : (

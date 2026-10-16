@@ -19,8 +19,9 @@ import type {
 } from '../../electron/contracts.ts'
 import type { SongCoverState } from '../../electron/song-cover-contracts.ts'
 import type { WorkActivity, WorkTurnOptions } from '../../electron/work-agent-protocol.ts'
+import type { WorkAuditState } from '../../electron/work-audit-protocol.ts'
 import { Composer } from './Composer.tsx'
-import { WorkThinkingPanel } from './WorkThinkingPanel.tsx'
+import { WorkFileChanges, WorkThinkingPanel } from './WorkThinkingPanel.tsx'
 import { MessageView } from './MessageView.tsx'
 import type {
   ChatMessage,
@@ -51,6 +52,7 @@ interface ChatViewProps {
   workOptions: WorkTurnOptions | null
   workOptionsDisabled: boolean
   workActivity: WorkActivity | null
+  workHistory: WorkAuditState | null
   modeSelectionDisabled: boolean
   chatTitle: string
   dictationActive: boolean
@@ -152,6 +154,7 @@ export function ChatView({
   workOptions,
   workOptionsDisabled,
   workActivity,
+  workHistory,
   modeSelectionDisabled,
   chatTitle,
   dictationActive,
@@ -363,7 +366,7 @@ export function ChatView({
     if (scroller !== null && stickToBottomRef.current) {
       scroller.scrollTop = scroller.scrollHeight
     }
-  }, [messages, workActivity, songCoverState?.stage, songCoverState?.jobId, workspaceVisible])
+  }, [messages, workActivity, workHistory, songCoverState?.stage, songCoverState?.jobId, workspaceVisible])
 
   return (
     <div className={'chat-surface' + (chatMode === 'work' ? ' chat-surface-work' : '')}>
@@ -531,6 +534,7 @@ export function ChatView({
             />
           ))}
           {chatMode === 'work' && workActivity !== null && <WorkThinkingPanel key={workActivity.requestId} activity={workActivity} />}
+          {chatMode === 'work' && workHistory !== null && <WorkFileChanges history={workHistory} />}
         </div>
       </main>
 

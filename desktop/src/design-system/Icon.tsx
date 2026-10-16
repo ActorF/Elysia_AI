@@ -12,12 +12,14 @@ import type { SVGProps } from 'react'
 export type IconName =
   | 'archive'
   | 'arrow-left'
+  | 'brain'
   | 'captions'
   | 'chat'
   | 'check'
   | 'chevron'
   | 'close'
   | 'copy'
+  | 'document'
   | 'download'
   | 'file'
   | 'folder'
@@ -43,6 +45,7 @@ export type IconName =
   | 'refresh'
   | 'send'
   | 'settings'
+  | 'shield'
   | 'speaker'
   | 'sparkles'
   | 'sun'
@@ -71,6 +74,17 @@ export function Icon({
 
   let content
   switch (name) {
+    case 'brain':
+      content = (
+        <>
+          <path d="M12 5a3 3 0 0 0-5.8-1A4 4 0 0 0 4 11.5 4 4 0 0 0 6 19a3 3 0 0 0 6-1V5Z" />
+          <path d="M12 5a3 3 0 0 1 5.8-1 4 4 0 0 1 2.2 7.5 4 4 0 0 1-2 7.5 3 3 0 0 1-6-1M7 8a3 3 0 0 0 3 3m7-3a3 3 0 0 1-3 3M6 15h2m8 0h2" />
+        </>
+      )
+      break
+    case 'shield':
+      content = <path d="m12 3 8 3v6c0 4-4 7.5-8 9-4-1.5-8-5-8-9V6l8-3Z" />
+      break
     case 'globe':
       content = <><circle cx="12" cy="12" r="9" /><ellipse cx="12" cy="12" rx="4" ry="9" /><path d="M3 12h18" /></>
       break
@@ -137,6 +151,9 @@ export function Icon({
       break
     case 'file':
       content = <path d="M8.5 12.5 13 8a3 3 0 0 1 4.2 4.2l-6 6a5 5 0 0 1-7.1-7.1l6.4-6.4" />
+      break
+    case 'document':
+      content = <path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9l-6-6ZM14 3v6h6M8 13h8M8 17h5" />
       break
     case 'microphone':
       content = (

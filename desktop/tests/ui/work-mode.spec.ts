@@ -1,4 +1,4 @@
-/** Exercise native-selected Work scopes, revocation, and stale asynchronous responses. */
+/** Exercise Work scope boundaries, approved writes, truthful file-change summaries, and stale asynchronous responses. */
 
 import { createRequire } from 'node:module'
 import path from 'node:path'
@@ -8,6 +8,7 @@ import { expect, test, type ElectronApplication, type Page } from '@playwright/t
 
 import { conversationMode, selectConversationMode, showWorkspace } from './conversation-helpers.ts'
 
+import type { BackendSnapshot } from '../../electron/contracts.ts'
 import type { WorkWorkspaceState } from '../../electron/work-protocol.ts'
 import type { WorkAuditState } from '../../electron/work-audit-protocol.ts'
 
@@ -36,7 +37,10 @@ interface WorkTestControl {
   releaseNextCharacterPanelChange(): boolean
 }
 
-type WorkTestWindow = Window & { elysiaDesktopTest: WorkTestControl }
+type WorkTestWindow = Window & {
+  elysiaDesktopTest: WorkTestControl
+  elysiaDesktop: { getSnapshot(): Promise<BackendSnapshot> }
+}
 
 const require = createRequire(import.meta.url)
 const electronExecutablePath = require('electron') as string
@@ -696,6 +700,7 @@ test('cancels a waiting plan without keeping its write approval usable', async (
   await expect(page.getByRole('region', { name: 'Work tool result' })).toContainText('Hello <script>unsafe()</script>')
 })
 
+/** Approve a real mock edit and wait until canonical audit history makes its Undo available. */
 async function prepareHistoryWrite(): Promise<void> {
   await page.evaluate(() => {
     ;(window as WorkTestWindow).elysiaDesktopTest.setWorkWorkspaceState({
@@ -712,6 +717,120 @@ async function prepareHistoryWrite(): Promise<void> {
   await selectWorkspaceTab('History')
   await expect(page.getByRole('region', { name: 'Work history' }).getByRole('button', { name: 'Undo edit', exact: true })).toBeEnabled()
 }
+
+test('summarizes approved file changes and reflects a verified move Undo without inventing a diff', async () => {
+  await page.evaluate(() => {
+    ;(window as WorkTestWindow).elysiaDesktopTest.setWorkWorkspaceState({
+      kind: 'work.workspace', chatId: 'chat_work_test', workspacePath: 'D:\\work-file-changes',
+    })
+  })
+  await selectConversationMode(page, 'work')
+  await selectWorkspaceTab('Files')
+  const changes = page.getByRole('region', { name: 'Recent file changes', exact: true })
+  const preview = page.getByRole('region', { name: 'Work change preview', exact: true })
+  await page.getByLabel('Work tool', { exact: true }).selectOption('create')
+  await page.getByLabel('Relative path', { exact: true }).fill('draft.txt')
+  await page.getByLabel('Complete file content').fill('Private draft contents are not activity metadata.')
+  await page.getByRole('button', { name: 'Prepare change', exact: true }).click()
+  await expect(changes).toHaveCount(0)
+  await preview.getByRole('button', { name: 'Approve once', exact: true }).click()
+  const created = changes.locator('[data-work-file-change="create"]')
+  await expect(created).toHaveAttribute('data-work-file-outcome', 'succeeded')
+  await expect(created).toContainText('新建')
+  await expect(created.getByText('draft.txt', { exact: true })).toBeVisible()
+  await expect(changes).not.toContainText('Private draft contents')
+
+  await selectWorkspaceTab('Files')
+  await page.getByLabel('Work tool', { exact: true }).selectOption('move')
+  await page.getByLabel('Destination path', { exact: true }).fill('archive/draft.txt')
+  await page.getByRole('button', { name: 'Prepare change', exact: true }).click()
+  await preview.getByRole('button', { name: 'Approve once', exact: true }).click()
+  const moved = changes.locator('[data-work-file-change="move"]')
+  await expect(moved).toHaveAttribute('data-work-file-outcome', 'succeeded')
+  await expect(moved).toContainText('移动')
+  await expect(moved.getByText('draft.txt', { exact: true })).toBeVisible()
+  await expect(moved.getByText('archive/draft.txt', { exact: true })).toBeVisible()
+  await expect(changes.locator('[data-work-file-change]')).toHaveCount(2)
+
+  await selectWorkspaceTab('History')
+  const history = page.getByRole('region', { name: 'Work history', exact: true })
+  await history.getByRole('button', { name: 'Undo move', exact: true }).click()
+  await history.getByRole('button', { name: 'Confirm Undo', exact: true }).click()
+  await expect(history.getByRole('status')).toHaveText('Undo completed and verified.')
+  await expect(moved).toHaveAttribute('data-work-file-outcome', 'undone')
+  await expect(moved).toContainText('已撤销')
+  await expect(created).toHaveAttribute('data-work-file-outcome', 'succeeded')
+  await showWorkspace(page, false)
+  await expect(changes).toBeVisible()
+  await expect(changes.locator('details, pre')).toHaveCount(0)
+})
+
+test('keeps reads and denied file changes out of the conversation change summary', async () => {
+  await page.evaluate(() => {
+    ;(window as WorkTestWindow).elysiaDesktopTest.setWorkWorkspaceState({
+      kind: 'work.workspace', chatId: 'chat_work_test', workspacePath: 'D:\\work-file-changes',
+    })
+  })
+  await selectConversationMode(page, 'work')
+  await selectWorkspaceTab('Files')
+  const changes = page.getByRole('region', { name: 'Recent file changes', exact: true })
+  const result = page.getByRole('region', { name: 'Work tool result', exact: true })
+  await page.getByLabel('Work tool', { exact: true }).selectOption('read_text')
+  await page.getByLabel('Relative path', { exact: true }).fill('notes.txt')
+  await page.getByRole('button', { name: 'Run tool', exact: true }).click()
+  await expect(result).toContainText('Completed')
+  await expect(changes).toHaveCount(0)
+
+  await selectWorkspaceTab('Files')
+  await page.getByLabel('Work tool', { exact: true }).selectOption('edit')
+  await page.getByLabel('Complete file content').fill('Rejected replacement.')
+  await page.getByRole('button', { name: 'Prepare change', exact: true }).click()
+  await page.getByRole('region', { name: 'Work change preview', exact: true })
+    .getByRole('button', { name: 'Deny', exact: true }).click()
+  await expect(result).toContainText('The action was declined.')
+  await selectWorkspaceTab('History')
+  const history = page.getByRole('region', { name: 'Work history', exact: true })
+  await expect(history.locator('[data-work-audit-outcome]')).toHaveText(['denied · permission_denied', 'succeeded'])
+  await expect(changes).toHaveCount(0)
+
+  await selectWorkspaceTab('Files')
+  await page.getByLabel('Complete file content').fill('The one approved replacement.')
+  await page.getByRole('button', { name: 'Prepare change', exact: true }).click()
+  await page.getByRole('region', { name: 'Work change preview', exact: true })
+    .getByRole('button', { name: 'Approve once', exact: true }).click()
+  await expect(changes.locator('[data-work-file-change]')).toHaveCount(1)
+  await expect(changes.locator('[data-work-file-change="edit"]')).toHaveAttribute('data-work-file-outcome', 'succeeded')
+  await expect(changes).toContainText('修改')
+  await expect(changes).not.toContainText('replacement')
+})
+
+test('isolates recent file changes between Work conversations and restores the original owner', async () => {
+  await prepareHistoryWrite()
+  const changes = page.getByRole('region', { name: 'Recent file changes', exact: true })
+  await expect(changes.getByText('notes.txt', { exact: true })).toBeVisible()
+  await showWorkspace(page, false)
+  await page.getByRole('button', { name: 'Create chat', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'New task', exact: true })).toBeVisible()
+  await expect(changes).toHaveCount(0)
+  // Publish the canonical owner just as Main does after activation; the new
+  // session must stay empty even after its own audit request has completed.
+  await page.evaluate(async () => {
+    const target = window as WorkTestWindow
+    target.elysiaDesktopTest.emitBackendEvent({ type: 'snapshot', snapshot: await target.elysiaDesktop.getSnapshot() })
+  })
+  await selectWorkspaceTab('History')
+  await expect(page.getByRole('region', { name: 'Work history', exact: true })).toContainText('No activity yet')
+  await expect(changes).toHaveCount(0)
+  await showWorkspace(page, false)
+  await page.getByRole('button', { name: 'Open chat Elysia Chat', exact: true }).click()
+  await page.evaluate(async () => {
+    const target = window as WorkTestWindow
+    target.elysiaDesktopTest.emitBackendEvent({ type: 'snapshot', snapshot: await target.elysiaDesktop.getSnapshot() })
+  })
+  await expect(changes.locator('[data-work-file-change]')).toHaveCount(1)
+  await expect(changes.getByText('notes.txt', { exact: true })).toBeVisible()
+  await expect(changes.locator('[data-work-file-change="edit"]')).toHaveAttribute('data-work-file-outcome', 'succeeded')
+})
 
 test('keeps external edits when an explicitly confirmed Undo conflicts', async () => {
   await prepareHistoryWrite()

@@ -65,6 +65,12 @@ async function requests(method: string): Promise<ChatRequest[]> {
     .filter(call => call.method === method).map(call => call.args[0] as ChatRequest), method)
 }
 
+/** Commit a permission through its themed popup, never by changing the underlying state directly. */
+async function choosePermission(label: string): Promise<void> {
+  await page.getByRole('combobox', { name: 'Work permissions', exact: true }).click()
+  await page.getByRole('option', { name: label, exact: true }).click()
+}
+
 /** Deliver a Main-owned activity update without inventing simulated model reasoning in production code. */
 async function emitActivity(activity: WorkActivity): Promise<void> {
   await page.evaluate(activity => { (window as WorkAgentWindow).elysiaDesktopTest
@@ -92,16 +98,16 @@ test('keeps permissions scoped to each task and omits options from ordinary Chat
   await connect()
   const permissions = page.getByLabel('Work permissions', { exact: true })
   const thinking = page.getByRole('button', { name: 'Deep thinking', exact: true })
-  await expect(permissions).toHaveValue('ask')
+  await expect(permissions).toContainText('操作前询问')
   await expect(thinking).toHaveAttribute('aria-pressed', 'false')
-  await permissions.selectOption('auto')
+  await choosePermission('允许桌面操作')
   await thinking.click()
   await page.getByRole('button', { name: 'Create chat', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'New task', exact: true })).toBeVisible()
-  await expect(permissions).toHaveValue('ask')
+  await expect(permissions).toContainText('操作前询问')
   await expect(thinking).toHaveAttribute('aria-pressed', 'false')
   await page.getByRole('button', { name: `Open chat ${chat.title}`, exact: true }).click()
-  await expect(permissions).toHaveValue('auto')
+  await expect(permissions).toContainText('允许桌面操作')
   await expect(thinking).toHaveAttribute('aria-pressed', 'true')
   await page.evaluate(async () => {
     const target = window as WorkAgentWindow
@@ -115,9 +121,61 @@ test('keeps permissions scoped to each task and omits options from ordinary Chat
   expect((await requests('sendMessage'))[0]).not.toHaveProperty('workOptions')
 })
 
+test('requires explicit permission commitment and shows thinking as readable on and off states', async () => {
+  await connect()
+  const permissions = page.getByRole('combobox', { name: 'Work permissions', exact: true })
+  const thinking = page.getByRole('button', { name: 'Deep thinking', exact: true })
+  await permissions.focus()
+  await permissions.press('Enter')
+  await expect(page.getByRole('option', { name: '操作前询问', exact: true })).toHaveAttribute('aria-selected', 'true')
+  await permissions.press('End')
+  await permissions.press('Escape')
+  await expect(permissions).toBeFocused()
+  await expect(permissions).toContainText('操作前询问')
+  await expect(permissions).toHaveAttribute('aria-expanded', 'false')
+
+  await permissions.press('Enter')
+  await permissions.press('End')
+  await permissions.press('Tab')
+  await expect(permissions).toContainText('操作前询问')
+  await expect(permissions).toHaveAttribute('aria-expanded', 'false')
+  await permissions.focus()
+  await permissions.press('Enter')
+  await permissions.press('End')
+  await permissions.press('Enter')
+  await expect(permissions).toContainText('允许桌面操作')
+  await expect(thinking).toContainText('已关闭')
+  await thinking.click()
+  await expect(thinking).toContainText('已开启')
+  await thinking.click()
+  await expect(thinking).toContainText('已关闭')
+  await expect(page.getByText('权限与思考说明', { exact: true })).toHaveCount(0)
+  await expect(page.getByText('Enter sends · Shift+Enter for a new line', { exact: true })).toHaveCount(0)
+})
+
+test('keeps the themed permission popup reachable in light and dark narrow windows', async () => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await connect()
+  const permissions = page.getByRole('combobox', { name: 'Work permissions', exact: true })
+  for (const theme of ['light', 'dark']) {
+    await page.evaluate(theme => { document.documentElement.dataset.theme = theme }, theme)
+    await permissions.click()
+    await expect(page.getByRole('option', { name: '允许桌面操作', exact: true })).toBeVisible()
+    const list = page.getByRole('listbox', { name: 'Work permission levels', exact: true })
+    const bounds = await list.boundingBox()
+    expect(bounds!.x).toBeGreaterThanOrEqual(0)
+    expect(bounds!.y).toBeGreaterThanOrEqual(0)
+    expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(390)
+    expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(844)
+    await permissions.press('Escape')
+  }
+  await choosePermission('只读')
+  await expect(permissions).toContainText('只读')
+})
+
 test('freezes explicit send options, rejects foreign and stale progress, and keeps retry free of tool replay', async () => {
   await connect()
-  await page.getByLabel('Work permissions', { exact: true }).selectOption('auto')
+  await choosePermission('允许桌面操作')
   await page.getByRole('button', { name: 'Deep thinking', exact: true }).click()
   await page.getByLabel('Message Elysia', { exact: true }).fill('把音量调到 30%')
   await page.getByRole('button', { name: 'Send message', exact: true }).click()
@@ -131,9 +189,7 @@ test('freezes explicit send options, rejects foreign and stale progress, and kee
   await expect(page.getByRole('region', { name: 'Work activity', exact: true })).toHaveCount(0)
   await emitActivity(activity)
   const panel = page.getByRole('region', { name: 'Work activity', exact: true })
-  await expect(panel).toContainText('正在处理')
-  await expect(panel.locator('details')).not.toHaveAttribute('open')
-  await panel.locator('summary').click()
+  await expect(panel.locator('details')).toHaveCount(0)
   await expect(panel).toContainText('set_volume · 30%')
   const finished: WorkActivity = { ...activity, status: 'complete', entries: [...activity.entries,
     { sequence: 2, phase: 'result', text: '音量已设置为 30%。' }] }
@@ -172,7 +228,6 @@ test('buffers progress until the native send receipt identifies the owning reque
   await page.evaluate(() => { (window as WorkAgentWindow).elysiaDesktopTest.releaseNextChatAction() })
   const panel = page.getByRole('region', { name: 'Work activity', exact: true })
   await expect(panel).toHaveAttribute('data-work-request-id', 'test-request-1')
-  await panel.locator('summary').click()
   await expect(panel).toContainText('在已选目录查找 README。')
   await expect(panel).not.toContainText('STALE')
 })
@@ -182,11 +237,10 @@ test('restores snapshot activity without restoring automatic permissions and fit
   await connect({ activity: { requestId: 'restored-run', chatId: chat.chatId,
     options: { permission: 'auto', thinking: 'deep' }, status: 'complete',
     entries: [{ sequence: 1, phase: 'result', text: '已打开记事本。' }] } })
-  await expect(page.getByLabel('Work permissions', { exact: true })).toHaveValue('ask')
+  await expect(page.getByLabel('Work permissions', { exact: true })).toContainText('操作前询问')
   await expect(page.getByRole('button', { name: 'Deep thinking', exact: true })).toHaveAttribute('aria-pressed', 'false')
   const panel = page.getByRole('region', { name: 'Work activity', exact: true })
   await expect(panel).toContainText('已完成')
-  await panel.locator('summary').click()
   await expect(panel).toContainText('已打开记事本。')
   await expect.poll(() => page.locator('.composer-card').evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true)
   const send = page.getByRole('button', { name: 'Send message', exact: true })
@@ -198,7 +252,7 @@ test('makes Sources mutually exclusive with tools or deep thinking while retaini
   await connect({ project: true })
   const sources = page.getByRole('switch', { name: /Use Project Sources/ })
   await expect(sources).toBeDisabled()
-  await page.getByLabel('Work permissions', { exact: true }).selectOption('none')
+  await choosePermission('仅对话')
   await sources.check()
   await page.getByRole('button', { name: 'Deep thinking', exact: true }).click()
   await expect(sources).toBeDisabled()

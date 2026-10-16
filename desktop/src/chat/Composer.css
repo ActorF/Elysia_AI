@@ -33,28 +33,30 @@
 .composer-zone .composer-toolbar { flex-wrap: wrap; }
 .composer-zone .composer-tools { flex-wrap: wrap; min-width: 0; }
 .composer-zone .composer-tools:has(.composer-work-options) { flex: 1 1 22rem; }
-.composer-work-options { display: flex; align-items: center; flex-wrap: wrap; gap: .3rem; min-width: 0; }
-.composer-permission-select,
+.composer-work-options { display: flex; align-items: center; flex-wrap: wrap; gap: .25rem; min-width: 0; }
 .composer-thinking-button {
-  min-height: 2rem;
+  display: inline-flex;
+  align-items: center;
+  gap: .4rem;
+  min-height: 2.25rem;
   max-width: 100%;
-  padding: .35rem .55rem;
-  border: 0;
-  border-radius: var(--radius-full);
+  padding: .375rem .625rem;
+  border: 1px solid transparent;
+  border-radius: .75rem;
   color: var(--color-text-secondary);
-  background: var(--color-bg-soft);
+  background: transparent;
   font: inherit;
   font-size: var(--font-size-xs);
+  white-space: nowrap;
+  transition: background 140ms ease, color 140ms ease;
 }
-.composer-thinking-button { display: inline-flex; align-items: center; gap: .3rem; }
-.composer-thinking-button svg { width: .9rem; height: .9rem; }
-.composer-thinking-button[aria-pressed="true"] { color: var(--color-accent-secondary); background: var(--color-accent-soft); }
-.composer-permission-select:disabled,
+.composer-thinking-button svg { width: 1rem; height: 1rem; flex: 0 0 auto; }
+.composer-thinking-button:hover:not(:disabled) { background: var(--color-accent-soft); color: var(--color-text-primary); }
+.composer-thinking-button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.composer-thinking-button[aria-pressed="true"] { color: var(--color-text-link); }
+.composer-thinking-state { padding: .1rem .35rem; border-radius: .35rem; color: var(--color-text-secondary); background: var(--color-bg-soft); font-size: .6875rem; line-height: 1rem; }
+.composer-thinking-button[aria-pressed="true"] .composer-thinking-state { color: var(--color-text-link); background: var(--color-accent-soft); }
 .composer-thinking-button:disabled { opacity: var(--opacity-disabled); cursor: not-allowed; }
-.composer-work-help { color: var(--color-text-muted); font-size: var(--font-size-xs); text-align: left; }
-.composer-work-help summary { width: fit-content; margin: .35rem auto 0; cursor: pointer; }
-.composer-work-help > div { max-width: 46rem; margin: .5rem auto; line-height: 1.6; }
-.composer-work-help p { margin: .3rem 0; }
 .composer-zone .voice-tools { margin-left: auto; }
 .composer-screenshot-label { display: none; }
 
@@ -106,4 +108,14 @@
 
 @media (max-width: 420px) {
   .composer-screenshot-button { width: 1.8rem; height: 1.8rem; }
+}
+
+@media (forced-colors: active) {
+  .composer-thinking-button { color: ButtonText; border-color: ButtonText; }
+  .composer-thinking-button[aria-pressed="true"] { border-color: Highlight; }
+  .composer-thinking-button:disabled { color: GrayText; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composer-thinking-button { transition: none; }
 }
