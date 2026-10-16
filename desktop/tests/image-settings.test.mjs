@@ -417,7 +417,12 @@ test('the real Python worker saves reviewed configuration through the private DT
   await fixture(async ({ options }) => {
     const manager = new ImageSettingsManager({ ...options, runWorker: undefined })
     const status = await manager.configure(METADATA)
-    assert.equal(status.state, 'ready')
+    // Persistence is portable, but the unmocked managed runtime requires
+    // Windows. A saved installation cannot advertise readiness on POSIX.
+    assert.equal(status.state, process.platform === 'win32' ? 'ready' : 'invalid')
+    assert.equal(status.ready, process.platform === 'win32')
+    assert.equal(status.configured, true)
+    assert.equal(status.revision, 1)
     const saved = JSON.parse(await readFile(path.join(options.dataRoot, 'workspace', 'settings', 'images.json'), 'utf8'))
     assert.equal(saved.installation.default_profile_id, METADATA.profileId)
     assert.equal(saved.installation.profiles[0].checkpoint_sha256, digest('reviewed checkpoint'))
