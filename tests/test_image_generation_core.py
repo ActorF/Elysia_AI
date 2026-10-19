@@ -266,6 +266,147 @@ def test_elysia_intent_anchors_only_the_fixed_fictional_adult_identity(appearanc
     assert "original fictional adult character" not in positive
 
 
+@pytest.mark.parametrize(
+    "scene",
+    [
+        "裸體的全身照，站在沙灘旁邊",
+        "full-body view on a beach",
+        "head to toe, facing the viewer",
+    ],
+)
+def test_elysia_full_body_requests_compile_explicit_illustrious_composition_cues(
+    scene: str,
+) -> None:
+    """Translate whole-body intent into tags that resist portrait-biased LoRAs."""
+
+    spec = _spec(
+        intent=ImageIntent.ELYSIA,
+        appearance="",
+        outfit="",
+        pose="",
+        scene=scene,
+        original_fictional_confirmed=False,
+        fictional_adult_confirmed=True,
+    )
+
+    prompts = compile_prompts(
+        spec,
+        _profile(dialect=PromptDialect.ILLUSTRIOUS_TAGS),
+    )
+
+    assert "full body, head-to-toe, entire body visible, feet visible, wide shot" in prompts.positive
+    assert scene in prompts.positive
+    assert "close-up, extreme close-up, portrait crop" in prompts.negative
+    assert "cropped legs, cropped feet, out of frame" in prompts.negative
+
+
+def test_elysia_portrait_request_does_not_force_a_full_body_composition() -> None:
+    """Keep conditional composition guidance from overriding a requested close-up."""
+
+    spec = _spec(
+        intent=ImageIntent.ELYSIA,
+        appearance="",
+        outfit="",
+        pose="",
+        scene="face close-up portrait",
+        original_fictional_confirmed=False,
+        fictional_adult_confirmed=True,
+    )
+
+    prompts = compile_prompts(
+        spec,
+        _profile(dialect=PromptDialect.ILLUSTRIOUS_TAGS),
+    )
+
+    assert "head-to-toe" not in prompts.positive
+    assert "portrait crop" not in prompts.negative
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"scene": "do not show full body, use a face close-up portrait"},
+        {"scene": "不要全身照，只要脸部特写"},
+        {"scene": "avoid a head-to-toe view, use a headshot"},
+        {"outfit": "full body tattoo", "scene": "face close-up portrait"},
+        {"scene": "full body tattoo, close-up portrait"},
+    ],
+)
+def test_elysia_full_body_cues_do_not_reverse_portrait_or_noncomposition_text(
+    changes: dict[str, str],
+) -> None:
+    """Ignore negated, conflicting, and outfit-only whole-body phrases."""
+
+    values: dict[str, object] = {
+        "intent": ImageIntent.ELYSIA,
+        "appearance": "",
+        "outfit": "",
+        "pose": "",
+        "scene": "",
+        "original_fictional_confirmed": False,
+        "fictional_adult_confirmed": True,
+    }
+    values.update(changes)
+    spec = _spec(**values)
+
+    prompts = compile_prompts(
+        spec,
+        _profile(dialect=PromptDialect.ILLUSTRIOUS_TAGS),
+    )
+
+    assert "head-to-toe, entire body visible" not in prompts.positive
+    assert "portrait crop" not in prompts.negative
+
+
+@pytest.mark.parametrize(
+    "dialect",
+    [PromptDialect.SDXL_NATURAL, PromptDialect.PONY_TAGS],
+)
+def test_elysia_full_body_cues_are_scoped_to_illustrious_profiles(
+    dialect: PromptDialect,
+) -> None:
+    """Avoid injecting model-specific tags into other prompt dialects."""
+
+    spec = _spec(
+        intent=ImageIntent.ELYSIA,
+        appearance="",
+        outfit="",
+        pose="",
+        scene="full body on a beach",
+        original_fictional_confirmed=False,
+        fictional_adult_confirmed=True,
+    )
+
+    prompts = compile_prompts(spec, _profile(dialect=dialect))
+
+    assert "head-to-toe, entire body visible" not in prompts.positive
+    assert "portrait crop" not in prompts.negative
+
+
+def test_elysia_adult_description_is_not_suppressed_by_system_negatives() -> None:
+    """Keep adult and ordinary descriptions on the same fixed Elysia workflow."""
+
+    spec = _spec(
+        intent=ImageIntent.ELYSIA,
+        appearance="",
+        outfit="completely nude, no clothes",
+        pose="standing, front view",
+        scene="full body on a beach",
+        original_fictional_confirmed=False,
+        fictional_adult_confirmed=True,
+    )
+
+    prompts = compile_prompts(
+        spec,
+        _profile(dialect=PromptDialect.ILLUSTRIOUS_TAGS),
+    )
+
+    assert "completely nude, no clothes" in prompts.positive
+    assert "nude" not in prompts.negative
+    assert "clothes" not in prompts.negative
+    assert "censor" not in prompts.negative
+
+
 @pytest.mark.parametrize("confirmation", [False, 1, "true", None])
 def test_elysia_intent_requires_literal_fictional_adult_confirmation(confirmation: object) -> None:
     """Keep the dedicated identity behind an explicit typed adult-fictional affirmation."""

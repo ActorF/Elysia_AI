@@ -237,12 +237,16 @@ text Chat depend on speech.
 
 ## Images
 
-`image.generate` accepts only Profile ID, size preset, seed, literal
-`originalFictionalConfirmed: true`, and eight bounded prompt components:
-`appearance`, `outfit`, `pose`, `scene`, `style`, `camera`, `lighting`,
-`negativePrompt`. Control characters, lone surrogates, and unknown fields
-(including `contentMode`, `adultMode`, `nsfw`, `protection`) are rejected.
-Callers cannot choose another intent, workflow, model path, or policy.
+`image.generate` accepts only Profile ID, size preset, seed, and eight bounded
+prompt components: `appearance`, `outfit`, `pose`, `scene`, `style`, `camera`,
+`lighting`, `negativePrompt`. The current product branch requires literal
+`characterId: "elysia"` plus `fictionalAdultConfirmed: true`; the compatible
+original-character branch instead requires `originalFictionalConfirmed: true`.
+Control characters, lone surrogates, and unknown fields (including
+`contentMode`, `adultMode`, `nsfw`, `protection`) are rejected. Explicit adult
+text inside a prompt component uses the same request path and is not filtered;
+minor, real-person, multiple-subject, unreviewed asset, workflow, and model-path
+requests remain outside the contract.
 
 Progress always uses `operation: "image.generate"`, `total: 100`, and fixed
 checkpoints: `validating/5`, `probing/15`, `submitting/25`, `sampling/35`,

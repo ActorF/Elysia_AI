@@ -47,7 +47,7 @@ Core 只接收 `is_managed_private_runtime is True` 且持有组合根私有 cap
 
 控制字符、surrogate 和超长文本在编译前拒绝；编译后的正负提示词各最多 6000 code points。LLM 若参与填写，输出仍必须先通过同一合同，不能直接控制节点、模型或路径。
 
-当前产品只提供明确成年的虚构爱莉希雅单人预设，编译器固定 Elysia、28 岁、粉色长发、紫色眼睛与单主体锚点。新桌面请求使用 `characterId: "elysia"` 和 `fictionalAdultConfirmed: true`，不提交 `originalFictionalConfirmed`；旧原创 DTO 保留兼容，两套确认字段不能混用。普通和成人描述共用结构化字段与工作流，没有内容模式开关。正向字段仍拒绝明显的未成年/年龄模糊、真人、其他已有角色和多主体矛盾；正负文本均禁止 `embedding:`，负面词不得否定必要身份、成年人或单主体边界。
+当前产品只提供明确成年的虚构爱莉希雅单人预设，编译器固定 Elysia、28 岁、粉色长发、紫色眼睛与单主体锚点。新桌面请求使用 `characterId: "elysia"` 和 `fictionalAdultConfirmed: true`，不提交 `originalFictionalConfirmed`；旧原创 DTO 保留兼容，两套确认字段不能混用。普通和成人描述共用结构化字段与工作流，没有内容模式开关。裸体或其他成人正向描述不会被过滤，系统负面词也不包含裸体、衣物或审查标签；用户若把这些词写入“负面词”，则会按其本意排除对应内容。正向字段仍拒绝明显的未成年/年龄模糊、真人、其他已有角色和多主体矛盾；正负文本均禁止 `embedding:`，负面词不得否定必要身份、成年人或单主体边界。
 
 这些 Unicode 规范化词法检查只是正常输入的早期提示，不是年龄/身份分类证明，也不保证抵抗刻意规避。第一版没有照片、身份 Adapter、已有角色锁定、编辑/换装、姿势参考或批量入口。后续能力需要独立文件授权与合同，不能把路径、Base64 或 Node JSON 塞入提示词。
 
@@ -57,7 +57,7 @@ Core 只接收 `is_managed_private_runtime is True` 且持有组合根私有 cap
 
 尺寸单边 512–2048、为 64 的倍数，总计最多 4,194,304 像素，`batch_size=1`。Profile Digest 覆盖上述配置；只保存模型显示名不足以重现条件。
 
-`image_generation/prompting.py` 按方言添加固定质量前缀和原创虚构成年人描述，再按稳定顺序连接字段。系统负面词不可删除；该模块不做自动扩写或随机提示词池。
+`image_generation/prompting.py` 按方言添加固定质量前缀和虚构成年人描述，再按稳定顺序连接字段。系统负面词不可删除；该模块不使用随机提示词池，也不翻译任意自然语言。Illustrious Profile 的 Elysia 画面描述、姿势或镜头明确出现“全身/全身照”、`full body` 或 `head-to-toe`，且没有否定或特写冲突时，会额外编译全身、双脚入镜和广角构图标签，并把特写与身体裁切加入负面词，以抵消角色 LoRA 的头像偏置；其他字段、方言和构图不受这项规则影响。
 
 `image_generation/workflow.py` 编译固定 `core-sdxl-txt2img`；未选择 LoRA 时仍使用原 v1 图：
 
