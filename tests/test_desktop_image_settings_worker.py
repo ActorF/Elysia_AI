@@ -226,3 +226,30 @@ def test_worker_cli_returns_one_path_free_status(tmp_path: Path) -> None:
     assert json.loads(process.stdout)["state"] == "unconfigured"
     assert process.stderr == b""
     assert len(process.stdout.splitlines()) == 1
+
+
+def test_worker_cli_inspects_a_native_checkpoint_without_exposing_its_source(tmp_path: Path) -> None:
+    """The private inspection operation has one bounded path-free response and no side effects."""
+
+    source = tmp_path / "selected_checkpoint.safetensors"
+    header = b'{"model.diffusion_model.fixture":{"dtype":"U8","shape":[1],"data_offsets":[0,1]}}'
+    content = len(header).to_bytes(8, "little") + header + b"a"
+    source.write_bytes(content)
+    root = tmp_path / "data"
+    request = {
+        "op": "assets.inspect", "kind": "checkpoint", "sourcePath": str(source),
+        "sha256": _digest(content), "targetProfileId": None,
+    }
+    script = Path(__file__).resolve().parents[1] / "desktop_image_settings_worker.py"
+    process = subprocess.run(
+        [sys.executable, str(script), "--data-root", str(root)],
+        input=(json.dumps(request) + "\n").encode("utf-8"), capture_output=True, timeout=120, check=False,
+    )
+    assert process.returncode == 0
+    result = json.loads(process.stdout)
+    assert result["kind"] == "image.asset.metadata"
+    assert result["metadata"]["displayName"] == "selected checkpoint"
+    assert str(tmp_path).encode() not in process.stdout
+    assert process.stderr == b""
+    assert len(process.stdout.splitlines()) == 1
+    assert not root.exists()

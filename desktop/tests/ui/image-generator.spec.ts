@@ -1,4 +1,4 @@
-/** @fileoverview Verify structured image generation, native Gallery actions, and readiness in the desktop UI. */
+/** @fileoverview Verify the compact Elysia studio, ordered LoRAs, Gallery ownership, and readiness. */
 
 import { createRequire } from 'node:module'
 import path from 'node:path'
@@ -28,13 +28,17 @@ function readySettings(): ImageSettingsSummary {
   return {
     configured: true, ready: true, state: 'ready', message: 'The trusted local image installation is ready.',
     revision: 1, defaultProfileId: 'reviewed-sdxl', profiles: [{
-      profileId: 'reviewed-sdxl', displayName: 'Reviewed SDXL', architecture: 'sdxl', promptDialect: 'sdxl-natural',
+      profileId: 'reviewed-sdxl', displayName: 'WAI Illustrious SDXL v8.0', architecture: 'sdxl', promptDialect: 'sdxl-natural',
       defaultSizePresetId: 'portrait', sizePresets: [
         { presetId: 'square', width: 1024, height: 1024 },
         { presetId: 'portrait', width: 832, height: 1216 },
       ],
       loras: [
-        { loraId: 'character-style', displayName: '角色 LoRA', available: true, message: 'LoRA 已就绪。', defaultStrengthModel: 1, defaultStrengthClip: 1 },
+        { loraId: 'hikari-elysia-il-v1', displayName: 'Hikari Elysia IL v1', available: true, message: 'LoRA 已就绪。', defaultStrengthModel: 1, defaultStrengthClip: 1 },
+        { loraId: 'starrail-style', displayName: 'Starrail 风格', available: true, message: 'LoRA 已就绪。', defaultStrengthModel: 1, defaultStrengthClip: 1 },
+        { loraId: 'extra-style-a', displayName: '风格 A', available: true, message: 'LoRA 已就绪。', defaultStrengthModel: 1, defaultStrengthClip: 1 },
+        { loraId: 'extra-style-b', displayName: '风格 B', available: true, message: 'LoRA 已就绪。', defaultStrengthModel: 1, defaultStrengthClip: 1 },
+        { loraId: 'extra-style-c', displayName: '风格 C', available: true, message: 'LoRA 已就绪。', defaultStrengthModel: 1, defaultStrengthClip: 1 },
         { loraId: 'missing-style', displayName: '待修复 LoRA', available: false, message: 'LoRA 文件缺失，请重新导入。', defaultStrengthModel: 1, defaultStrengthClip: 1 },
       ],
     }, {
@@ -65,20 +69,20 @@ async function openStudio(items: ImageArtifact[] = []): Promise<void> {
   }, { settings: readySettings(), gallery: items })
   await page.getByRole('button', { name: '图片生成', exact: true }).click()
   await expect(page.getByRole('region', { name: '图片生成器', exact: true })).toBeVisible()
-  await expect(page.getByLabel('图片模型', { exact: true })).toHaveValue('reviewed-sdxl')
+  await expect(page.getByRole('heading', { name: '爱莉希雅', exact: true })).toBeVisible()
+  await expect(page.getByLabel('图片尺寸', { exact: true })).toHaveValue('portrait')
 }
 
 async function describeCharacter(): Promise<void> {
-  await page.getByLabel('外观描述', { exact: true }).fill('成年女性，银色长发，紫色眼睛')
+  await page.getByLabel('画面描述', { exact: true }).fill('花园')
+  await page.getByText('更多参数', { exact: true }).click()
   await page.getByLabel('服装', { exact: true }).fill('白色长裙')
   await page.getByLabel('姿势', { exact: true }).fill('自然站姿')
-  await page.getByLabel('场景', { exact: true }).fill('花园')
   await page.getByLabel('风格', { exact: true }).fill('数字插画')
   await page.getByLabel('镜头', { exact: true }).fill('半身肖像')
   await page.getByLabel('光线', { exact: true }).fill('温暖逆光')
   await page.getByLabel('负面词', { exact: true }).fill('模糊')
   await page.getByLabel('Seed', { exact: true }).fill('42')
-  await page.getByRole('checkbox', { name: '我确认：这是单一原创虚构角色，明确年满 18 岁，不涉及真人。' }).check()
 }
 
 test.beforeEach(async () => {
@@ -93,27 +97,27 @@ test.beforeEach(async () => {
 
 test.afterEach(async () => { await application?.close(); application = undefined })
 
-test('requires one explicit subject confirmation and sends only the structured generation DTO', async () => {
+test('presents only Elysia and sends a fixed adult identity with the structured scene', async () => {
   expect(await page.evaluate(() => (window as TestWindow).elysiaDesktopTest.getCalls()
     .filter((call) => call.method === 'getImageSettings' || call.method === 'getImageGallery'))).toHaveLength(0)
   await openStudio()
   const generate = page.getByRole('button', { name: '生成图片', exact: true })
   await expect(generate).toBeDisabled()
   await describeCharacter()
-  await page.getByRole('checkbox').uncheck()
-  await expect(generate).toBeDisabled()
-  await page.getByRole('checkbox').check()
+  await expect(page.getByLabel('外观描述', { exact: true })).toHaveCount(0)
+  await expect(page.getByRole('checkbox', { name: /我确认/ })).toHaveCount(0)
   await page.evaluate(() => { (window as TestWindow).elysiaDesktopTest.setImageGenerationDelay(true) })
   await generate.click()
   await expect(page.getByRole('button', { name: '取消生成', exact: true })).toBeVisible()
   const params = await page.evaluate(() => (window as TestWindow).elysiaDesktopTest.getCalls()
     .find((call) => call.method === 'generateImage')?.args[0])
   expect(params).toEqual({
-    profileId: 'reviewed-sdxl', sizePresetId: 'portrait', appearance: '成年女性，银色长发，紫色眼睛',
+    profileId: 'reviewed-sdxl', sizePresetId: 'portrait', appearance: 'Elysia, adult fictional woman, age 28, pink hair, violet eyes',
     outfit: '白色长裙', pose: '自然站姿', scene: '花园', style: '数字插画', camera: '半身肖像',
-    lighting: '温暖逆光', negativePrompt: '模糊', seed: 42, originalFictionalConfirmed: true,
+    lighting: '温暖逆光', negativePrompt: '模糊', seed: 42, characterId: 'elysia', fictionalAdultConfirmed: true,
+    loras: [{ loraId: 'hikari-elysia-il-v1', strengthModel: 1, strengthClip: 1 }],
   })
-  await expect(page.getByLabel('外观描述', { exact: true })).toBeDisabled()
+  await expect(page.getByLabel('画面描述', { exact: true })).toBeDisabled()
   await page.evaluate(() => { (window as TestWindow).elysiaDesktopTest.completeImageGeneration() })
   await expect(generate).toBeEnabled()
   await expect(page.getByRole('status').filter({ hasText: '图片已生成并保存到画廊。' })).toBeVisible()
@@ -147,60 +151,59 @@ test('uses actual image stages, ignores unrelated progress, and cancels without 
     .filter((call) => call.method === 'generateImage'))).toHaveLength(1)
 })
 
-test('LoRA selection uses default strengths, accepts custom values, and freezes through busy navigation', async () => {
+test('character and style LoRAs retain their ordered strengths through busy navigation', async () => {
   await openStudio()
   await describeCharacter()
-  const adapter = page.getByLabel('图片 LoRA', { exact: true })
-  await expect(adapter).toHaveValue('')
-  await expect(page.getByLabel('LoRA 模型强度', { exact: true })).toHaveCount(0)
-  await adapter.selectOption('character-style')
-  await expect(page.getByLabel('LoRA 模型强度', { exact: true })).toHaveValue('1')
-  await expect(page.getByLabel('LoRA CLIP 强度', { exact: true })).toHaveValue('1')
-  await page.getByLabel('LoRA 模型强度', { exact: true }).fill('0.75')
-  await page.getByLabel('LoRA CLIP 强度', { exact: true }).fill('1.25')
+  const adapter = page.getByRole('checkbox', { name: 'Hikari Elysia IL v1', exact: true })
+  const style = page.getByRole('checkbox', { name: 'Starrail 风格', exact: true })
+  await expect(adapter).toBeChecked()
+  await style.check()
+  await page.getByLabel('Hikari Elysia IL v1 强度', { exact: true }).fill('0.75')
+  await page.getByLabel('Starrail 风格 强度', { exact: true }).fill('0.6')
   await page.evaluate(() => { (window as TestWindow).elysiaDesktopTest.setImageGenerationDelay(true) })
   await page.getByRole('button', { name: '生成图片', exact: true }).click()
   await expect(adapter).toBeDisabled()
-  await expect(page.getByLabel('LoRA 模型强度', { exact: true })).toBeDisabled()
+  await expect(page.getByLabel('Hikari Elysia IL v1 强度', { exact: true })).toBeDisabled()
   await page.getByRole('button', { name: 'Chat', exact: true }).click()
   await page.evaluate((summary) => {
     summary.profiles = summary.profiles.map((profile) => ({ ...profile, loras: [] }))
     ;(window as TestWindow).elysiaDesktopTest.setImageSettings(summary)
   }, readySettings())
   await page.getByRole('button', { name: '图片生成', exact: true }).click()
-  await expect(adapter).toHaveValue('character-style')
-  await expect(page.getByLabel('LoRA 模型强度', { exact: true })).toHaveValue('0.75')
-  await expect(page.getByLabel('LoRA CLIP 强度', { exact: true })).toHaveValue('1.25')
+  await expect(adapter).toBeChecked()
+  await expect(style).toBeChecked()
+  await expect(page.getByLabel('Hikari Elysia IL v1 强度', { exact: true })).toHaveValue('0.75')
+  await expect(page.getByLabel('Starrail 风格 强度', { exact: true })).toHaveValue('0.6')
   await expect(page.getByRole('button', { name: '取消生成', exact: true })).toBeVisible()
   const requests = await page.evaluate(() => (window as TestWindow).elysiaDesktopTest.getCalls()
     .filter((call) => call.method === 'generateImage'))
   expect(requests).toHaveLength(1)
-  expect(requests[0]?.args[0]).toMatchObject({ lora: { loraId: 'character-style', strengthModel: 0.75, strengthClip: 1.25 } })
+  expect(requests[0]?.args[0]).toMatchObject({ loras: [
+    { loraId: 'hikari-elysia-il-v1', strengthModel: 0.75, strengthClip: 0.75 },
+    { loraId: 'starrail-style', strengthModel: 0.6, strengthClip: 0.6 },
+  ] })
   await page.evaluate(() => { (window as TestWindow).elysiaDesktopTest.rejectImageGeneration('图片任务已停止。') })
   await expect(adapter).toBeEnabled()
   await page.getByRole('button', { name: '重新检查', exact: true }).click()
-  await expect(adapter).toHaveValue('')
+  await expect(adapter).toHaveCount(0)
 })
 
 test('switching LoRA off omits the field and invalid strengths prevent generation', async () => {
   await openStudio()
   await describeCharacter()
-  const adapter = page.getByLabel('图片 LoRA', { exact: true })
+  const adapter = page.getByRole('checkbox', { name: 'Hikari Elysia IL v1', exact: true })
   const generate = page.getByRole('button', { name: '生成图片', exact: true })
-  await adapter.selectOption('character-style')
-  const model = page.getByLabel('LoRA 模型强度', { exact: true })
-  const clip = page.getByLabel('LoRA CLIP 强度', { exact: true })
+  const model = page.getByLabel('Hikari Elysia IL v1 强度', { exact: true })
   for (const invalid of ['', '-0.01', '2.01']) {
     await model.fill(invalid)
     await expect(model).toHaveAttribute('aria-invalid', 'true')
     await expect(generate).toBeDisabled()
   }
   await model.fill('0')
-  await clip.fill('2')
   await expect(generate).toBeEnabled()
-  await clip.fill('')
+  await model.fill('')
   await expect(generate).toBeDisabled()
-  await adapter.selectOption('')
+  await adapter.uncheck()
   await expect(model).toHaveCount(0)
   await expect(generate).toBeEnabled()
   await page.evaluate(() => { (window as TestWindow).elysiaDesktopTest.setImageGenerationDelay(true) })
@@ -208,27 +211,67 @@ test('switching LoRA off omits the field and invalid strengths prevent generatio
   const params = await page.evaluate(() => (window as TestWindow).elysiaDesktopTest.getCalls()
     .find((call) => call.method === 'generateImage')?.args[0])
   expect(params).not.toHaveProperty('lora')
+  expect(params).not.toHaveProperty('loras')
   await page.evaluate(() => { (window as TestWindow).elysiaDesktopTest.rejectImageGeneration('图片任务已停止。') })
+})
+
+test('limits LoRAs to four and sends their activation order after removing the character adapter', async () => {
+  await openStudio()
+  await page.getByLabel('画面描述', { exact: true }).fill('黄昏花园中的爱莉希雅')
+  const character = page.getByRole('checkbox', { name: 'Hikari Elysia IL v1', exact: true })
+  const style = page.getByRole('checkbox', { name: 'Starrail 风格', exact: true })
+  const last = page.getByRole('checkbox', { name: '风格 C', exact: true })
+  await style.check()
+  await page.getByRole('checkbox', { name: '风格 A', exact: true }).check()
+  await page.getByRole('checkbox', { name: '风格 B', exact: true }).check()
+  await expect(last).toBeDisabled()
+  await character.uncheck()
+  await expect(last).toBeEnabled()
+  await last.check()
+  await expect(character).toBeDisabled()
+  await page.getByRole('button', { name: '生成图片', exact: true }).click()
+  const params = await page.evaluate(() => (window as TestWindow).elysiaDesktopTest.getCalls()
+    .find((call) => call.method === 'generateImage')?.args[0])
+  expect(params).toMatchObject({ loras: [
+    { loraId: 'starrail-style', strengthModel: 1, strengthClip: 1 },
+    { loraId: 'extra-style-a', strengthModel: 1, strengthClip: 1 },
+    { loraId: 'extra-style-b', strengthModel: 1, strengthClip: 1 },
+    { loraId: 'extra-style-c', strengthModel: 1, strengthClip: 1 },
+  ] })
+  expect(params).not.toHaveProperty('originalFictionalConfirmed')
+  expect(params).not.toHaveProperty('lora')
+})
+
+test('keeps default controls compact and allows the style LoRA on its own', async () => {
+  await openStudio()
+  await expect(page.getByLabel('服装', { exact: true })).toBeHidden()
+  await expect(page.getByLabel('Seed', { exact: true })).toBeHidden()
+  await page.getByLabel('画面描述', { exact: true }).fill('日光中的爱莉希雅')
+  await page.getByRole('checkbox', { name: 'Hikari Elysia IL v1', exact: true }).uncheck()
+  await page.getByRole('checkbox', { name: 'Starrail 风格', exact: true }).check()
+  await page.getByLabel('Starrail 风格 强度', { exact: true }).fill('0.65')
+  await page.getByRole('button', { name: '生成图片', exact: true }).click()
+  const params = await page.evaluate(() => (window as TestWindow).elysiaDesktopTest.getCalls()
+    .find((call) => call.method === 'generateImage')?.args[0])
+  expect(params).toMatchObject({ loras: [{ loraId: 'starrail-style', strengthModel: 0.65, strengthClip: 0.65 }] })
 })
 
 test('profile changes clear incompatible LoRA and missing adapters remain disabled without blocking the base model', async () => {
   await openStudio()
   await describeCharacter()
-  const adapter = page.getByLabel('图片 LoRA', { exact: true })
-  await expect(adapter.locator('option[value="missing-style"]')).toHaveAttribute('disabled', '')
-  await expect(page.getByLabel('LoRA 可用状态', { exact: true })).toContainText('LoRA 文件缺失，请重新导入。')
-  await adapter.selectOption('character-style')
-  await page.getByLabel('LoRA 模型强度', { exact: true }).fill('0.5')
+  const adapter = page.getByRole('checkbox', { name: 'Hikari Elysia IL v1', exact: true })
+  await expect(page.getByRole('checkbox', { name: '待修复 LoRA', exact: true })).toBeDisabled()
+  await expect(page.getByRole('region', { name: 'LoRA 选择', exact: true })).toContainText('LoRA 文件缺失，请重新导入。')
+  await page.getByLabel('Hikari Elysia IL v1 强度', { exact: true }).fill('0.5')
   await page.getByRole('button', { name: 'Chat', exact: true }).click()
   await page.getByRole('button', { name: '图片生成', exact: true }).click()
-  await expect(adapter).toHaveValue('character-style')
-  await expect(page.getByLabel('LoRA 模型强度', { exact: true })).toHaveValue('0.5')
+  await expect(adapter).toBeChecked()
+  await expect(page.getByLabel('Hikari Elysia IL v1 强度', { exact: true })).toHaveValue('0.5')
   await page.getByLabel('图片模型', { exact: true }).selectOption('other-sdxl')
-  await expect(adapter).toHaveValue('')
-  await expect(adapter.locator('option')).toHaveCount(1)
-  await expect(page.getByLabel('LoRA 模型强度', { exact: true })).toHaveCount(0)
+  await expect(adapter).toHaveCount(0)
+  await expect(page.getByRole('region', { name: 'LoRA 选择', exact: true }).getByRole('checkbox')).toHaveCount(0)
   await page.getByLabel('图片模型', { exact: true }).selectOption('reviewed-sdxl')
-  await expect(adapter).toHaveValue('')
+  await expect(adapter).not.toBeChecked()
   await expect(page.getByRole('button', { name: '生成图片', exact: true })).toBeEnabled()
 })
 
@@ -240,7 +283,7 @@ test('retains a running task across navigation and restores its cancel control',
   await page.getByRole('button', { name: 'Chat', exact: true }).click()
   await page.getByRole('button', { name: '图片生成', exact: true }).click()
   await expect(page.getByRole('button', { name: '取消生成', exact: true })).toBeVisible()
-  await expect(page.getByLabel('外观描述', { exact: true })).toHaveValue('成年女性，银色长发，紫色眼睛')
+  await expect(page.getByLabel('画面描述', { exact: true })).toHaveValue('花园')
   await page.evaluate(() => { (window as TestWindow).elysiaDesktopTest.rejectImageGeneration('Local GPU task failed.') })
   await expect(page.getByRole('alert').filter({ hasText: 'Local GPU task failed.' })).toBeVisible()
   await expect(page.getByRole('button', { name: '生成图片', exact: true })).toBeEnabled()
@@ -285,7 +328,7 @@ test('Gallery pagination stays bounded and missing models disable generation wit
   }, readySettings())
   await page.getByRole('button', { name: '重新检查', exact: true }).click()
   await expect(page.getByRole('region', { name: '图片运行环境', exact: true })).toContainText('缺少已配置的模型文件')
-  await expect(page.getByLabel('外观描述', { exact: true })).toBeDisabled()
+  await expect(page.getByLabel('画面描述', { exact: true })).toBeDisabled()
   await expect(page.getByRole('button', { name: '生成图片', exact: true })).toBeDisabled()
 })
 
@@ -303,7 +346,7 @@ test('rejects unsafe seed precision locally and keeps error text inert without a
   await expect(page.getByRole('alert').filter({ hasText: '<script>privateFailure()</script>' })).toBeVisible()
   await expect(page.getByRole('region', { name: '图片生成器', exact: true }).locator('script')).toHaveCount(0)
   await expect(generate).toBeEnabled()
-  await expect(page.getByLabel('外观描述', { exact: true })).toHaveValue('成年女性，银色长发，紫色眼睛')
+  await expect(page.getByLabel('画面描述', { exact: true })).toHaveValue('花园')
   expect(await page.evaluate(() => (window as TestWindow).elysiaDesktopTest.getCalls()
     .filter((call) => call.method === 'generateImage'))).toHaveLength(1)
 })

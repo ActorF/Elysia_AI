@@ -5735,6 +5735,65 @@ test('image generation preserves omission and accepts bounded complete LoRA sele
   }
 })
 
+test('image generation freezes ordered LoRA selections for both identity branches', () => {
+  for (const elysia of [false, true]) {
+    for (const count of [1, 2, 4]) {
+      const request = imageGenerateRequest()
+      if (elysia) {
+        delete request.params.originalFictionalConfirmed
+        request.params.characterId = 'elysia'
+        request.params.fictionalAdultConfirmed = true
+      }
+      request.params.loras = Array.from({ length: count }, (_, index) => ({
+        loraId: `lora_${count - index}`, strengthModel: 0.75, strengthClip: 1,
+      }))
+      const parsed = parseClientRequest(request).params
+      assert.deepEqual(parsed, request.params)
+      assert.equal(Object.isFrozen(parsed), true)
+      assert.equal(Object.isFrozen(parsed.loras), true)
+      for (const selection of parsed.loras) assert.equal(Object.isFrozen(selection), true)
+      request.params.loras[0].strengthModel = 0.25
+      assert.equal(parsed.loras[0].strengthModel, 0.75)
+    }
+  }
+})
+
+test('image generation rejects empty, duplicate, excessive, or mixed LoRA selections', () => {
+  const selection = { loraId: 'character_style', strengthModel: 1, strengthClip: 1 }
+  for (const loras of [
+    undefined, null, [], {}, 'character_style', [null],
+    [selection, { ...selection, strengthModel: 0.5 }],
+    Array.from({ length: 5 }, (_, index) => ({ ...selection, loraId: `lora_${index}` })),
+    [{ ...selection, strengthClip: NaN }], [{ ...selection, strengthModel: true }],
+    [{ ...selection, strengthModel: Infinity }], [{ ...selection, strengthClip: -0.01 }],
+    [{ ...selection, strengthClip: 2.01 }], [{ ...selection, path: 'private' }],
+  ]) {
+    const request = imageGenerateRequest()
+    request.params.loras = loras
+    assert.throws(() => parseClientRequest(request), ProtocolValidationError)
+  }
+  const mixed = imageGenerateRequest()
+  mixed.params.lora = selection
+  mixed.params.loras = [selection]
+  assert.throws(() => parseClientRequest(mixed), ProtocolValidationError)
+})
+
+test('image generation requires one literal reviewed identity confirmation', () => {
+  for (const identity of [
+    {}, { characterId: 'elysia' }, { fictionalAdultConfirmed: true },
+    { characterId: 'other', fictionalAdultConfirmed: true },
+    { characterId: 'elysia', fictionalAdultConfirmed: false },
+    { characterId: 'elysia', fictionalAdultConfirmed: 1 },
+    { characterId: 'elysia', fictionalAdultConfirmed: 'true' },
+    { characterId: 'elysia', fictionalAdultConfirmed: true, originalFictionalConfirmed: true },
+  ]) {
+    const request = imageGenerateRequest()
+    delete request.params.originalFictionalConfirmed
+    Object.assign(request.params, identity)
+    assert.throws(() => parseClientRequest(request), ProtocolValidationError)
+  }
+})
+
 test('image generation rejects incomplete or path-bearing LoRA selection', () => {
   for (const lora of [
     undefined, null, [], 'character_style', {},

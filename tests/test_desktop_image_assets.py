@@ -7,6 +7,7 @@ where a successful native contract is required; import file safety remains real.
 
 from __future__ import annotations
 
+from dataclasses import replace
 import hashlib
 import json
 import os
@@ -17,7 +18,7 @@ from typing import Literal, cast
 import pytest
 
 import desktop_image_assets as assets
-from desktop_image_assets import DesktopImageAssetImportError, copy_reviewed_image_asset
+from desktop_image_assets import DesktopImageAssetImportError, copy_reviewed_image_asset, inspect_image_asset
 from desktop_image_settings import DesktopImageSettingsStore
 from desktop_image_settings_worker import handle_request
 from image_generation.gallery import ImageGalleryStore
@@ -518,3 +519,297 @@ def test_unknown_reviewed_tensor_family_is_not_rejected_by_name(tmp_path: Path, 
     models = tmp_path / "models"
     key = copy_reviewed_image_asset(source, models, kind=kind, sha256=_digest(content))
     assert (models / kind / key).read_bytes() == content
+
+
+def test_asset_inspection_derives_path_free_metadata_without_installing(tmp_path: Path) -> None:
+    """A first checkpoint picker needs no provenance form or preexisting data root."""
+
+    source = tmp_path / "my_local_checkpoint.safetensors"
+    header = {
+        "__metadata__": {"modelspec.title": "Ignore publisher claim", "license": "Ignore forged license"},
+        "model.diffusion_model.fixture": {"dtype": "U8", "shape": [1], "data_offsets": [0, 1]},
+    }
+    encoded = json.dumps(header).encode("utf-8")
+    source.write_bytes(len(encoded).to_bytes(8, "little") + encoded + b"a")
+    digest = _digest(source.read_bytes())
+    root = tmp_path / "unconfigured-data"
+    response = handle_request({
+        "op": "assets.inspect", "kind": "checkpoint", "sourcePath": str(source),
+        "sha256": digest, "targetProfileId": None,
+    }, root)
+    assert response["kind"] == "image.asset.metadata"
+    metadata = cast(dict[str, object], response["metadata"])
+    assert metadata == {
+        "profileId": f"model-{digest[:16]}", "displayName": "my local checkpoint",
+        "promptDialect": "sdxl-natural", "defaultSizePresetId": "square",
+        "checkpointSource": "Local user-selected safetensors; publisher identity not verified.",
+        "checkpointLicense": "Publisher usage terms are unknown. Confirm usage rights before use or redistribution.",
+    }
+    assert str(tmp_path) not in json.dumps(response)
+    assert "Ignore" not in json.dumps(response)
+    assert source.exists()
+    assert not root.exists()
+
+
+def test_lora_inspection_binds_existing_profile_without_mutating_catalog(tmp_path: Path) -> None:
+    """The native picker cannot derive an option for an unknown model target."""
+
+    request = _request(tmp_path)
+    root = tmp_path / "data"
+    handle_request(request, root)
+    before = _saved(root).read_bytes()
+    source = tmp_path / "my_style.safetensors"
+    source.write_bytes(_safetensors(b"reviewed factors"))
+    digest = _digest(source.read_bytes())
+    inspection: dict[str, object] = {
+        "op": "assets.inspect", "kind": "lora", "sourcePath": str(source),
+        "sha256": digest, "targetProfileId": "reviewed-sdxl",
+    }
+    result = handle_request(inspection, root)
+    metadata = cast(dict[str, object], result["metadata"])
+    assert metadata["loraId"] == f"lora-{digest[:16]}"
+    assert metadata["displayName"] == "my style"
+    assert metadata["targetProfileId"] == "reviewed-sdxl"
+    assert _saved(root).read_bytes() == before
+    assert not (tmp_path / "models" / "loras").exists()
+    for target in ("unknown", "../models", None, True):
+        inspection["targetProfileId"] = target
+        with pytest.raises(Exception):
+            handle_request(inspection, root)
+        assert _saved(root).read_bytes() == before
+
+
+@pytest.mark.parametrize("digest,kind,logical_id,name,author", [
+    ("63e5c28bf8ae348136c9f9cdbfde14d8a4a5daa13306e09a7752104b2fae2006", "checkpoint", "wai-illustrious-v80", "WAI Illustrious SDXL v8.0", "WAI0731"),
+    ("06ba4cd1cfb9b2e9ce181299f2546fc1db4cb64bab8a3c8ceb0aa108075a9e18", "lora", "hikari-elysia-il-v1", "Hikari Elysia IL v1", "hi_ka_ri"),
+    ("0b1876635cfc93bbab11731a224472a5316b05cc4dd3213370a868d0e944c18b", "lora", "honkai-starrail-style-v1", "Honkai Star Rail Style v1", "FlyingOyster"),
+])
+def test_only_exact_known_hashes_receive_reviewed_publisher_metadata(
+    tmp_path: Path, digest: str, kind: Literal["checkpoint", "lora"], logical_id: str, name: str, author: str,
+) -> None:
+    """A familiar filename cannot impersonate a reviewed publisher or grant its terms."""
+
+    source = tmp_path / "waiIllustriousSDXL_v80.safetensors"
+    metadata = assets._asset_metadata(source, digest, kind=kind, target_profile_id=None if kind == "checkpoint" else "reviewed-sdxl")
+    assert metadata["profileId" if kind == "checkpoint" else "loraId"] == logical_id
+    assert metadata["displayName"] == name
+    assert author in cast(str, metadata["checkpointSource" if kind == "checkpoint" else "source"])
+    unknown = assets._asset_metadata(source, "1" * 64, kind=kind, target_profile_id=None if kind == "checkpoint" else "reviewed-sdxl")
+    assert "not verified" in cast(str, unknown["checkpointSource" if kind == "checkpoint" else "source"])
+    assert "unknown" in cast(str, unknown["checkpointLicense" if kind == "checkpoint" else "license"])
+    with pytest.raises(DesktopImageAssetImportError):
+        assets._asset_metadata(source, digest, kind="lora" if kind == "checkpoint" else "checkpoint", target_profile_id=None)
+
+
+@pytest.mark.parametrize("fault", ["hash", "hardlink", "wrong-kind", "suffix", "target", "extra", "missing-target", "unknown-kind", "oversized-header"])
+def test_inspection_rejects_unsafe_sources_and_dto_extensions(tmp_path: Path, fault: str) -> None:
+    """Inspection preserves the same hash, role, link, and bounded-header boundary as import."""
+
+    source = tmp_path / "picked.safetensors"
+    source.write_bytes(_safetensors(b"reviewed checkpoint", checkpoint=fault != "wrong-kind"))
+    request: dict[str, object] = {
+        "op": "assets.inspect", "kind": "checkpoint", "sourcePath": str(source),
+        "sha256": _digest(source.read_bytes()), "targetProfileId": None,
+    }
+    if fault == "hash":
+        request["sha256"] = "0" * 64
+    elif fault == "hardlink":
+        os.link(source, tmp_path / "foreign alias")
+    elif fault == "suffix":
+        request["sourcePath"] = str(source.rename(source.with_suffix(".bin")))
+    elif fault == "target":
+        request["targetProfileId"] = "reviewed-sdxl"
+    elif fault == "extra":
+        request["metadata"] = {"license": "Forged"}
+    elif fault == "missing-target":
+        request.pop("targetProfileId")
+    elif fault == "unknown-kind":
+        request["kind"] = "workflow"
+    elif fault == "oversized-header":
+        source.write_bytes((16 * 1024 * 1024 + 1).to_bytes(8, "little") + b"{}")
+        request["sha256"] = _digest(source.read_bytes())
+    root = tmp_path / "data"
+    with pytest.raises(Exception):
+        handle_request(request, root)
+    assert not root.exists()
+
+
+def test_derived_display_name_removes_path_syntax_and_caps_utf16(tmp_path: Path) -> None:
+    """Untrusted labels remain display-only across Windows and JavaScript parsing."""
+
+    source = tmp_path / ("prefix:forged_\u202efilename_" + "\U0001f338" * 100 + ".safetensors")
+    label = assets._asset_display_name(source, kind="lora")
+    assert not any(character in label for character in "\\/:\u202e")
+    assert len(label.encode("utf-16-le")) <= 160
+    assert label.startswith("prefix forged filename")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Actual Win32 source guard inspection contract.")
+def test_native_inspection_holds_source_guard_until_metadata_is_derived(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Native metadata review cannot race a source write after its reviewed digest."""
+
+    source = tmp_path / "picked.safetensors"
+    source.write_bytes(_safetensors(b"reviewed factors"))
+    original = assets._review_header
+
+    def _review_while_guarded(path: Path, size: int, *, kind: Literal["checkpoints", "loras"]) -> None:
+        with pytest.raises(PermissionError):
+            source.write_bytes(b"changed")
+        original(path, size, kind=kind)
+
+    monkeypatch.setattr(assets, "_review_header", _review_while_guarded)
+    result = inspect_image_asset(source, kind="lora", sha256=_digest(source.read_bytes()), target_profile_id="reviewed-sdxl")
+    assert result["displayName"] == "picked"
+
+
+def _restoration(root: Path, kind: Literal["checkpoint", "lora"]) -> tuple[dict[str, object], Path, Path]:
+    request, data_root = _import(root)
+    handle_request(request, data_root)
+    installation = DesktopImageSettingsStore(data_root).load()
+    assert installation is not None
+    profile = installation.profiles.get("imported-illustrious")
+    destination = installation.models_root / ("checkpoints" if kind == "checkpoint" else "loras") / (
+        profile.checkpoint_name if kind == "checkpoint" else profile.loras[0].lora_name
+    )
+    request["expectedRevision"] = 2
+    request["lora" if kind == "checkpoint" else "checkpoint"] = None
+    return request, data_root, destination
+
+
+@pytest.mark.parametrize("kind", ["checkpoint", "lora"])
+def test_duplicate_id_restores_only_missing_exact_asset_and_preserves_catalog(
+    tmp_path: Path, kind: Literal["checkpoint", "lora"], supported_image_preflight: None,
+) -> None:
+    """Restoring exact missing bytes preserves trusted metadata, options, presets, and defaults."""
+
+    request, root, destination = _restoration(tmp_path, kind)
+    before = json.loads(_saved(root).read_bytes())["installation"]
+    source = cast(dict[str, object], request[kind])
+    original = Path(cast(str, source["sourcePath"]))
+    original_bytes = original.read_bytes()
+    destination.unlink()
+    if kind == "checkpoint":
+        cast(dict[str, object], source["metadata"]).update(
+            displayName="Replacement form label", checkpointSource="Different untrusted source",
+            checkpointLicense="Different untrusted terms", promptDialect="sdxl-natural", defaultSizePresetId="landscape",
+        )
+    else:
+        source.update(displayName="Replacement form label", source="Different untrusted source", license="Different untrusted terms")
+    result = handle_request(request, root)
+    after = json.loads(_saved(root).read_bytes())
+    assert result["revision"] == 3
+    assert result["ready"] is True
+    assert after["installation"] == before
+    assert destination.read_bytes() == original_bytes == original.read_bytes()
+    assert destination.stat().st_ino != original.stat().st_ino
+    assert not list(destination.parent.glob(".image-import-*.tmp"))
+
+
+@pytest.mark.parametrize("kind", ["checkpoint", "lora"])
+def test_restoration_refuses_same_id_for_different_bytes_before_any_copy(
+    tmp_path: Path, kind: Literal["checkpoint", "lora"], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A missing asset does not authorize repointing its configured ID at another digest."""
+
+    request, root, destination = _restoration(tmp_path, kind)
+    before = _saved(root).read_bytes()
+    destination.unlink()
+    source = cast(dict[str, object], request[kind])
+    changed = tmp_path / "different.safetensors"
+    changed.write_bytes(_safetensors(b"different reviewed bytes", checkpoint=kind == "checkpoint"))
+    source.update(sourcePath=str(changed), sha256=_digest(changed.read_bytes()))
+
+    def _unexpected_copy(*args: object, **kwargs: object) -> str:
+        raise AssertionError("Conflicting declarations must fail before copying.")
+
+    monkeypatch.setattr(assets, "copy_reviewed_image_asset", _unexpected_copy)
+    with pytest.raises(DesktopImageAssetImportError):
+        handle_request(request, root)
+    assert _saved(root).read_bytes() == before
+    assert not destination.exists()
+
+
+@pytest.mark.parametrize("kind", ["checkpoint", "lora"])
+def test_restoration_requires_the_existing_digest_key_without_renaming_legacy_assets(
+    tmp_path: Path, kind: Literal["checkpoint", "lora"], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Equal bytes cannot silently migrate a declaration from another configured filename."""
+
+    request, root, destination = _restoration(tmp_path, kind)
+    destination.unlink()
+    document = json.loads(_saved(root).read_bytes())
+    profile = document["installation"]["profiles"][1]
+    declaration = profile if kind == "checkpoint" else profile["loras"][0]
+    declaration["checkpoint_name" if kind == "checkpoint" else "lora_name"] = "legacy-reviewed.safetensors"
+    _saved(root).write_text(json.dumps(document), encoding="utf-8")
+    before = _saved(root).read_bytes()
+
+    def _unexpected_copy(*args: object, **kwargs: object) -> str:
+        raise AssertionError("A filename migration requires separate reviewed configuration.")
+
+    monkeypatch.setattr(assets, "copy_reviewed_image_asset", _unexpected_copy)
+    with pytest.raises(DesktopImageAssetImportError):
+        handle_request(request, root)
+    assert _saved(root).read_bytes() == before
+    assert not destination.exists()
+
+
+@pytest.mark.parametrize("kind", ["checkpoint", "lora"])
+@pytest.mark.parametrize("state", ["valid", "changed", "hardlink", "directory"])
+def test_restoration_never_overwrites_any_existing_destination(
+    tmp_path: Path, kind: Literal["checkpoint", "lora"], state: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Duplicate IDs cannot replace valid, corrupted, aliased, or non-file destinations."""
+
+    request, root, destination = _restoration(tmp_path, kind)
+    before = _saved(root).read_bytes()
+    if state == "changed":
+        destination.write_bytes(b"preserve these unexpected bytes")
+    elif state == "hardlink":
+        os.link(destination, tmp_path / "foreign destination alias")
+    elif state == "directory":
+        destination.unlink()
+        destination.mkdir()
+    content = None if state == "directory" else destination.read_bytes()
+    identity = destination.stat().st_ino
+
+    def _unexpected_copy(*args: object, **kwargs: object) -> str:
+        raise AssertionError("Existing destinations must fail before copying.")
+
+    monkeypatch.setattr(assets, "copy_reviewed_image_asset", _unexpected_copy)
+    with pytest.raises(DesktopImageAssetImportError):
+        handle_request(request, root)
+    assert _saved(root).read_bytes() == before
+    assert destination.stat().st_ino == identity
+    assert (None if state == "directory" else destination.read_bytes()) == content
+
+
+@pytest.mark.parametrize("kind", ["checkpoint", "lora"])
+def test_restoration_cas_conflict_retains_repaired_bytes_and_preserves_newer_catalog(
+    tmp_path: Path, kind: Literal["checkpoint", "lora"], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A long restoration cannot revert a concurrent default selection or delete adopted bytes."""
+
+    request, root, destination = _restoration(tmp_path, kind)
+    destination.unlink()
+    store = DesktopImageSettingsStore(root)
+    previous = store.load()
+    assert previous is not None
+    original_copy = assets.copy_reviewed_image_asset
+    newer: list[bytes] = []
+
+    def _copy_then_save(source: Path, models: Path, *, kind: Literal["checkpoints", "loras"], sha256: str) -> str:
+        result = original_copy(source, models, kind=kind, sha256=sha256)
+        store.save(replace(previous, default_profile_id="imported-illustrious"), trusted_confirmation=True, expected_revision=2)
+        newer.append(_saved(root).read_bytes())
+        return result
+
+    monkeypatch.setattr(assets, "copy_reviewed_image_asset", _copy_then_save)
+    with pytest.raises(DesktopImageAssetImportError):
+        handle_request(request, root)
+    assert _saved(root).read_bytes() == newer[0]
+    assert destination.exists()
+    loaded = store.load()
+    assert loaded is not None
+    assert loaded.default_profile_id == "imported-illustrious"
+    assert store.load_snapshot()[0] == 3

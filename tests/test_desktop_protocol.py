@@ -527,6 +527,84 @@ def test_image_generation_omission_preserves_legacy_request_shape() -> None:
     assert parse_client_request(deepcopy(request)) == request
 
 
+@pytest.mark.parametrize("count", [1, 2, 4])
+@pytest.mark.parametrize("elysia", [False, True])
+def test_image_generation_preserves_ordered_loras_and_identity(count: int, elysia: bool) -> None:
+    """Keep the chosen graph order and accept either exclusive identity branch."""
+
+    request = _image_generate_request()
+    params = cast(JsonObject, request["params"])
+    if elysia:
+        del params["originalFictionalConfirmed"]
+        params.update(characterId="elysia", fictionalAdultConfirmed=True)
+    params["loras"] = [
+        {"loraId": f"lora_{count - index}", "strengthModel": 0.75, "strengthClip": 1}
+        for index in range(count)
+    ]
+    assert parse_client_request(deepcopy(request)) == request
+    schema = cast(JsonObject, json.loads(SCHEMA_PATH.read_text("utf-8")))
+    Draft202012Validator(schema).validate(request)
+
+
+@pytest.mark.parametrize("selections", [
+    None, [], {}, "character_style",
+    [{"loraId": f"lora_{index}", "strengthModel": 1, "strengthClip": 1} for index in range(5)],
+    [{"loraId": "character_style", "strengthModel": 1}],
+    [{"loraId": "character_style", "strengthModel": True, "strengthClip": 1}],
+    [{"loraId": "character_style", "strengthModel": 1, "strengthClip": 3}],
+    [{"loraId": "../private", "strengthModel": 1, "strengthClip": 1}],
+])
+def test_image_generation_rejects_invalid_lora_lists(selections: object) -> None:
+    """Reject ambiguous, unbounded, or malformed combinations before model lookup."""
+
+    request = _image_generate_request()
+    cast(JsonObject, request["params"])["loras"] = selections
+    with pytest.raises(ProtocolValidationError):
+        parse_client_request(deepcopy(request))
+    schema = cast(JsonObject, json.loads(SCHEMA_PATH.read_text("utf-8")))
+    assert not Draft202012Validator(schema).is_valid(request)
+
+
+def test_image_generation_rejects_repeated_lora_id_and_both_selection_shapes() -> None:
+    """ID uniqueness prevents applying one asset twice with disguised strengths."""
+
+    request = _image_generate_request()
+    params = cast(JsonObject, request["params"])
+    params["loras"] = [
+        {"loraId": "character_style", "strengthModel": 1, "strengthClip": 1},
+        {"loraId": "character_style", "strengthModel": 0.5, "strengthClip": 0.5},
+    ]
+    with pytest.raises(ProtocolValidationError, match="duplicate"):
+        parse_client_request(deepcopy(request))
+    params["loras"] = [cast(list[JsonObject], params["loras"])[0]]
+    params["lora"] = cast(list[JsonObject], params["loras"])[0]
+    with pytest.raises(ProtocolValidationError, match="cannot combine"):
+        parse_client_request(deepcopy(request))
+    schema = cast(JsonObject, json.loads(SCHEMA_PATH.read_text("utf-8")))
+    assert not Draft202012Validator(schema).is_valid(request)
+
+
+@pytest.mark.parametrize("identity", [
+    {}, {"characterId": "elysia"}, {"fictionalAdultConfirmed": True},
+    {"characterId": "other", "fictionalAdultConfirmed": True},
+    {"characterId": "elysia", "fictionalAdultConfirmed": False},
+    {"characterId": "elysia", "fictionalAdultConfirmed": 1},
+    {"characterId": "elysia", "fictionalAdultConfirmed": "true"},
+    {"characterId": "elysia", "fictionalAdultConfirmed": True, "originalFictionalConfirmed": True},
+])
+def test_image_generation_requires_one_exact_identity_confirmation(identity: JsonObject) -> None:
+    """Prevent partial, mixed, or arbitrary identities from becoming an Elysia intent."""
+
+    request = _image_generate_request()
+    params = cast(JsonObject, request["params"])
+    del params["originalFictionalConfirmed"]
+    params.update(identity)
+    with pytest.raises(ProtocolValidationError):
+        parse_client_request(deepcopy(request))
+    schema = cast(JsonObject, json.loads(SCHEMA_PATH.read_text("utf-8")))
+    assert not Draft202012Validator(schema).is_valid(request)
+
+
 @pytest.mark.parametrize("selection", [
     None, [], "character_style", {},
     {"loraId": "character_style", "strengthModel": 1},

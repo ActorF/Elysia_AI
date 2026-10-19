@@ -25,10 +25,15 @@ export interface ImageLoraMetadata {
   readonly license: string
 }
 
-/** Choose the asset kind while Main owns native selection, hashing, and consent. */
-export type ImageAssetImportParams =
+/** Retain explicit metadata imports for reviewed callers and native confirmation. */
+export type ReviewedImageAssetImportParams =
   | { readonly kind: 'checkpoint'; readonly metadata: ImageProfileMetadata }
   | { readonly kind: 'lora'; readonly metadata: ImageLoraMetadata }
+
+/** Select a file without forms; Main derives metadata and retains native review. */
+export type ImageAssetImportParams = ReviewedImageAssetImportParams
+  | { readonly kind: 'checkpoint' }
+  | { readonly kind: 'lora'; readonly targetProfileId: string }
 
 /** Report adapter availability independently of the underlying checkpoint. */
 export interface ImageLoraSummary {

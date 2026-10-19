@@ -87,8 +87,11 @@ class ComfyUiClient(Protocol):
     def managed_runtime_capability(self) -> object:
         """Return the supervisor-issued in-process admission capability."""
 
-    def ensure_ready(self, profile: ModelProfile, *, lora: ModelLoraProfile | None = None) -> None:
-        """Verify the checkpoint and optional exact reviewed LoRA before submission."""
+    def ensure_ready(
+        self, profile: ModelProfile, *, lora: ModelLoraProfile | None = None,
+        loras: tuple[ModelLoraProfile, ...] = (),
+    ) -> None:
+        """Verify the checkpoint and every selected reviewed LoRA before submission."""
 
     def prepare(self, workflow: CompiledWorkflow) -> ComfyPromptHandle:
         """Mint the correlated handle before submission can create native work."""
@@ -243,10 +246,13 @@ class ImageGenerationCore:
             )
 
         self._notify(on_progress, ImageGenerationStage.PROBING, 15)
-        if spec.lora is None:
+        selected_loras = tuple(profile.lora(selection.lora_id) for selection in spec.selected_loras)
+        if not selected_loras:
             self._client.ensure_ready(profile)
+        elif len(selected_loras) == 1:
+            self._client.ensure_ready(profile, lora=selected_loras[0])
         else:
-            self._client.ensure_ready(profile, lora=profile.lora(spec.lora.lora_id))
+            self._client.ensure_ready(profile, loras=selected_loras)
         if self._cancelled(cancel_requested):
             raise ImageGenerationCancelledError(
                 "Local image generation was cancelled."

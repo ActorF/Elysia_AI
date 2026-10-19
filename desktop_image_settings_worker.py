@@ -1,9 +1,10 @@
 """Bridge one private Main-owned image installation request to trusted settings.
 
 The worker accepts a bounded single NDJSON request on stdin and writes one
-path-free status on stdout. It never launches ComfyUI, downloads dependencies,
-or accepts a generation workflow. Paths and reviewed digests arrive only from
-Electron Main's native picker and explicit installation confirmation.
+path-free status or derived metadata response on stdout. It never launches
+ComfyUI, downloads dependencies, or accepts a generation workflow. Native-picked
+sources and digests arrive only from Electron Main. Read-only inspection needs
+no installation form; writing the catalog requires separate native confirmation.
 """
 
 from __future__ import annotations
@@ -13,10 +14,10 @@ import json
 import os
 from pathlib import Path
 import sys
-from typing import NoReturn, Sequence, cast
+from typing import Literal, NoReturn, Sequence, cast
 
 from desktop_image_settings import DesktopImageSettingsStore, TrustedImageInstallation
-from desktop_image_assets import ImageCheckpointImport, ImageLoraImport, import_image_assets
+from desktop_image_assets import ImageCheckpointImport, ImageLoraImport, import_image_assets, inspect_image_asset
 from desktop_image_recovery import preview_image_recovery, quarantine_image_recovery
 from image_generation.profiles import (
     ImageSizePreset, ModelArchitecture, ModelLoraProfile, ModelProfile, ModelProfileCatalog, PromptDialect,
@@ -157,6 +158,29 @@ def _asset_import(raw: dict[str, object], data_root: Path) -> dict[str, object]:
     ).to_public_dict()
 
 
+def _asset_inspect(raw: dict[str, object], data_root: Path) -> dict[str, object]:
+    """Resolve Main-picked metadata without creating settings or runtime state."""
+
+    _fields(raw, frozenset({"op", "kind", "sourcePath", "sha256", "targetProfileId"}))
+    kind = raw["kind"]
+    if kind not in ("checkpoint", "lora"):
+        raise ValueError("Image asset kind is unsupported.")
+    target = raw["targetProfileId"]
+    if kind == "lora":
+        target = _text(target)
+        installation = DesktopImageSettingsStore(data_root).load()
+        if installation is None:
+            raise ValueError("A LoRA requires an existing model profile.")
+        installation.profiles.get(target)
+    elif target is not None:
+        raise ValueError("Checkpoint inspection cannot target another profile.")
+    metadata = inspect_image_asset(
+        _path(raw["sourcePath"]), kind=cast(Literal["checkpoint", "lora"], kind),
+        sha256=_digest(raw["sha256"]), target_profile_id=cast(str | None, target),
+    )
+    return {"kind": "image.asset.metadata", "metadata": metadata}
+
+
 def handle_request(request: object, data_root: Path) -> dict[str, object]:
     """Apply one closed private request and return the store's path-free status.
 
@@ -185,6 +209,8 @@ def handle_request(request: object, data_root: Path) -> dict[str, object]:
         return {"kind": "image.recovery.result", "quarantinedCount": count, "status": store.status().to_public_dict()}
     if raw.get("op") == "assets.import":
         return _asset_import(raw, data_root)
+    if raw.get("op") == "assets.inspect":
+        return _asset_inspect(raw, data_root)
     if raw.get("op") != "configure":
         raise ValueError("Image settings operation is unsupported.")
     expected_fields = frozenset({"op", "installation", "expectedRevision", "trustedConfirmation"})

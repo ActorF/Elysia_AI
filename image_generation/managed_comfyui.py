@@ -46,6 +46,7 @@ from .comfyui import (
     ComfyPromptHandle,
     ComfyUiConfig,
     HttpComfyUiClient,
+    _normalize_profile_loras,
 )
 from .exceptions import (
     ImageGenerationProtocolError,
@@ -98,7 +99,10 @@ class _FileGuard(Protocol):
 class _RawClient(Protocol):
     """Describe the reviewed raw ComfyUI adapter behind the supervisor."""
 
-    def ensure_ready(self, profile: ModelProfile, *, lora: ModelLoraProfile | None = None) -> None:
+    def ensure_ready(
+        self, profile: ModelProfile, *, lora: ModelLoraProfile | None = None,
+        loras: tuple[ModelLoraProfile, ...] = (),
+    ) -> None:
         """Probe required built-in nodes and selected checkpoint/LoRA keys."""
 
     def probe_ready(self) -> None:
@@ -283,7 +287,7 @@ class _Preflight:
 
     profile: ModelProfile
     declarations: tuple[GuardedFileDeclaration, ...]
-    lora: ModelLoraProfile | None = None
+    loras: tuple[ModelLoraProfile, ...] = ()
 
 
 @dataclass(slots=True)
@@ -653,7 +657,10 @@ class ManagedComfyUiRuntime:
 
         return _MANAGED_RUNTIME_CAPABILITY
 
-    def ensure_ready(self, profile: ModelProfile, *, lora: ModelLoraProfile | None = None) -> None:
+    def ensure_ready(
+        self, profile: ModelProfile, *, lora: ModelLoraProfile | None = None,
+        loras: tuple[ModelLoraProfile, ...] = (),
+    ) -> None:
         """Verify trusted files without allocating runtime resources.
 
         The core checks cancellation immediately after this call without a
@@ -674,10 +681,7 @@ class ManagedComfyUiRuntime:
             self._preflight = None
             self._state = "checking"
         try:
-            if lora is not None and (
-                type(lora) is not ModelLoraProfile or profile.lora(lora.lora_id) is not lora
-            ):
-                raise ImageGenerationUnavailableError(_UNAVAILABLE_MESSAGE)
+            selected_loras = _normalize_profile_loras(profile, lora, loras)
             if self._dependencies.platform_name != "nt":
                 raise ImageGenerationUnavailableError(_UNAVAILABLE_MESSAGE)
             for path in (
@@ -738,18 +742,19 @@ class ManagedComfyUiRuntime:
                     checkpoint_digest,
                 ),
             )
-            if lora is not None:
+            if selected_loras:
                 # Optional assets are checked only when selected.  A missing
                 # LoRA cannot disable checkpoint-only generation, but selected
                 # bytes require the same full-lifetime native guard as it.
                 loras_root = self._config.models_root / "loras"
                 _require_safe_existing_path(loras_root, directory=True)
                 self._dependencies.path_volume_verifier(loras_root)
-                lora_path = loras_root.joinpath(*lora.lora_name.replace("\\", "/").split("/"))
-                lora_size, lora_digest = _hash_stable_file(lora_path)
-                if lora_digest != lora.lora_sha256:
-                    raise ImageGenerationUnavailableError(_UNAVAILABLE_MESSAGE)
-                declarations += (GuardedFileDeclaration(lora_path, lora_size, lora_digest),)
+                for asset in selected_loras:
+                    lora_path = loras_root.joinpath(*asset.lora_name.replace("\\", "/").split("/"))
+                    lora_size, lora_digest = _hash_stable_file(lora_path)
+                    if lora_digest != asset.lora_sha256:
+                        raise ImageGenerationUnavailableError(_UNAVAILABLE_MESSAGE)
+                    declarations += (GuardedFileDeclaration(lora_path, lora_size, lora_digest),)
         except ImageGenerationUnavailableError:
             with self._lock:
                 if self._state == "checking":
@@ -763,14 +768,14 @@ class ManagedComfyUiRuntime:
         with self._lock:
             if self._state != "checking":
                 raise ImageGenerationUnavailableError(_UNAVAILABLE_MESSAGE)
-            self._preflight = _Preflight(profile, declarations, lora)
+            self._preflight = _Preflight(profile, declarations, selected_loras)
             self._state = "preflighted"
 
     def _stable_launch_paths(
         self,
         guard: _FileGuard,
         profile: ModelProfile,
-        lora: ModelLoraProfile | None = None,
+        loras: tuple[ModelLoraProfile, ...] = (),
     ) -> tuple[Path, Path, Path]:
         """Derive interpreter, entry-point, and model roots from guarded handles.
 
@@ -786,7 +791,7 @@ class ManagedComfyUiRuntime:
             raise ImageGenerationUnavailableError(_UNAVAILABLE_MESSAGE) from error
         if (
             type(values) is not tuple
-            or len(values) != (3 if lora is None else 4)
+            or len(values) != 3 + len(loras)
             or any(type(value) is not str or not value for value in values)
         ):
             raise ImageGenerationUnavailableError(_UNAVAILABLE_MESSAGE)
@@ -809,14 +814,14 @@ class ManagedComfyUiRuntime:
         models_root = checkpoint_path
         for _part in checkpoint_suffix:
             models_root = models_root.parent
-        if lora is not None:
+        for index, lora in enumerate(loras):
             # Use the checkpoint's guarded volume root for both asset kinds.
             # A LoRA guard on another volume/root must never be substituted by
             # a similarly named file exposed by ComfyUI's model directory.
             expected_lora = (models_root / "loras").joinpath(
                 *lora.lora_name.replace("\\", "/").split("/"),
             )
-            if Path(values[3]) != expected_lora:
+            if Path(values[3 + index]) != expected_lora:
                 raise ImageGenerationUnavailableError(_UNAVAILABLE_MESSAGE)
         return python_path, main_path, models_root
 
@@ -945,11 +950,12 @@ class ManagedComfyUiRuntime:
             if (
                 workflow.profile_id != preflight.profile.profile_id
                 or workflow.profile_digest != preflight.profile.profile_digest
-                or workflow.lora_id != (preflight.lora.lora_id if preflight.lora is not None else None)
-                or workflow.lora_sha256 != (preflight.lora.lora_sha256 if preflight.lora is not None else None)
-                or (
-                    preflight.lora is not None
-                    and workflow.request_graph()["8"]["inputs"]["lora_name"] != preflight.lora.lora_name
+                or workflow.selected_lora_bindings != tuple(
+                    (asset.lora_id, asset.lora_sha256) for asset in preflight.loras
+                )
+                or any(
+                    workflow.request_graph()[str(8 + index)]["inputs"]["lora_name"] != asset.lora_name
+                    for index, asset in enumerate(preflight.loras)
                 )
             ):
                 raise ImageGenerationProtocolError(
@@ -971,7 +977,7 @@ class ManagedComfyUiRuntime:
             python_path, main_path, models_root = self._stable_launch_paths(
                 guard,
                 preflight.profile,
-                preflight.lora,
+                preflight.loras,
             )
             # Repeat the default-config absence check after directory/file
             # guards are active and immediately before starting the child.
@@ -1023,10 +1029,12 @@ class ManagedComfyUiRuntime:
                         # initialized routes and nodes.  A missing built-in node
                         # or checkpoint after that point is a stable install
                         # error, not a startup condition worth retrying for 90s.
-                        if preflight.lora is None:
+                        if not preflight.loras:
                             candidate.ensure_ready(preflight.profile)
+                        elif len(preflight.loras) == 1:
+                            candidate.ensure_ready(preflight.profile, lora=preflight.loras[0])
                         else:
-                            candidate.ensure_ready(preflight.profile, lora=preflight.lora)
+                            candidate.ensure_ready(preflight.profile, loras=preflight.loras)
                         raw = candidate
                         break
                 remaining = deadline - self._dependencies.monotonic_clock()

@@ -1,5 +1,5 @@
 /**
- * @fileoverview Present trusted local character generation and the private Gallery.
+ * @fileoverview Present the compact Elysia image studio and its private Gallery.
  * Main owns cancellation, preview capabilities, and native export; this surface
  * sends structured descriptions and logical artifact/profile identifiers only.
  */
@@ -20,12 +20,12 @@ interface ImageGeneratorProps {
   onOpenSettings?(): void
 }
 
-type PromptField = 'appearance' | 'outfit' | 'pose' | 'scene' | 'style' | 'camera' | 'lighting' | 'negativePrompt'
+type PromptField = 'outfit' | 'pose' | 'scene' | 'style' | 'camera' | 'lighting' | 'negativePrompt'
+interface SelectedLora { loraId: string; strength: string }
+const elysiaAppearance = 'Elysia, adult fictional woman, age 28, pink hair, violet eyes'
 const promptFields: Array<{ key: PromptField; label: string; placeholder: string }> = [
-  { key: 'appearance', label: '外观描述', placeholder: '例如：成年女性，银色长发，紫色眼睛' },
   { key: 'outfit', label: '服装', placeholder: '例如：白色长裙与银色耳饰' },
   { key: 'pose', label: '姿势', placeholder: '例如：自然站姿，轻轻侧身' },
-  { key: 'scene', label: '场景', placeholder: '例如：黄昏的花园' },
   { key: 'style', label: '风格', placeholder: '例如：柔和的数字插画' },
   { key: 'camera', label: '镜头', placeholder: '例如：半身肖像，平视' },
   { key: 'lighting', label: '光线', placeholder: '例如：温暖逆光' },
@@ -52,7 +52,7 @@ function artifactTime(value: string): string {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN')
 }
 
-/** Generate one confirmed original adult character and manage its saved images. */
+/** Generate the fixed adult Elysia character with chosen LoRAs and manage saved images. */
 export function ImageGenerator({ active = true, onOpenSettings, onToggleSidebar, sidebarOpen }: ImageGeneratorProps) {
   const [settings, setSettings] = useState<ImageSettingsSummary | null>(null)
   const [settingsLoading, setSettingsLoading] = useState(active && window.elysiaDesktop !== undefined)
@@ -61,14 +61,11 @@ export function ImageGenerator({ active = true, onOpenSettings, onToggleSidebar,
   )
   const [profileId, setProfileId] = useState('')
   const [sizePresetId, setSizePresetId] = useState('')
-  const [loraId, setLoraId] = useState('')
-  const [strengthModel, setStrengthModel] = useState('1')
-  const [strengthClip, setStrengthClip] = useState('1')
+  const [loras, setLoras] = useState<SelectedLora[]>([])
   const [prompts, setPrompts] = useState<Record<PromptField, string>>({
-    appearance: '', outfit: '', pose: '', scene: '', style: '', camera: '', lighting: '', negativePrompt: '',
+    outfit: '', pose: '', scene: '', style: '', camera: '', lighting: '', negativePrompt: '',
   })
   const [seed, setSeed] = useState('0')
-  const [confirmed, setConfirmed] = useState(false)
   const [generating, setGenerating] = useState(false)
   const [cancelling, setCancelling] = useState(false)
   const [progress, setProgress] = useState({ completed: 0, stage: '' })
@@ -88,16 +85,16 @@ export function ImageGenerator({ active = true, onOpenSettings, onToggleSidebar,
   const galleryRevision = useRef(0)
   const previewRevision = useRef(0)
   const activeView = useRef(active)
-  const selection = useRef({ profileId: '', sizePresetId: '', loraId: '' })
+  const selection = useRef({ profileId: '', sizePresetId: '', loras: [] as SelectedLora[], initialized: false })
   const selectedProfile = settings?.profiles.find((profile) => profile.profileId === profileId)
-  const selectedLora = selectedProfile?.loras?.find((lora) => lora.loraId === loraId && lora.available)
   const strengthValid = (value: string): boolean => value.trim() !== '' && Number.isFinite(Number(value))
     && Number(value) >= 0 && Number(value) <= 2
-  const loraValid = loraId === '' || (selectedLora !== undefined && strengthValid(strengthModel) && strengthValid(strengthClip))
+  const loraValid = loras.length <= 4 && loras.every((selection) => strengthValid(selection.strength)
+    && selectedProfile?.loras?.some((lora) => lora.loraId === selection.loraId && lora.available))
   const seedValid = /^\d+$/.test(seed) && Number.isSafeInteger(Number(seed)) && Number(seed) >= 0
   const canGenerate = settings?.ready === true && selectedProfile !== undefined
     && selectedProfile.sizePresets.some((preset) => preset.presetId === sizePresetId)
-    && prompts.appearance.trim().length > 0 && confirmed && seedValid && !generating
+    && prompts.scene.trim().length > 0 && seedValid && !generating
     && !settingsLoading && settingsError === null && loraValid
 
   useEffect(() => {
@@ -146,12 +143,14 @@ export function ImageGenerator({ active = true, onOpenSettings, onToggleSidebar,
           ?? setup.value.profiles[0]
         const size = chosen?.sizePresets.some((preset) => preset.presetId === selection.current.sizePresetId)
           ? selection.current.sizePresetId : chosen?.defaultSizePresetId ?? ''
-        const adapterId = chosen?.loras?.some((lora) => lora.loraId === selection.current.loraId && lora.available)
-          ? selection.current.loraId : ''
-        selection.current = { profileId: chosen?.profileId ?? '', sizePresetId: size, loraId: adapterId }
+        const adapters = selection.current.initialized
+          ? selection.current.loras.filter((value) => chosen?.loras?.some((lora) => lora.loraId === value.loraId && lora.available))
+          : chosen?.loras?.filter((lora) => lora.loraId === 'hikari-elysia-il-v1' && lora.available)
+            .map((lora) => ({ loraId: lora.loraId, strength: String(lora.defaultStrengthModel) })) ?? []
+        selection.current = { profileId: chosen?.profileId ?? '', sizePresetId: size, loras: adapters, initialized: chosen !== undefined }
         setProfileId(selection.current.profileId)
         setSizePresetId(size)
-        setLoraId(adapterId)
+        setLoras(adapters)
       } else setSettingsError(errorText(setup.reason, '无法读取本地图片设置。'))
       if (imageRevision === galleryRevision.current) {
         if (images.status === 'fulfilled') setGallery(images.value)
@@ -179,11 +178,10 @@ export function ImageGenerator({ active = true, onOpenSettings, onToggleSidebar,
       setProfileId(chosen?.profileId ?? '')
       const size = chosen?.sizePresets.some((preset) => preset.presetId === sizePresetId)
         ? sizePresetId : chosen?.defaultSizePresetId ?? ''
-      const adapterId = chosen?.loras?.some((lora) => lora.loraId === selection.current.loraId && lora.available)
-        ? selection.current.loraId : ''
-      selection.current = { profileId: chosen?.profileId ?? '', sizePresetId: size, loraId: adapterId }
+      const adapters = selection.current.loras.filter((value) => chosen?.loras?.some((lora) => lora.loraId === value.loraId && lora.available))
+      selection.current = { profileId: chosen?.profileId ?? '', sizePresetId: size, loras: adapters, initialized: chosen !== undefined }
       setSizePresetId(size)
-      setLoraId(adapterId)
+      setLoras(adapters)
     } catch (error) {
       if (mounted.current) setSettingsError(errorText(error, '无法检查本地模型。'))
     } finally {
@@ -236,8 +234,11 @@ export function ImageGenerator({ active = true, onOpenSettings, onToggleSidebar,
     setNotice('')
     setProgress({ completed: 0, stage: '' })
     const params: ImageGenerateParams = {
-      profileId, sizePresetId, ...prompts, seed: Number(seed), originalFictionalConfirmed: true,
-      ...(loraId === '' ? {} : { lora: { loraId, strengthModel: Number(strengthModel), strengthClip: Number(strengthClip) } }),
+      profileId, sizePresetId, ...prompts, appearance: elysiaAppearance, seed: Number(seed),
+      characterId: 'elysia', fictionalAdultConfirmed: true,
+      ...(loras.length === 0 ? {} : { loras: loras.map(({ loraId, strength }) => ({
+        loraId, strengthModel: Number(strength), strengthClip: Number(strength),
+      })) }),
     }
     try {
       const result = await api.generateImage(params)
@@ -316,19 +317,28 @@ export function ImageGenerator({ active = true, onOpenSettings, onToggleSidebar,
   function chooseProfile(value: string): void {
     const profile = settings?.profiles.find((profile) => profile.profileId === value)
     const size = profile?.defaultSizePresetId ?? ''
-    const adapterId = profile?.loras?.some((lora) => lora.loraId === loraId && lora.available) ? loraId : ''
-    selection.current = { profileId: value, sizePresetId: size, loraId: adapterId }
+    const adapters = loras.filter((value) => profile?.loras?.some((lora) => lora.loraId === value.loraId && lora.available))
+    selection.current = { profileId: value, sizePresetId: size, loras: adapters, initialized: true }
     setProfileId(value)
     setSizePresetId(size)
-    setLoraId(adapterId)
+    setLoras(adapters)
   }
 
-  function chooseLora(value: string): void {
+  function chooseLora(value: string, checked: boolean): void {
     const adapter = selectedProfile?.loras?.find((lora) => lora.loraId === value && lora.available)
-    selection.current.loraId = adapter?.loraId ?? ''
-    setLoraId(selection.current.loraId)
-    setStrengthModel(String(adapter?.defaultStrengthModel ?? 1))
-    setStrengthClip(String(adapter?.defaultStrengthClip ?? 1))
+    if (checked && (!adapter || loras.length >= 4 || loras.some((lora) => lora.loraId === value))) return
+    // Retain activation order because stacking the same adapters in a different
+    // order changes the trusted graph and can change the resulting image.
+    const next = checked ? [...loras, { loraId: value, strength: String(adapter?.defaultStrengthModel ?? 1) }]
+      : loras.filter((lora) => lora.loraId !== value)
+    selection.current.loras = next
+    setLoras(next)
+  }
+
+  function changeStrength(loraId: string, strength: string): void {
+    const next = loras.map((lora) => lora.loraId === loraId ? { ...lora, strength } : lora)
+    selection.current.loras = next
+    setLoras(next)
   }
 
   function randomizeSeed(): void {
@@ -340,52 +350,60 @@ export function ImageGenerator({ active = true, onOpenSettings, onToggleSidebar,
       className="icon-button" aria-label="Open navigation" aria-expanded={sidebarOpen}
       aria-controls="app-sidebar" onClick={onToggleSidebar}><Icon name="menu" /></button><span>图片生成</span></div>}
     <header className="image-generator-heading">
-      <div><span className="image-eyebrow">ELYSIA · IMAGE STUDIO</span><h1>让想象成为画面</h1><p>描绘一位原创角色，细节由你决定。</p></div>
-      {onOpenSettings && <button type="button" onClick={onOpenSettings} disabled={generating}>图片设置</button>}
+      <div><h1>爱莉希雅</h1><p>{selectedProfile?.displayName ?? '本地图片生成'}</p></div>
+      <div className="image-studio-tools">
+        <section className={`image-readiness ${settings?.ready ? 'is-ready' : ''}`} aria-label="图片运行环境">
+          <span className="image-readiness-dot" aria-hidden="true" />
+          <strong>{settingsLoading ? '检查中…' : settings?.ready ? '模型已就绪' : settings ? readinessLabels[settings.state] : '无法读取模型'}</strong>
+          <button type="button" disabled={settingsLoading || generating} onClick={() => { void refreshSettings() }} aria-label="重新检查">↻</button>
+        </section>
+        {onOpenSettings && <button type="button" onClick={onOpenSettings} disabled={generating}>模型设置</button>}
+      </div>
     </header>
-    <section className={`image-readiness ${settings?.ready ? 'is-ready' : ''}`} aria-label="图片运行环境">
-      <div><strong>{settingsLoading ? '正在检查本地模型…' : settings ? readinessLabels[settings.state] : '无法读取本地图片设置'}</strong>
-        {settings && <p>{settings.message}</p>}</div>
-      <button type="button" disabled={settingsLoading || generating} onClick={() => { void refreshSettings() }}>重新检查</button>
-    </section>
+    {settings && !settings.ready && <p className="image-runtime-message">{settings.message}</p>}
     {settingsError && <p role="alert">{settingsError}</p>}
     <div className="image-studio-layout">
       <form className="image-generation-form" aria-label="图片生成描述" onSubmit={(event) => { void generate(event) }}>
-        <div className="image-form-heading"><h2>描述你的角色</h2><span>仅支持单一、明确成年的原创虚构角色</span></div>
         <fieldset disabled={generating || settingsLoading || !settings?.ready}>
+          <label className="image-scene-field"><span>画面描述</span>
+            <textarea aria-label="画面描述" value={prompts.scene} required rows={5}
+              placeholder="例如：爱莉希雅穿着白色长裙，站在黄昏的花园中，微笑着望向镜头。"
+              maxLength={MAX_IMAGE_PROMPT_COMPONENT_CODE_POINTS}
+              onChange={(event) => { setPrompts({ ...prompts, scene: event.currentTarget.value }) }} />
+            <small>固定角色：成年虚构爱莉希雅 · 粉色长发 · 紫色眼睛</small>
+          </label>
           <div className="image-field-grid">
-            <label>模型<select aria-label="图片模型" value={profileId} onChange={(event) => { chooseProfile(event.currentTarget.value) }}>
-              {!settings?.profiles.length && <option value="">尚未配置模型</option>}
-              {settings?.profiles.map((profile) => <option key={profile.profileId} value={profile.profileId}>{profile.displayName}</option>)}
-            </select></label>
-            <label>尺寸<select aria-label="图片尺寸" value={sizePresetId} onChange={(event) => { selection.current.sizePresetId = event.currentTarget.value; setSizePresetId(event.currentTarget.value) }}>
+            <label className="image-field-wide">尺寸<select aria-label="图片尺寸" value={sizePresetId} onChange={(event) => { selection.current.sizePresetId = event.currentTarget.value; setSizePresetId(event.currentTarget.value) }}>
               {!selectedProfile && <option value="">请先选择模型</option>}
               {selectedProfile?.sizePresets.map((preset) => <option key={preset.presetId} value={preset.presetId}>{preset.presetId} · {preset.width} × {preset.height}</option>)}
             </select></label>
-            <label className="image-field-wide">LoRA<select aria-label="图片 LoRA" value={loraId}
-              onChange={(event) => { chooseLora(event.currentTarget.value) }}>
-              <option value="">不使用 LoRA</option>
-              {selectedProfile?.loras?.map((lora) => <option key={lora.loraId} value={lora.loraId} disabled={!lora.available}>
-                {lora.displayName}{lora.available ? '' : ' · 不可用'}
-              </option>)}
-            </select><small>仅显示适用于当前模型的已导入 LoRA。</small></label>
-            {loraId !== '' && <>
-              <label>模型强度<input type="number" aria-label="LoRA 模型强度" min="0" max="2" step="any"
-                value={strengthModel} aria-invalid={!strengthValid(strengthModel)}
-                onChange={(event) => { setStrengthModel(event.currentTarget.value) }} />
-                {!strengthValid(strengthModel) && <span className="image-field-error">请输入 0 至 2 的数值。</span>}</label>
-              <label>CLIP 强度<input type="number" aria-label="LoRA CLIP 强度" min="0" max="2" step="any"
-                value={strengthClip} aria-invalid={!strengthValid(strengthClip)}
-                onChange={(event) => { setStrengthClip(event.currentTarget.value) }} />
-                {!strengthValid(strengthClip) && <span className="image-field-error">请输入 0 至 2 的数值。</span>}</label>
-            </>}
-            {selectedProfile?.loras?.some((lora) => !lora.available) && <div className="image-field-wide image-lora-status" aria-label="LoRA 可用状态">
-              {selectedProfile.loras.filter((lora) => !lora.available).map((lora) => <p key={lora.loraId}>{lora.displayName}：{lora.message}</p>)}
-            </div>}
-            {promptFields.map((field) => <label className={field.key === 'appearance' || field.key === 'negativePrompt' ? 'image-field-wide' : ''} key={field.key}>
-              <span>{field.label}{field.key === 'appearance' && <span aria-hidden="true"> *</span>}</span>
-              <input aria-label={field.label} value={prompts[field.key]} placeholder={field.placeholder}
-                maxLength={MAX_IMAGE_PROMPT_COMPONENT_CODE_POINTS} required={field.key === 'appearance'}
+          </div>
+          <section className="image-lora-options" aria-label="LoRA 选择">
+            <div className="image-lora-heading"><h2>LoRA</h2><span>{loras.length ? `已选 ${loras.length} / 4` : '不使用 LoRA'}</span></div>
+            {!selectedProfile?.loras?.length && <p>尚未导入 LoRA，可在模型设置中添加。</p>}
+            {selectedProfile?.loras?.map((lora) => {
+              const selected = loras.find((value) => value.loraId === lora.loraId)
+              return <div className={`image-lora-card ${selected ? 'is-selected' : ''}`} key={lora.loraId}>
+                <label><input type="checkbox" aria-label={lora.displayName} checked={selected !== undefined}
+                  disabled={!lora.available || (!selected && loras.length >= 4)}
+                  onChange={(event) => { chooseLora(lora.loraId, event.currentTarget.checked) }} />
+                  <span>{lora.displayName}</span></label>
+                {!lora.available && <small>{lora.message}</small>}
+                {selected && <label className="image-lora-strength">强度<input type="number" min="0" max="2" step="any"
+                  aria-label={`${lora.displayName} 强度`} value={selected.strength} aria-invalid={!strengthValid(selected.strength)}
+                  onChange={(event) => { changeStrength(lora.loraId, event.currentTarget.value) }} /></label>}
+                {selected && !strengthValid(selected.strength) && <small className="image-field-error">请输入 0 至 2 的数值。</small>}
+              </div>
+            })}
+          </section>
+          <details className="image-advanced"><summary>更多参数</summary><div className="image-field-grid">
+            {(settings?.profiles.length ?? 0) > 1 && <label className="image-field-wide">模型<select aria-label="图片模型" value={profileId}
+              onChange={(event) => { chooseProfile(event.currentTarget.value) }}>
+              {settings?.profiles.map((profile) => <option key={profile.profileId} value={profile.profileId}>{profile.displayName}</option>)}
+            </select></label>}
+            {promptFields.map((field) => <label className={field.key === 'negativePrompt' ? 'image-field-wide' : ''} key={field.key}>
+              <span>{field.label}</span><input aria-label={field.label} value={prompts[field.key]} placeholder={field.placeholder}
+                maxLength={MAX_IMAGE_PROMPT_COMPONENT_CODE_POINTS}
                 onChange={(event) => { setPrompts({ ...prompts, [field.key]: event.currentTarget.value }) }} />
             </label>)}
             <label className="image-field-wide">Seed<div className="image-seed-control">
@@ -395,10 +413,7 @@ export function ImageGenerator({ active = true, onOpenSettings, onToggleSidebar,
               {!seedValid && <span className="image-field-error">请输入 0 至 9007199254740991 的整数。</span>}
               <small>保留相同 Seed 与描述，便于再次生成。</small>
             </label>
-          </div>
-          <label className="image-subject-confirmation"><input type="checkbox" checked={confirmed}
-            onChange={(event) => { setConfirmed(event.currentTarget.checked) }} />
-            我确认：这是单一原创虚构角色，明确年满 18 岁，不涉及真人。</label>
+          </div></details>
         </fieldset>
         <div className="image-generation-actions">
           <button type="submit" className="image-primary" disabled={!canGenerate}>{generating ? '正在生成…' : '生成图片'}</button>
@@ -425,7 +440,8 @@ export function ImageGenerator({ active = true, onOpenSettings, onToggleSidebar,
           <button className="image-artifact-open" type="button" disabled={previewLoading === artifact.artifactId || artifactBusy !== null}
             onClick={() => { void openPreview(artifact.artifactId) }} aria-label={`预览图片 Seed ${artifact.seed}`}>
             <span aria-hidden="true">✧</span><span>{artifact.width} × {artifact.height}</span><span>打开预览</span></button>
-          <div className="image-artifact-meta"><strong>Seed {artifact.seed}</strong><time dateTime={artifact.createdAt}>{artifactTime(artifact.createdAt)}</time><span>{artifact.profileId}</span></div>
+          <div className="image-artifact-meta"><strong>Seed {artifact.seed}</strong><time dateTime={artifact.createdAt}>{artifactTime(artifact.createdAt)}</time>
+            <span>{settings?.profiles.find((profile) => profile.profileId === artifact.profileId)?.displayName ?? '本地生成'}</span></div>
           <div className="image-artifact-actions"><button type="button" disabled={artifactBusy !== null} onClick={() => { void exportArtifact(artifact.artifactId) }}>导出</button>
             <button type="button" disabled={artifactBusy !== null} onClick={() => { setDeleteCandidate(artifact.artifactId) }}>删除</button></div>
           {deleteCandidate === artifact.artifactId && <section className="image-delete-confirmation" role="alertdialog" aria-label="确认删除图片">

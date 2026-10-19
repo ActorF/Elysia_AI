@@ -197,3 +197,22 @@ cd desktop
 npm run smoke:image-backend -- --data-root <独立验收根> --profile wai-illustrious-v80 --preset square
 npm run smoke:image-backend -- --data-root <另一个独立验收根> --profile wai-illustrious-v80 --preset square --lora hikari-elysia-il-v1
 ```
+
+## Elysia 专用界面与双 LoRA 实测
+
+用户随后选择只保留 WAI 主模型，以 Hikari 作为角色 LoRA、Honkai Star Rail 作为风格 LoRA。正式配置现为 Revision 3；旧 SDXL、运行时下载包和五个旧验收目录已按逐项确认的清单删除，正式画廊及正在使用的 ComfyUI 保留。清理范围和来源见[运行时审计补充](17-LOCAL-IMAGE-RUNTIME-AUDIT.md#elysia-专用配置与风格-lora)。上文旧报告路径为历史位置，不再承诺原始临时 PNG 仍存在。
+
+新生成页固定成年虚构 Elysia，主要显示画面描述、尺寸和 LoRA 多选/强度，其他参数折叠；设置页正常导入仅需选择文件。截图检查了桌面与窄窗口布局，完整 Playwright 346 项全部通过，Python 全套 5,022 项通过；后续缺失文件恢复的独立测试另行覆盖。普通导入没有 ID/来源/许可表单，高级安装修复仍折叠保留原入口。
+
+真实双 LoRA 通过生产 Backend、Main GPU Coordinator、固定 v3 Loader 串联和 fd4。独立根为 `tmp/elysia-studio-acceptance/real-168b085346aa438083bdc3f2ebfc44d2`，与正式 Gallery 分离。首轮模型/CLIP 强度各 1 的完整链路通过，194.151 秒；独立进程观察记录 9 个后代 PID、结束残留 0。GPU 仅测了全卡首末值 2,579/2,927 MiB，没有采样本轮峰值，不能推算单进程显存。
+
+首轮及一次构图调整样本出现重复人物；最终增加仅针对 Elysia 的单画面/数量标签，角色强度 0.8、风格强度 0.7，以同一 Seed 420042、1024×1024、28 Steps 再验证。最终样图目视为一个粉发紫眼角色，规范 PNG 1,599,162 字节，SHA-256 `9ab124706af889b491de81342804f9c68f2ea082803125693e2b2dbb6b0d1d79`。一次样本不证明随机输出总能满足人物数量、身份或年龄语义，也不能将前后差异只归因于某一项参数。
+
+最终完整链路 139.244 秒，覆盖生成/提交、PNG 重验、一次性预览、原子原生导出、另一任务取消无提交、Gallery 删除、GPU Lease 释放与 Backend 关闭。导出 PNG 与 `backend-smoke/report.json` 保留于该独立根；早期独立进程观察在 `ownership-report.json`，其明确属于强度 1/1 的首轮。当前私有运行根为空，未向正式 Gallery 添加或删除图片。
+
+```bat
+cd desktop
+npm run smoke:image-backend -- --data-root <独立验收根> --profile wai-illustrious-v80 --preset square --character elysia --loras hikari-elysia-il-v1,honkai-starrail-style-v1 --lora-strengths 0.8,0.7
+```
+
+此命令仍要求显式隔离标记，会修改所给验收 Gallery；不能指向正式用户数据根。本次没有重新执行长期 Soak，也未引入输出图像分类器。

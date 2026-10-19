@@ -316,6 +316,15 @@ class DesktopImageCoordinator:
                 strength_model=selection["strengthModel"],
                 strength_clip=selection["strengthClip"],
             )
+        loras = tuple(
+            ImageLoraSelection(
+                lora_id=selection["loraId"],
+                strength_model=selection["strengthModel"],
+                strength_clip=selection["strengthClip"],
+            )
+            for selection in params.get("loras", ())
+        )
+        elysia = params.get("characterId") == "elysia"
         return ImageGenerationSpec(
             profile_id=params["profileId"],
             size_preset_id=params["sizePresetId"],
@@ -328,9 +337,11 @@ class DesktopImageCoordinator:
             lighting=params["lighting"],
             negative_prompt=params["negativePrompt"],
             seed=params["seed"],
-            original_fictional_confirmed=params["originalFictionalConfirmed"],
-            intent=ImageIntent.NEW_CHARACTER,
+            original_fictional_confirmed=params.get("originalFictionalConfirmed", False),
+            fictional_adult_confirmed=params.get("fictionalAdultConfirmed", False),
+            intent=ImageIntent.ELYSIA if elysia else ImageIntent.NEW_CHARACTER,
             lora=lora,
+            loras=loras,
         )
 
     def _generate(self, task: _ImageTask, spec: ImageGenerationSpec) -> None:

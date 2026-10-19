@@ -1,7 +1,7 @@
 """Define the path-free structured contract for local image generation.
 
-The first production slice deliberately supports one newly created fictional
-character per request.  Existing-person likenesses, reference images, edits,
+Requests support one original fictional adult or the fixed adult fictional
+Elysia identity. Existing-person likenesses, reference images, edits,
 arbitrary model paths, and arbitrary ComfyUI graphs are not part of this
 contract; later features must add explicit trusted fields rather than smuggle
 those capabilities through prompt text.
@@ -25,6 +25,7 @@ from .exceptions import (
 MAX_PROMPT_COMPONENT_CODEPOINTS: Final = 1_024
 MAX_COMPILED_PROMPT_CODEPOINTS: Final = 6_000
 MAX_JSON_SAFE_SEED: Final = 9_007_199_254_740_991
+MAX_SELECTED_LORAS: Final = 4
 _ID_PATTERN: Final = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 _CONTROL_CATEGORIES: Final = frozenset({"Cc", "Cf", "Cs"})
 _MINOR_TERM_PATTERN: Final = re.compile(
@@ -121,6 +122,9 @@ _EXISTING_CHARACTER_REFERENCE_PATTERN: Final = re.compile(
     r")",
     flags=re.IGNORECASE,
 )
+_ELYSIA_IDENTITY_PATTERN: Final = re.compile(
+    r"\belysia\b|爱莉希雅|愛莉希雅", flags=re.IGNORECASE,
+)
 _RESERVED_MODEL_REFERENCE_PATTERN: Final = re.compile(
     r"\bembedding\s*:",
     flags=re.IGNORECASE,
@@ -190,6 +194,7 @@ class ImageIntent(StrEnum):
     """Identify the reviewed generation workflow requested by the user."""
 
     NEW_CHARACTER = "new-character"
+    ELYSIA = "elysia-character"
 
 
 def validate_public_id(value: object, field_name: str) -> str:
@@ -263,8 +268,9 @@ class ImageGenerationSpec:
     """Describe one reviewed single-image request without runtime internals.
 
     Explicit and non-explicit descriptions share this one request contract.
-    Every request must affirm an original fictional subject, and the compiler
-    always anchors that subject as clearly adult.  Conservative contradiction
+    Original requests affirm an original fictional subject; the dedicated
+    Elysia intent instead affirms the fixed fictional adult identity. The compiler
+    always anchors the subject as clearly adult. Conservative contradiction
     checks reject obvious minor, real-person, existing-character, and
     multi-subject requests; they are deliberately bounded lexical tripwires,
     not a complete natural-language identity or age classifier.
@@ -284,6 +290,8 @@ class ImageGenerationSpec:
     original_fictional_confirmed: bool = False
     intent: ImageIntent = ImageIntent.NEW_CHARACTER
     lora: ImageLoraSelection | None = None
+    loras: tuple[ImageLoraSelection, ...] = ()
+    fictional_adult_confirmed: bool = False
 
     def __post_init__(self) -> None:
         """Reject ambiguous content, unsafe text, and unreviewed capabilities."""
@@ -292,6 +300,18 @@ class ImageGenerationSpec:
         validate_public_id(self.size_preset_id, "size_preset_id")
         if self.lora is not None and type(self.lora) is not ImageLoraSelection:
             raise ImageGenerationValidationError("lora must be one reviewed LoRA selection.")
+        if (
+            type(self.loras) is not tuple
+            or len(self.loras) > MAX_SELECTED_LORAS
+            or any(type(selection) is not ImageLoraSelection for selection in self.loras)
+            or len({selection.lora_id for selection in self.loras}) != len(self.loras)
+            or (self.lora is not None and self.loras)
+        ):
+            raise ImageGenerationValidationError(
+                "loras must contain at most four distinct ordered selections without the legacy lora alias."
+            )
+        if type(self.intent) is not ImageIntent:
+            raise ImageGenerationValidationError("intent must be a reviewed image intent.")
         for field_name in (
             "appearance",
             "outfit",
@@ -305,7 +325,7 @@ class ImageGenerationSpec:
             normalized = validate_prompt_component(
                 getattr(self, field_name),
                 field_name,
-                required=field_name == "appearance",
+                required=field_name == "appearance" and self.intent is ImageIntent.NEW_CHARACTER,
             )
             object.__setattr__(self, field_name, normalized)
         if type(self.seed) is not int or not 0 <= self.seed <= MAX_JSON_SAFE_SEED:
@@ -316,13 +336,15 @@ class ImageGenerationSpec:
             raise ImageGenerationValidationError(
                 "original_fictional_confirmed must be a boolean."
             )
-        if not self.original_fictional_confirmed:
+        if type(self.fictional_adult_confirmed) is not bool:
+            raise ImageGenerationValidationError("fictional_adult_confirmed must be a boolean.")
+        if self.intent is ImageIntent.NEW_CHARACTER and not self.original_fictional_confirmed:
             raise ImageGenerationSafetyError(
                 "Image generation requires confirmation of an original fictional subject."
             )
-        if type(self.intent) is not ImageIntent or self.intent is not ImageIntent.NEW_CHARACTER:
-            raise ImageGenerationValidationError(
-                "Only new-character generation is supported in this version."
+        if self.intent is ImageIntent.ELYSIA and self.fictional_adult_confirmed is not True:
+            raise ImageGenerationSafetyError(
+                "Elysia generation requires confirmation of the fixed fictional adult subject."
             )
         combined = "\n".join(
             getattr(self, field_name)
@@ -353,10 +375,17 @@ class ImageGenerationSpec:
             )
         if (
             self.negative_prompt
-            and _NEGATIVE_SAFETY_ANCHOR_PATTERN.search(
-                unicodedata.normalize("NFKC", self.negative_prompt).casefold()
+            and (
+                _NEGATIVE_SAFETY_ANCHOR_PATTERN.search(
+                    unicodedata.normalize("NFKC", self.negative_prompt).casefold()
+                ) is not None
+                or (
+                    self.intent is ImageIntent.ELYSIA
+                    and _ELYSIA_IDENTITY_PATTERN.search(
+                        unicodedata.normalize("NFKC", self.negative_prompt).casefold()
+                    ) is not None
+                )
             )
-            is not None
         ):
             # A user negative is appended after the system negative.  Forbid
             # terms that would negate the adult/original/single-subject anchors
@@ -364,8 +393,8 @@ class ImageGenerationSpec:
             raise ImageGenerationSafetyError(
                 "The negative prompt contradicts a required subject boundary."
             )
-        # Every accepted request compiles to a clearly adult original
-        # character.  Reject contradictions before prompt compilation so the
+        # Every accepted request compiles to a clearly adult fictional
+        # character. Reject contradictions before prompt compilation so the
         # fixed subject anchor is never treated as a repair for unsafe input.
         if (
             _MINOR_TERM_PATTERN.search(policy_text) is not None
@@ -388,10 +417,26 @@ class ImageGenerationSpec:
             raise ImageGenerationSafetyError(
                 "This image workflow supports exactly one subject."
             )
-        if _EXISTING_CHARACTER_REFERENCE_PATTERN.search(policy_text) is not None:
+        # Only the dedicated identity is exempted. Removing that exact name
+        # leaves generic existing-character instructions subject to the legacy
+        # boundary, rather than opening a free-form character selector.
+        identity_checked_text = (
+            _ELYSIA_IDENTITY_PATTERN.sub("", policy_text)
+            if self.intent is ImageIntent.ELYSIA else policy_text
+        )
+        if _EXISTING_CHARACTER_REFERENCE_PATTERN.search(identity_checked_text) is not None:
             raise ImageGenerationSafetyError(
                 "This image workflow supports only a new original character."
+                if self.intent is ImageIntent.NEW_CHARACTER
+                else "This image workflow does not accept another existing character."
             )
+
+    @property
+    def selected_loras(self) -> tuple[ImageLoraSelection, ...]:
+        """Return the ordered effective selections while retaining old single callers."""
+
+        return (self.lora,) if self.lora is not None else self.loras
+
     @property
     def prompt_components(self) -> tuple[str, ...]:
         """Return non-empty positive components in deterministic UI order."""
@@ -417,6 +462,7 @@ __all__ = [
     "ImageLoraSelection",
     "MAX_COMPILED_PROMPT_CODEPOINTS",
     "MAX_JSON_SAFE_SEED",
+    "MAX_SELECTED_LORAS",
     "MAX_PROMPT_COMPONENT_CODEPOINTS",
     "validate_prompt_component",
     "validate_public_id",

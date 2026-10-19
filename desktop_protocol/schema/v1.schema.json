@@ -49,7 +49,8 @@
     "voice.speech.clip metadata exactly matches the next private binary frame before playback",
     "voice.speech events contain no source text, model path, profile, cache state, or native error detail",
     "voice.speech.terminal satisfies failedSentences <= completedSentences <= submittedSentences and completed state has equal completed/submitted counts",
-    "image.generate is the single Backend-fixed new-character workflow and accepts no content mode, policy toggle, intent, path, model, or workflow selector",
+    "image.generate accepts only exclusive original-character or confirmed adult Elysia identities, with no content mode, policy toggle, arbitrary intent, path, model, or workflow selector",
+    "image.generate loras preserves caller order and rejects repeated loraId values even when their strengths differ; JSON Schema uniqueItems alone cannot express this property-level uniqueness",
     "image.generate progress uses only the six exact stage/percent pairs and completed is emitted only after Gallery commit",
     "image Gallery lists contain unique artifacts in descending createdAt and artifactId order, and hasMore requires a full page",
     "image artifact dimensions satisfy width * height <= 4194304 and timestamps are timezone-aware",
@@ -1270,13 +1271,30 @@
           "maximum": 9007199254740991
         },
         "originalFictionalConfirmed": { "const": true },
-        "lora": { "$ref": "#/$defs/imageLoraSelection" }
+        "characterId": { "const": "elysia" },
+        "fictionalAdultConfirmed": { "const": true },
+        "lora": { "$ref": "#/$defs/imageLoraSelection" },
+        "loras": {
+          "type": "array", "minItems": 1, "maxItems": 4, "uniqueItems": true,
+          "items": { "$ref": "#/$defs/imageLoraSelection" }
+        }
       },
       "required": [
         "profileId", "sizePresetId", "appearance", "outfit", "pose",
         "scene", "style", "camera", "lighting", "negativePrompt",
-        "seed", "originalFictionalConfirmed"
+        "seed"
       ],
+      "oneOf": [
+        {
+          "required": ["originalFictionalConfirmed"],
+          "not": { "anyOf": [{ "required": ["characterId"] }, { "required": ["fictionalAdultConfirmed"] }] }
+        },
+        {
+          "required": ["characterId", "fictionalAdultConfirmed"],
+          "not": { "required": ["originalFictionalConfirmed"] }
+        }
+      ],
+      "not": { "required": ["lora", "loras"] },
       "additionalProperties": false
     },
     "imageGalleryListParams": {

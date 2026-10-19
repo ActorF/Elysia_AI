@@ -548,6 +548,35 @@ def test_generation_maps_optional_lora_without_changing_public_artifact(
         _shutdown(backend)
 
 
+@pytest.mark.parametrize("elysia", [False, True])
+def test_generation_maps_ordered_loras_and_exact_character_intent(tmp_path: Path, elysia: bool) -> None:
+    """Keep renderer selection order while translating the reviewed identity to the domain."""
+
+    backend, output, _stream, core, _gallery, _service = _ready(tmp_path)
+    try:
+        selections = [
+            {"loraId": "character_style", "strengthModel": 0.8, "strengthClip": 0.75},
+            {"loraId": "starrail_style", "strengthModel": 0.6, "strengthClip": 0.5},
+        ]
+        params = _params(loras=selections)
+        if elysia:
+            del params["originalFictionalConfirmed"]
+            params.update(characterId="elysia", fictionalAdultConfirmed=True)
+        assert backend._handle_line(_request("generate-loras", "image.generate", params))
+        artifact = _success(output, "generate-loras")["artifact"]
+        spec, = core.specs
+        assert spec.intent is (ImageIntent.ELYSIA if elysia else ImageIntent.NEW_CHARACTER)
+        assert spec.original_fictional_confirmed is not elysia
+        assert spec.fictional_adult_confirmed is elysia
+        assert spec.lora is None
+        assert [(item.lora_id, item.strength_model, item.strength_clip) for item in spec.loras] == [
+            ("character_style", 0.8, 0.75), ("starrail_style", 0.6, 0.5),
+        ]
+        assert "loras" not in artifact and "characterId" not in artifact
+    finally:
+        _shutdown(backend)
+
+
 @pytest.mark.parametrize("changes", [
     {"originalFictionalConfirmed": False},
     {"originalFictionalConfirmed": 1},
@@ -562,6 +591,13 @@ def test_generation_maps_optional_lora_without_changing_public_artifact(
     {"lora": {"loraId": "character_style", "strengthModel": 1}},
     {"lora": {"loraId": "../private.safetensors", "strengthModel": 1, "strengthClip": 1}},
     {"lora": {"loraId": "character_style", "strengthModel": 1, "strengthClip": 3}},
+    {"loras": []},
+    {"loras": None},
+    {"loras": [
+        {"loraId": "character_style", "strengthModel": 1, "strengthClip": 1},
+        {"loraId": "character_style", "strengthModel": 0.5, "strengthClip": 0.5},
+    ]},
+    {"characterId": "elysia", "fictionalAdultConfirmed": True},
 ])
 def test_generation_rejects_nonliteral_confirmation_and_unreviewed_fields(
     tmp_path: Path,

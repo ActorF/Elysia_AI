@@ -81,3 +81,11 @@ ComfyUI 随附 [GPL v3 文本](https://github.com/Comfy-Org/ComfyUI/blob/98cc0bf
 发布页在复核时声明：WAI 允许 Image 与 RentCivit 范围的商业使用，允许衍生；Hikari 要求署名，商业许可仅列 RentCivit、不允许衍生，说明禁止转载。两个来源声明分别保存在其受信 Profile/LoRA 中，没有套用 SDXL Base 的统一许可。上述为发布者当时的条款记录，使用与分发仍应核对对应版本页面；摘要关联文件，不证明发布者拥有全部底层权利。原始 API 快照只保留在本机忽略目录。
 
 该 LoRA 使用 ComfyUI 内置 [LoraLoader](https://github.com/Comfy-Org/docs/blob/main/built-in-nodes/LoraLoader.mdx)，未增加 Custom Node、依赖包或元数据触发词。导入与选择不改变现有原创、虚构、明确成年、单人生成合同；没有新增内容模式。
+
+## Elysia 专用配置与风格 LoRA
+
+用户随后明确改为仅使用成年虚构 Elysia，主模型只保留 WAI，默认 Profile 改为 `wai-illustrious-v80`；Hikari 作为角色 LoRA，新增 `honkai-starrail-style-v1` 风格 LoRA，可单独或同时选择。Elysia 使用独立的固定身份合同，不再以原创角色确认代表该身份，仍没有内容模式。
+
+新增本机 `Honkai_Starrail_Style_Lora.safetensors` 为 SDXL/Illustrious LoRA，57,447,636 字节，完整 SHA-256 `0b1876635cfc93bbab11731a224472a5316b05cc4dd3213370a868d0e944c18b` 与 [FlyingOyster 发布版本 1852115](https://civitai.com/models/1636274?modelVersionId=1852115) 的文件记录完全匹配。发布页复核时允许不署名、商业图像/托管/模型销售及衍生；记录保存对应版本来源和条款摘要，不将其推导成对底层全部权利的认证。它使用相同内置 Loader，不增加安装依赖，也不读取元数据中的训练标签作为指令。
+
+用户已逐项批准清理旧 SDXL Base、已安装运行时的下载包和五个旧临时验收目录，共 332 个文件、9,314,432,892 字节。当前唯一使用中的 ComfyUI/Python、WAI、两个 LoRA 私有副本与三个原文件保留。正式 Gallery 四份文件在操作前后逐字节摘要一致。旧下载包与验收原始 PNG 已删除，因此上文审计/旧 Soak 为历史记录；复现其完整来源核验需恢复对应固定摘要的输入。清理回执及变更前配置备份保留在本机忽略目录 `tmp/elysia-studio-acceptance/operator-bda887d6610149609c82f87455b07a7d`。

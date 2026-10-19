@@ -536,6 +536,49 @@ def test_adapter_submits_selected_sealed_lora_graph_without_extending_graph_inpu
     assert graph["8"]["inputs"]["strength_clip"] == 0.5
 
 
+@pytest.mark.parametrize("missing_index", [None, 0, 1])
+def test_multi_lora_readiness_requires_every_selected_key(missing_index: int | None) -> None:
+    """Probe one built-in loader and reject a missing character or style asset equally."""
+
+    first = ModelLoraProfile(
+        lora_id="character", display_name="Character fixture", architecture=ModelArchitecture.SDXL,
+        lora_name="fixtures/character.safetensors", lora_sha256="a" * 64,
+        lora_source="Synthetic fixture", lora_license="Synthetic declaration",
+    )
+    second = replace(first, lora_id="style", lora_name="fixtures/style.safetensors")
+    assets = (first, second)
+    profile = replace(_profile(), loras=assets)
+    with _fake_server() as (base_url, state):
+        state.loras = [asset.lora_name for index, asset in enumerate(assets) if index != missing_index]
+        client = _client(base_url)
+        if missing_index is None:
+            client.ensure_ready(profile, loras=assets)
+            assert sum(path == "/models/loras" for _, path, _ in state.requests) == 1
+            assert sum(path == "/object_info/LoraLoader" for _, path, _ in state.requests) == 1
+        else:
+            with pytest.raises(ImageGenerationUnavailableError):
+                client.ensure_ready(profile, loras=assets)
+
+
+def test_raw_adapter_rejects_foreign_duplicate_and_overlapping_lora_declarations_before_http() -> None:
+    """Do not expose unreviewed logical declarations to the runtime model-list boundary."""
+
+    asset = ModelLoraProfile(
+        lora_id="character", display_name="Character fixture", architecture=ModelArchitecture.SDXL,
+        lora_name="character.safetensors", lora_sha256="a" * 64,
+        lora_source="Synthetic fixture", lora_license="Synthetic declaration",
+    )
+    profile = replace(_profile(), loras=(asset,))
+    with _fake_server() as (base_url, state):
+        client = _client(base_url)
+        for selected in ((asset, asset), (replace(asset),)):
+            with pytest.raises(TypeError):
+                client.ensure_ready(profile, loras=selected)
+        with pytest.raises(TypeError):
+            client.ensure_ready(profile, lora=asset, loras=(asset,))
+        assert state.requests == []
+
+
 def test_redirect_is_rejected_without_following_its_location() -> None:
     """Prevent a compromised loopback service from redirecting requests away."""
 

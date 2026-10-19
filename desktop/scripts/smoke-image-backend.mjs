@@ -19,12 +19,26 @@ const arguments_ = process.argv.slice(2)
 const flags = new Map()
 for (let index = 0; index < arguments_.length; index += 2) {
   const key = arguments_[index], value = arguments_[index + 1]
-  if (!['--data-root', '--profile', '--preset', '--lora'].includes(key) || !value || flags.has(key)) {
-    throw new Error('Use --data-root <isolated-root> --profile <logical-id> --preset <logical-id> [--lora <logical-id>].')
+  if (!['--data-root', '--profile', '--preset', '--lora', '--loras', '--lora-strengths', '--character'].includes(key) || !value || flags.has(key)) {
+    throw new Error('Use --data-root <isolated-root> --profile <id> --preset <id> [--lora <id>|--loras <id,id>] [--lora-strengths <number,number>] [--character elysia].')
   }
   flags.set(key, value)
 }
 if (!flags.has('--data-root')) throw new Error('An isolated acceptance data root is required.')
+if (flags.has('--lora') && flags.has('--loras') || flags.has('--character') && flags.get('--character') !== 'elysia') {
+  throw new Error('Select one LoRA input form and the fixed Elysia character only.')
+}
+const loraIds = flags.has('--loras') ? flags.get('--loras').split(',') : []
+const loraStrengths = flags.has('--lora-strengths') ? flags.get('--lora-strengths').split(',').map(value => value.trim() ? Number(value) : NaN)
+  : loraIds.map(() => 1)
+if (flags.has('--loras') && (loraIds.length < 1 || loraIds.length > 4
+  || new Set(loraIds).size !== loraIds.length || loraIds.some(id => !/^[a-z][a-z0-9_-]{0,63}$/u.test(id)))) {
+  throw new Error('Select one through four unique logical LoRA identifiers.')
+}
+if (flags.has('--lora-strengths') && (!flags.has('--loras') || loraStrengths.length !== loraIds.length
+  || loraStrengths.some(value => !Number.isFinite(value) || value < 0 || value > 2))) {
+  throw new Error('Provide one bounded strength from zero through two for each selected LoRA.')
+}
 const dataRoot = path.resolve(flags.get('--data-root'))
 // A settings file alone is not authorization to mutate a user's Gallery. The
 // acceptance harness must explicitly opt this separate root into destructive tests.
@@ -68,14 +82,19 @@ backend = new BackendProcess(projectRoot, event => {
 })
 const request = {
   profileId, sizePresetId,
-  appearance: 'One original fictional adult woman, 28 years old, short auburn hair, green eyes',
+  appearance: flags.has('--character') ? 'Elysia, adult fictional woman age 28, pink hair, violet eyes'
+    : 'One original fictional adult woman, 28 years old, short auburn hair, green eyes',
   outfit: 'A modest blue linen jacket, white shirt and long skirt',
   pose: 'Standing calmly beside a wooden garden bench',
   scene: 'A peaceful fictional botanical garden with flowers',
   style: 'Detailed storybook illustration', camera: 'Full-body composition',
   lighting: 'Soft warm morning light', negativePrompt: 'blur, extra fingers, text, watermark',
-  seed: 420042, originalFictionalConfirmed: true,
+  seed: 420042,
+  ...(flags.has('--character') ? { characterId: 'elysia', fictionalAdultConfirmed: true } : { originalFictionalConfirmed: true }),
   ...(flags.has('--lora') ? { lora: { loraId: flags.get('--lora'), strengthModel: 1, strengthClip: 1 } } : {}),
+  ...(flags.has('--loras') ? { loras: loraIds.map((loraId, index) => ({
+    loraId, strengthModel: loraStrengths[index], strengthClip: loraStrengths[index],
+  })) } : {}),
 }
 let exporter = null
 const started = Date.now()
@@ -123,7 +142,8 @@ try {
   assert.equal(coordinator.getSnapshot().active, null)
   await coordinator.close()
   const report = {
-    passed: true, profileId, lora: request.lora ?? null, elapsedSeconds: (Date.now() - started) / 1000,
+    passed: true, profileId, characterId: request.characterId ?? null,
+    lora: request.lora ?? null, loras: request.loras ?? [], elapsedSeconds: (Date.now() - started) / 1000,
     checks: ['real-backend-startup', 'main-gpu-admission', 'generate-commit', 'fd4-preview-digest',
       'single-use-url', 'atomic-native-export', 'cancel-no-commit', 'gallery-delete', 'backend-shutdown'],
     artifact: { sha256: digest, width: preview.width, height: preview.height, byteSize: verified.bytes.length },

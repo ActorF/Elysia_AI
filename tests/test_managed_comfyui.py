@@ -194,13 +194,16 @@ class _FakeRawClient:
                 self.probe_failures -= 1
             raise ImageGenerationUnavailableError("synthetic probe outage")
 
-    def ensure_ready(self, profile: ModelProfile, *, lora: ModelLoraProfile | None = None) -> None:
+    def ensure_ready(
+        self, profile: ModelProfile, *, lora: ModelLoraProfile | None = None,
+        loras: tuple[ModelLoraProfile, ...] = (),
+    ) -> None:
         """Validate the selected synthetic checkpoint or inject an outage."""
 
         self.calls.append(f"ready:{profile.profile_id}")
-        if lora is not None:
-            assert profile.lora(lora.lora_id) is lora
-            self.calls.append(f"lora:{lora.lora_id}")
+        for asset in ((lora,) if lora is not None else loras):
+            assert profile.lora(asset.lora_id) is asset
+            self.calls.append(f"lora:{asset.lora_id}")
         if self.always_unavailable or self.ready_failures:
             if self.ready_failures:
                 self.ready_failures -= 1
@@ -542,6 +545,112 @@ def _lora_fixture(tmp_path: Path) -> _RuntimeFixture:
         ), profile, job_id=str(uuid4()),
     )
     return replace(fixture, profile=profile, workflow=workflow)
+
+
+def _multi_lora_fixture(tmp_path: Path, count: int = 2) -> _RuntimeFixture:
+    """Add a bounded set of distinct pinned files to exercise guard ordering."""
+
+    fixture = _lora_fixture(tmp_path)
+    assets = [fixture.profile.loras[0]]
+    for index in range(1, count):
+        asset = fixture.config.models_root / "loras" / f"style-{index}.safetensors"
+        asset.write_bytes(f"synthetic style LoRA {index}".encode("ascii"))
+        assets.append(replace(
+            assets[0], lora_id=f"style-{index}", lora_name=asset.name,
+            lora_sha256=_sha256(asset.read_bytes()),
+        ))
+    profile = replace(fixture.profile, loras=tuple(assets))
+    workflow = compile_txt2img_workflow(
+        ImageGenerationSpec(
+            profile_id=profile.profile_id, size_preset_id="square", appearance="adult fictional portrait",
+            original_fictional_confirmed=True,
+            loras=tuple(ImageLoraSelection(asset.lora_id, 0.7, 0.8) for asset in assets),
+        ), profile, job_id=str(uuid4()),
+    )
+    return replace(fixture, profile=profile, workflow=workflow)
+
+
+@pytest.mark.parametrize("count", [2, 4])
+def test_selected_lora_chain_pins_all_files_until_native_child_termination(tmp_path: Path, count: int) -> None:
+    """Retain each selected byte guard through submission and process-first finalization."""
+
+    fixture = _multi_lora_fixture(tmp_path, count)
+    fixture.runtime.ensure_ready(fixture.profile, loras=fixture.profile.loras)
+    assert fixture.harness.guards == fixture.harness.processes == []
+    handle = fixture.runtime.prepare(fixture.workflow)
+    declarations = fixture.harness.guard_declarations[0]
+    assert len(declarations) == 3 + count
+    for index, asset in enumerate(fixture.profile.loras):
+        assert cast(Any, declarations[3 + index]).path == fixture.config.models_root / "loras" / asset.lora_name
+        assert cast(Any, declarations[3 + index]).sha256 == asset.lora_sha256
+    fixture.runtime.submit_prepared(handle, fixture.workflow)
+    assert not fixture.harness.guards[0].closed
+    assert [call for call in fixture.harness.raw.calls if call.startswith("lora:")] == [
+        f"lora:{asset.lora_id}" for asset in fixture.profile.loras
+    ]
+    fixture.runtime.finalize(handle)
+    assert fixture.harness.processes[0].closed
+    assert fixture.harness.guards[0].closed
+    assert not fixture.harness.runs[0].root.exists()
+
+
+@pytest.mark.parametrize("mutation", ["missing-second", "changed-second", "duplicate", "foreign-catalog", "alias-overlap"])
+def test_multi_lora_preflight_failure_allocates_no_native_resources(tmp_path: Path, mutation: str) -> None:
+    """Reject the complete selection when one declaration is invalid without losing base use."""
+
+    fixture = _multi_lora_fixture(tmp_path)
+    selected = fixture.profile.loras
+    second_path = fixture.config.models_root / "loras" / selected[1].lora_name
+    legacy = None
+    if mutation == "missing-second":
+        second_path.unlink()
+    elif mutation == "changed-second":
+        second_path.write_bytes(b"substituted optional file")
+    elif mutation == "duplicate":
+        selected = (selected[0], selected[0])
+    elif mutation == "foreign-catalog":
+        selected = (selected[0], replace(selected[1]))
+    else:
+        legacy = selected[0]
+    with pytest.raises(ImageGenerationUnavailableError):
+        fixture.runtime.ensure_ready(fixture.profile, lora=legacy, loras=selected)
+    assert fixture.harness.runs == fixture.harness.guards == fixture.harness.processes == []
+    fixture.runtime.ensure_ready(fixture.profile)
+    assert fixture.runtime.gpu_cleanup_complete
+
+
+def test_multi_lora_preflight_order_must_match_compiler_order(tmp_path: Path) -> None:
+    """A verified asset set cannot authorize a different ordered patch composition."""
+
+    fixture = _multi_lora_fixture(tmp_path)
+    fixture.runtime.ensure_ready(fixture.profile, loras=fixture.profile.loras[::-1])
+    with pytest.raises(ImageGenerationProtocolError, match="profile"):
+        fixture.runtime.prepare(fixture.workflow)
+    assert fixture.harness.guards == fixture.harness.runs == []
+
+
+def test_multi_lora_rejects_only_the_second_guard_on_a_foreign_root(tmp_path: Path) -> None:
+    """Validate every extra handle instead of accepting the first correct optional guard."""
+
+    fixture = _multi_lora_fixture(tmp_path)
+    original = fixture.harness.guarded_paths
+
+    def substituted_paths(guard: _FakeGuard) -> tuple[str, ...]:
+        """Leave the first optional file intact and redirect only the style file."""
+
+        values = original(guard)
+        return (*values[:4], str(tmp_path / "foreign" / "loras" / "style-1.safetensors"))
+
+    fixture.harness.guarded_paths = substituted_paths  # type: ignore[method-assign]
+    runtime = managed.ManagedComfyUiRuntime._create_for_testing(
+        fixture.config, fixture.harness.dependencies(), dependency_seal=managed._TEST_DEPENDENCY_SEAL,
+    )
+    runtime.ensure_ready(fixture.profile, loras=fixture.profile.loras)
+    with pytest.raises(ImageGenerationUnavailableError):
+        runtime.prepare(fixture.workflow)
+    assert fixture.harness.processes == []
+    assert fixture.harness.guards[0].closed
+    assert not fixture.harness.runs[0].root.exists()
 
 
 def test_selected_lora_adds_fourth_native_guard_and_retains_it_through_finalize(tmp_path: Path) -> None:

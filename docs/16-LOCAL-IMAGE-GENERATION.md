@@ -39,13 +39,15 @@ Core 只接收 `is_managed_private_runtime is True` 且持有组合根私有 cap
 | `outfit`、`pose`、`scene`、`style`、`camera`、`lighting` | 可选，与外观相同的文本预算；姿势仅为文本 |
 | `negative_prompt` | 可选，只能追加系统负面词 |
 | `seed` | 0 至 JSON safe integer 上限 |
-| `original_fictional_confirmed` | 必须为 `true` |
-| `intent` | 仅 `new-character` |
-| `lora` | 可选单个 `ImageLoraSelection`，只含受信逻辑 ID 和两项有限强度 0–2；关闭时省略 |
+| `original_fictional_confirmed` | 旧原创请求必须为 `true` |
+| `intent` | 兼容 `new-character`；新界面固定使用 `elysia-character` |
+| `fictional_adult_confirmed` | Elysia 请求必须为字面量 `true`，不冒充原创角色确认 |
+| `loras` | 最多 4 个有序且 ID 唯一的 `ImageLoraSelection`，仅逻辑 ID 和两项有限强度 0–2；关闭时省略 |
+| `lora` | 兼容旧单项选择，不能与非空 `loras` 同用 |
 
 控制字符、surrogate 和超长文本在编译前拒绝；编译后的正负提示词各最多 6000 code points。LLM 若参与填写，输出仍必须先通过同一合同，不能直接控制节点、模型或路径。
 
-当前请求仅限原创虚构、明确成年的单个人物。普通和成人描述共用结构化字段与工作流，没有 `content_mode`、`adult_confirmed` 或成人模式开关。正向字段拒绝明显的未成年/年龄模糊、真人、已有角色和多主体矛盾；正负文本均禁止 `embedding:`，负面词不得否定成年人、原创虚构或单主体边界。
+当前产品只提供明确成年的虚构爱莉希雅单人预设，编译器固定 Elysia、28 岁、粉色长发、紫色眼睛与单主体锚点。新桌面请求使用 `characterId: "elysia"` 和 `fictionalAdultConfirmed: true`，不提交 `originalFictionalConfirmed`；旧原创 DTO 保留兼容，两套确认字段不能混用。普通和成人描述共用结构化字段与工作流，没有内容模式开关。正向字段仍拒绝明显的未成年/年龄模糊、真人、其他已有角色和多主体矛盾；正负文本均禁止 `embedding:`，负面词不得否定必要身份、成年人或单主体边界。
 
 这些 Unicode 规范化词法检查只是正常输入的早期提示，不是年龄/身份分类证明，也不保证抵抗刻意规避。第一版没有照片、身份 Adapter、已有角色锁定、编辑/换装、姿势参考或批量入口。后续能力需要独立文件授权与合同，不能把路径、Base64 或 Node JSON 塞入提示词。
 
@@ -67,7 +69,7 @@ CheckpointLoaderSimple
 
 节点、连接、`batch_size=1`、`denoise=1.0` 和输出节点由源码固定；可变值只能来自已验证 Spec/Profile。Canonical JSON 形成 Workflow Digest，`request_graph()` 每次返回新对象，防止调用者修改污染后续提交。输出前缀只含固定标识与 Core UUID，返回文件名从不当作本机路径打开。
 
-选择 LoRA 使用 v2，唯一新增固定节点 8 `LoraLoader`：Checkpoint 的 MODEL/CLIP 进入该节点，输出分别连接 KSampler 和两个 CLIPTextEncode；VAE 继续来自 Checkpoint。每次最多一个受信 LoRA，不接受节点 JSON、文件名或路径。无 LoRA 的旧 Profile Digest 保持兼容；非空目录的 ID、摘要、来源、许可进入 Profile Digest，具体选择和强度进入 Workflow Digest 与编译封印。不会自动追加模型元数据中的触发词。
+选择单个 LoRA 继续使用 v2，新增固定节点 8 `LoraLoader`；选择 2–4 个使用 v3，节点 8–11 按请求顺序串联 MODEL/CLIP，最后一项输出分别连接 KSampler 和两个 CLIPTextEncode，VAE 始终来自 Checkpoint。不接受节点 JSON、文件名或路径。无 LoRA 的旧 Profile Digest 保持兼容，单项列表与旧单项别名保持同一 v2 图和封印；非空目录的 ID、摘要、来源、许可进入 Profile Digest，所有选择的顺序、ID、文件摘要与强度进入 Workflow Digest/编译封印。每个选用文件独立持有原生 Guard，直到整个子进程清理完毕。不会自动追加模型元数据中的触发词。
 
 ## 私有 Runtime 与信任边界
 
@@ -174,11 +176,15 @@ Electron Main 创建并拥有 fd4，Python 接管前验证它是 Pipe 并关闭�
 
 原生导出已由 Main 接管：Renderer 仅提交 Gallery artifact ID，Main 显示 Save Dialog 后，重新通过 Backend/Gallery 和 fd4 获取验证后的 PNG。`ImageExportOwner` 在所选目录创建排他的临时文件、刷新后原子发布；已有目标保留回滚副本，失败时恢复原文件。路径和原生错误不进入 Python 或 Renderer。取消对话框不会读取图片；应用关闭中止等待并排空临时文件清理。路径身份检查拒绝链接、非普通文件和替换，但纯 Node 在最终身份检查与 rename 系统调用之间仍无 handle-relative 比较交换保证。
 
-Settings 的“图片生成”页通过 Main 原生选择 ComfyUI 目录、解释器和 `models/checkpoints` 下的 SDXL 模型。Renderer 只提交逻辑 Profile、默认尺寸、来源和许可；Main 流式计算稳定文件 SHA-256，原生确认后通过私有 Worker 写入固定配置。配置期间保留维护准入，取消不重启 Backend；成功写入新 Revision 后重启以重新验证并广告 Capability。
+Settings 的“图片生成”页以文件导入为主。折叠的高级安装修复保留旧入口：通过 Main 原生选择 ComfyUI 目录、解释器和 `models/checkpoints` 下的 SDXL 模型，Renderer 仅提交逻辑资料；Main 流式计算稳定文件 SHA-256，原生确认后通过私有 Worker 写入固定配置。配置期间保留维护准入，取消不重启 Backend；成功写入后重启以重新验证并广告 Capability。
 
 “导入 Checkpoint / 导入 LoRA”支持从任意原生选择位置复制普通 safetensors 文件，保留原文件、已有 Profile 和默认模型。Renderer 仅提交种类、逻辑元数据和目标 Profile；Main 独占路径、摘要与确认窗口。首装额外选择已受信 ComfyUI/Python，模型复制到 `workspace/image-models`；已有安装继续使用其模型根。Worker 在文件守卫内检查有界 safetensors Header、张量布局和角色，流式复制到摘要命名的普通文件，以排他 Rename 发布，最后 CAS 保存配置。冲突不覆盖已有文件；保存失败可保留已验证的未引用资产供重试，只清理本次仍同身份的临时文件。导入 Worker 最多运行 600 秒，退出时先终止并排空再释放维护准入。
 
-原生确认后，Main 先排空 Backend，再获取原 Gallery Lease 导入；成功或失败都在释放维护准入前重启已停止的 Backend。取消原生窗口不会停机。每个 Profile 有独立 LoRA 目录；缺失或摘要变化只禁用对应选项，关闭 LoRA 仍可使用主模型。生成页每次可选“不使用”，或选一个兼容且可用的 LoRA，分别调模型/CLIP 强度（默认各 1）。切换 Profile 清除不兼容选择，任务执行与隐藏页面期间保留已提交选择。
+原生确认后，Main 先排空 Backend，再获取原 Gallery Lease 导入；成功或失败都在释放维护准入前重启已停止的 Backend。取消原生窗口不会停机。每个 Profile 有独立 LoRA 选项列表；缺失或摘要变化只禁用对应选项，关闭 LoRA 仍可使用主模型。生成页每次可全部关闭，或多选至多 4 个可用 LoRA，各自调一个强度（同步设置 MODEL/CLIP，默认 1）。切换 Profile 清除不兼容选择，任务执行与隐藏页面期间保留已提交选择。固定 Elysia 身份不依赖勾选角色 LoRA，风格 LoRA 可以单独使用。
+
+普通导入只发送 `{kind:"checkpoint"}` 或 `{kind:"lora",targetProfileId:<逻辑ID>}`，无需填写资料。Main 选文件并计算摘要，再通过私有 `assets.inspect` 在只读守卫内检查有界 Header、推导摘要 ID/安全显示名和精确版本资料；只有已核验的完整摘要命中才使用维护的发布者来源与条款，未知文件明确记录本地来源/许可未提供，不采信嵌入元数据的许可或执行指令。Main 校验检查回执的字段和目标，再显示原生确认并按原导入合同复制保存。旧完整元数据入口继续兼容；高级安装修复折叠在设置页，普通流程不展示 ID、摘要和许可表单。
+
+重新导入已存在文件会明确报告重复。若已配置的摘要命名副本确实缺失，可选择同一文件恢复：Worker 要求旧 ID/SHA/模型 Key 全部一致，保留原 Profile、LoRA 元数据和默认值，排他复制后 CAS 增加 Revision。现有错误摘要、链接、目录、不同来源摘要或非摘要命名的历史 Key 不进入此恢复路径，不会覆盖；并发目标出现仍由原排他发布和摘要验证裁决。
 
 私有配置兼容读取 schema1/2，显式保存为 schema3；首装的精确私有模型根以固定标记 `{ "data_root_relative": "workspace/image-models" }` 持久化，随应用数据根移动解析，其他已审核外部路径保持绝对路径。移动数据保持配置字节不变，保留原有复制校验/回滚合同；模型、Gallery、运行目录及隔离目录均属于持久数据，普通缓存清理不会删除。Gallery 现有 Manifest/API 不迁移：摘要绑定条件，但列表仍不显示/恢复选用的 LoRA ID 和强度。
 

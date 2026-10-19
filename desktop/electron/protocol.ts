@@ -397,8 +397,8 @@ export interface ImageLoraSelectionParams {
   strengthClip: number
 }
 
-/** Describe one Backend-fixed new-character image generation request. */
-export interface ImageGenerateParams {
+/** Share prompt fields without broadening the reviewed identity branches. */
+interface ImageGenerateCommonParams {
   profileId: string
   sizePresetId: string
   appearance: string
@@ -410,9 +410,26 @@ export interface ImageGenerateParams {
   lighting: string
   negativePrompt: string
   seed: number
-  originalFictionalConfirmed: true
   lora?: ImageLoraSelectionParams
+  loras?: readonly ImageLoraSelectionParams[]
 }
+
+/** Retain the literal original-character confirmation for existing callers. */
+export interface OriginalImageGenerateParams extends ImageGenerateCommonParams {
+  originalFictionalConfirmed: true
+  characterId?: never
+  fictionalAdultConfirmed?: never
+}
+
+/** Select the sole named character with an exclusive adult-fiction confirmation. */
+export interface ElysiaImageGenerateParams extends ImageGenerateCommonParams {
+  characterId: 'elysia'
+  fictionalAdultConfirmed: true
+  originalFictionalConfirmed?: never
+}
+
+/** Describe either reviewed identity; wire validation rejects mixed branches. */
+export type ImageGenerateParams = OriginalImageGenerateParams | ElysiaImageGenerateParams
 
 /** Select one bounded newest-first Gallery page. */
 export interface ImageGalleryListParams {
@@ -1894,14 +1911,14 @@ export function parseImageLoraSelectionParams(value: unknown): ImageLoraSelectio
     }
     return strength
   }
-  return {
+  return Object.freeze({
     loraId: readImagePublicId(selection, 'loraId', context),
     strengthModel: readStrength('strengthModel'),
     strengthClip: readStrength('strengthClip'),
-  }
+  })
 }
 
-/** Validate the sole image request without policy, mode, path, or intent fields. */
+/** Validate disjoint identity branches and a bounded ordered set of trusted LoRAs. */
 export function parseImageGenerateParams(value: unknown): ImageGenerateParams {
   const context = 'image.generate params'
   const params = asRecord(value, context)
@@ -1919,10 +1936,9 @@ export function parseImageGenerateParams(value: unknown): ImageGenerateParams {
       'lighting',
       'negativePrompt',
       'seed',
-      'originalFictionalConfirmed',
     ],
     context,
-    ['lora'],
+    ['lora', 'loras', 'originalFictionalConfirmed', 'characterId', 'fictionalAdultConfirmed'],
   )
   const readComponent = (key: string, required: boolean): string => {
     const component = readString(params, key, context, {
@@ -1950,13 +1966,29 @@ export function parseImageGenerateParams(value: unknown): ImageGenerateParams {
   if (seed < 0) {
     return fail('protocol.invalid_params', `${context}.seed cannot be negative.`)
   }
-  if (readBoolean(params, 'originalFictionalConfirmed', context) !== true) {
-    return fail(
-      'protocol.invalid_params',
-      `${context}.originalFictionalConfirmed must be true.`,
-    )
+  const elysia = Object.hasOwn(params, 'characterId') || Object.hasOwn(params, 'fictionalAdultConfirmed')
+  if (elysia) {
+    if (Object.hasOwn(params, 'originalFictionalConfirmed') || params.characterId !== 'elysia'
+      || readBoolean(params, 'fictionalAdultConfirmed', context) !== true) {
+      return fail('protocol.invalid_params', `${context} requires the exclusive confirmed adult Elysia identity.`)
+    }
+  } else if (readBoolean(params, 'originalFictionalConfirmed', context) !== true) {
+    return fail('protocol.invalid_params', `${context}.originalFictionalConfirmed must be true.`)
   }
-  return {
+  if (Object.hasOwn(params, 'lora') && Object.hasOwn(params, 'loras')) {
+    return fail('protocol.invalid_params', `${context} cannot combine lora and loras.`)
+  }
+  let loras: readonly ImageLoraSelectionParams[] | undefined
+  if (Object.hasOwn(params, 'loras')) {
+    if (!Array.isArray(params.loras) || params.loras.length < 1 || params.loras.length > 4) {
+      return fail('protocol.invalid_params', `${context}.loras must contain 1 to 4 selections.`)
+    }
+    loras = Object.freeze(params.loras.map(parseImageLoraSelectionParams))
+    if (new Set(loras.map((selection) => selection.loraId)).size !== loras.length) {
+      return fail('protocol.invalid_params', `${context}.loras contains duplicate IDs.`)
+    }
+  }
+  const common = {
     profileId: readImagePublicId(params, 'profileId', context),
     sizePresetId: readImagePublicId(params, 'sizePresetId', context),
     appearance: readComponent('appearance', true),
@@ -1968,9 +2000,14 @@ export function parseImageGenerateParams(value: unknown): ImageGenerateParams {
     lighting: readComponent('lighting', false),
     negativePrompt: readComponent('negativePrompt', false),
     seed,
-    originalFictionalConfirmed: true,
     ...(Object.hasOwn(params, 'lora') ? { lora: parseImageLoraSelectionParams(params.lora) } : {}),
+    ...(loras ? { loras } : {}),
   }
+  // Rebuild the chosen branch rather than copying caller fields: no mixed
+  // confirmation or mutable nested selection can survive native admission.
+  return Object.freeze(elysia
+    ? { ...common, characterId: 'elysia' as const, fictionalAdultConfirmed: true as const }
+    : { ...common, originalFictionalConfirmed: true as const })
 }
 
 /** Validate one bounded Gallery page request. */

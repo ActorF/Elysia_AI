@@ -14,7 +14,7 @@ import pytest
 
 import image_generation.service as image_service
 from image_generation.comfyui import ComfyOutputDescriptor, ComfyPromptHandle
-from image_generation.domain import ImageGenerationSpec, ImageLoraSelection
+from image_generation.domain import ImageGenerationSpec, ImageIntent, ImageLoraSelection
 from image_generation.exceptions import (
     ImageGenerationCancelledError,
     ImageGenerationProfileError,
@@ -162,6 +162,135 @@ def test_lora_allowlist_requires_unique_ids_names_and_exact_types() -> None:
         profile.lora("unknown")
     with pytest.raises(ImageGenerationValidationError):
         _spec(lora={"lora_id": lora.lora_id})
+
+
+@pytest.mark.parametrize("choices", [
+    [ImageLoraSelection("style")],
+    (ImageLoraSelection("style"), ImageLoraSelection("style", 0.5, 0.5)),
+    tuple(ImageLoraSelection(f"style-{index}") for index in range(5)),
+    ({"lora_id": "style"},),
+])
+def test_ordered_lora_selection_rejects_ambiguous_or_unbounded_collections(choices: object) -> None:
+    """Reject duplicate IDs, mutable input, forged selections, and more than four patches."""
+
+    with pytest.raises(ImageGenerationValidationError):
+        _spec(loras=choices)
+    with pytest.raises(ImageGenerationValidationError):
+        _spec(lora=ImageLoraSelection("character"), loras=(ImageLoraSelection("style"),))
+
+
+def test_singleton_lora_list_preserves_legacy_graph_seal_and_provenance() -> None:
+    """Normalize new singleton callers without changing the reviewed v2 graph or seal."""
+
+    lora = _lora()
+    profile = replace(_profile(), loras=(lora,))
+    selection = ImageLoraSelection(lora.lora_id, 0.8, 0.6)
+    job_id = str(uuid4())
+    legacy = compile_txt2img_workflow(_spec(lora=selection), profile, job_id=job_id)
+    current = compile_txt2img_workflow(_spec(loras=(selection,)), profile, job_id=job_id)
+    assert legacy == current
+    assert legacy._compiler_seal == current._compiler_seal
+    assert current.selected_lora_bindings == ((lora.lora_id, lora.lora_sha256),)
+
+
+@pytest.mark.parametrize("count", [2, 4])
+def test_multiple_loras_compile_a_bounded_ordered_model_and_clip_chain(count: int) -> None:
+    """Compose character/style patches in request order while preserving checkpoint VAE."""
+
+    assets = tuple(_lora(
+        lora_id=f"patch-{index}", lora_name=f"fixtures/patch-{index}.safetensors",
+        lora_sha256=str(index) * 64,
+    ) for index in range(count))
+    profile = replace(_profile(), loras=assets)
+    selections = tuple(ImageLoraSelection(asset.lora_id, 0.7 + index / 10, 0.5) for index, asset in enumerate(assets))
+    job_id = str(uuid4())
+    compiled = compile_txt2img_workflow(_spec(loras=selections), profile, job_id=job_id)
+    assert compiled.workflow_version == 3
+    assert compiled.selected_lora_bindings == tuple((asset.lora_id, asset.lora_sha256) for asset in assets)
+    graph = compiled.request_graph()
+    assert set(graph) == {str(index) for index in range(1, 8 + count)}
+    for index, asset in enumerate(assets):
+        inputs = graph[str(8 + index)]["inputs"]
+        previous = str(7 + index) if index else "1"
+        assert inputs["model"] == [previous, 0]
+        assert inputs["clip"] == [previous, 1]
+        assert inputs["lora_name"] == asset.lora_name
+        assert inputs["strength_model"] == selections[index].strength_model
+    assert graph["2"]["inputs"]["clip"] == graph["3"]["inputs"]["clip"] == [str(7 + count), 1]
+    assert graph["5"]["inputs"]["model"] == [str(7 + count), 0]
+    assert graph["6"]["inputs"]["vae"] == ["1", 2]
+    reversed_workflow = compile_txt2img_workflow(_spec(loras=selections[::-1]), profile, job_id=job_id)
+    assert reversed_workflow.workflow_digest != compiled.workflow_digest
+    object.__setattr__(compiled, "lora_bindings", compiled.lora_bindings[::-1])
+    with pytest.raises(RuntimeError, match="seal"):
+        compiled.request_graph()
+
+
+@pytest.mark.parametrize("mutation", ["skip-model", "skip-clip", "extra-node", "substitute-hash", "strength"])
+def test_multi_lora_chain_rejects_rewired_or_replaced_assets(mutation: str) -> None:
+    """Fail closed on bypasses and coherent graph edits even after digest recomputation."""
+
+    assets = (_lora(), _lora(lora_id="character", lora_name="character.safetensors"))
+    compiled = compile_txt2img_workflow(
+        _spec(loras=tuple(ImageLoraSelection(asset.lora_id) for asset in assets)),
+        replace(_profile(), loras=assets), job_id=str(uuid4()),
+    )
+    graph = compiled.request_graph()
+    if mutation == "skip-model":
+        graph["9"]["inputs"]["model"] = ["1", 0]
+    elif mutation == "skip-clip":
+        graph["9"]["inputs"]["clip"] = ["1", 1]
+    elif mutation == "extra-node":
+        graph["10"] = graph["9"]
+    elif mutation == "substitute-hash":
+        object.__setattr__(compiled, "lora_bindings", ((assets[0].lora_id, "b" * 64), compiled.lora_bindings[1]))
+    else:
+        graph["9"]["inputs"]["strength_clip"] = 0.5
+    _replace_workflow_graph(compiled, graph)
+    with pytest.raises(RuntimeError):
+        compiled.request_graph()
+
+
+@pytest.mark.parametrize("appearance", ["", "Elysia", "eLySiA", "Ｅｌｙｓｉａ", "爱莉希雅", "愛莉希雅"])
+def test_elysia_intent_anchors_only_the_fixed_fictional_adult_identity(appearance: str) -> None:
+    """Permit the named product character without falsely asserting originality."""
+
+    spec = _spec(
+        intent=ImageIntent.ELYSIA, appearance=appearance,
+        original_fictional_confirmed=False, fictional_adult_confirmed=True,
+    )
+    positive = compile_prompts(spec, _profile()).positive
+    assert "Elysia, fictional adult woman, age 28, clearly adult" in positive
+    assert "long pink hair, violet eyes" in positive
+    assert "solo, one person" in positive
+    assert "original fictional adult character" not in positive
+
+
+@pytest.mark.parametrize("confirmation", [False, 1, "true", None])
+def test_elysia_intent_requires_literal_fictional_adult_confirmation(confirmation: object) -> None:
+    """Keep the dedicated identity behind an explicit typed adult-fictional affirmation."""
+
+    with pytest.raises((ImageGenerationValidationError, ImageGenerationSafetyError)):
+        _spec(intent=ImageIntent.ELYSIA, fictional_adult_confirmed=confirmation)
+
+
+@pytest.mark.parametrize("appearance", [
+    "Elysia, age 17", "Elysia, young-looking", "Elysia with a real person likeness",
+    "Elysia, two women", "cosplay as Elysia", "fanart of Elysia",
+    "Taylor Swift", "Elysia, canon character", "Elysia, embedding:foreign",
+])
+def test_elysia_identity_exception_preserves_other_subject_boundaries(appearance: str) -> None:
+    """Restrict the identity exception without accepting minors, people, or another cast."""
+
+    with pytest.raises(ImageGenerationSafetyError):
+        _spec(intent=ImageIntent.ELYSIA, fictional_adult_confirmed=True, appearance=appearance)
+
+
+def test_elysia_negative_cannot_remove_the_fixed_identity() -> None:
+    """Prevent a negative field from counteracting the reviewed character anchor."""
+
+    with pytest.raises(ImageGenerationSafetyError):
+        _spec(intent=ImageIntent.ELYSIA, fictional_adult_confirmed=True, negative_prompt="Elysia")
 
 
 def test_unselected_lora_keeps_legacy_graph_and_profile_digest_compatibility() -> None:
@@ -844,13 +973,16 @@ class _FakeClient:
 
         return image_service._MANAGED_RUNTIME_CAPABILITY
 
-    def ensure_ready(self, profile: ModelProfile, *, lora: ModelLoraProfile | None = None) -> None:
+    def ensure_ready(
+        self, profile: ModelProfile, *, lora: ModelLoraProfile | None = None,
+        loras: tuple[ModelLoraProfile, ...] = (),
+    ) -> None:
         """Record the selected trusted profile."""
 
         self.calls.append(f"ready:{profile.profile_id}")
-        if lora is not None:
-            assert profile.lora(lora.lora_id) is lora
-            self.calls.append(f"lora:{lora.lora_id}")
+        for asset in ((lora,) if lora is not None else loras):
+            assert profile.lora(asset.lora_id) is asset
+            self.calls.append(f"lora:{asset.lora_id}")
 
     def prepare(self, workflow: CompiledWorkflow) -> ComfyPromptHandle:
         """Mint and record a correlated handle before fake submission."""
@@ -939,6 +1071,37 @@ def test_core_passes_only_the_catalog_lora_to_managed_preflight() -> None:
     with pytest.raises(ImageGenerationProfileError):
         core.generate(_spec(lora=ImageLoraSelection("unknown")))
     assert client.calls == []
+
+
+def test_core_resolves_every_ordered_lora_before_starting_native_work() -> None:
+    """Pass only exact catalog objects and retain one cleanup boundary for the whole chain."""
+
+    assets = (_lora(), _lora(lora_id="character", lora_name="character.safetensors"))
+    profile = replace(_profile(), loras=assets)
+    client = _FakeClient()
+    core = ImageGenerationCore(ModelProfileCatalog((profile,)), client)
+    result = core.generate(_spec(loras=tuple(ImageLoraSelection(asset.lora_id) for asset in assets)))
+    assert result.workflow_version == 3
+    assert client.calls[:4] == ["ready:anime-local", "lora:reviewed-style", "lora:character", "prepare"]
+    assert client.calls[-1] == "finalize"
+    client.calls.clear()
+    with pytest.raises(ImageGenerationProfileError):
+        core.generate(_spec(loras=(ImageLoraSelection(assets[0].lora_id), ImageLoraSelection("foreign"))))
+    assert client.calls == []
+
+
+def test_multi_lora_cancellation_after_preflight_never_allocates_a_job() -> None:
+    """Cancel the combined request before process ownership begins, without a spurious finalizer."""
+
+    assets = (_lora(), _lora(lora_id="character", lora_name="character.safetensors"))
+    client = _FakeClient()
+    core = ImageGenerationCore(ModelProfileCatalog((replace(_profile(), loras=assets),)), client)
+    with pytest.raises(ImageGenerationCancelledError):
+        core.generate(
+            _spec(loras=tuple(ImageLoraSelection(asset.lora_id) for asset in assets)),
+            cancel_requested=lambda: len(client.calls) >= 3,
+        )
+    assert client.calls == ["ready:anime-local", "lora:reviewed-style", "lora:character"]
 
 
 class _UnmanagedFakeClient(_FakeClient):

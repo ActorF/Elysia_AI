@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from .domain import (
     ImageGenerationSpec,
+    ImageIntent,
     MAX_COMPILED_PROMPT_CODEPOINTS,
 )
 from .exceptions import ImageGenerationLimitError
@@ -13,6 +14,17 @@ from .profiles import ModelProfile, PromptDialect
 
 
 _ADULT_SUBJECT = "original fictional adult character, clearly adult"
+_ELYSIA_SUBJECT = (
+    "Elysia, fictional adult woman, age 28, clearly adult, "
+    "long pink hair, violet eyes, elf ears, 1girl, solo, one person, single full-frame illustration"
+)
+# Character adapters can inherit training sheets with repeated views. Keep this
+# composition guidance specific to the fixed identity so legacy prompts retain
+# their exact wording; it reduces that bias without claiming output detection.
+_ELYSIA_NEGATIVE = (
+    "2girls, multiple girls, multiple people, multiple characters, twins, duplicate person, split screen, "
+    "multiple views, multi panel, character sheet, turnaround, collage"
+)
 _COMMON_NEGATIVE = (
     "child, children, minor, underage, teenager, teen, loli, shota, "
     "young-looking subject, bad anatomy, malformed hands, extra fingers, "
@@ -63,13 +75,15 @@ def compile_prompts(
 
     positive = ", ".join((
         _DIALECT_POSITIVE_PREFIXES[profile.prompt_dialect],
-        _ADULT_SUBJECT,
+        _ELYSIA_SUBJECT if spec.intent is ImageIntent.ELYSIA else _ADULT_SUBJECT,
         *spec.prompt_components,
     ))
     negative_parts = [
         _DIALECT_NEGATIVE_PREFIXES[profile.prompt_dialect],
         _COMMON_NEGATIVE,
     ]
+    if spec.intent is ImageIntent.ELYSIA:
+        negative_parts.append(_ELYSIA_NEGATIVE)
     if spec.negative_prompt:
         negative_parts.append(spec.negative_prompt)
     negative = ", ".join(negative_parts)

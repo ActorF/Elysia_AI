@@ -26,7 +26,7 @@ from .composition import (
     create_managed_image_application_service,
     create_managed_image_generation_core,
 )
-from .domain import ImageGenerationSpec, ImageIntent, ImageLoraSelection
+from .domain import ImageGenerationSpec, ImageIntent, ImageLoraSelection, MAX_SELECTED_LORAS
 from .exceptions import (
     ImageGenerationCancelledError,
     ImageGenerationError,
@@ -101,6 +101,7 @@ __all__ = [
     "ImageGalleryValidationError",
     "ImageIntent",
     "ImageLoraSelection",
+    "MAX_SELECTED_LORAS",
     "ImageSizePreset",
     "ModelArchitecture",
     "ModelLoraProfile",

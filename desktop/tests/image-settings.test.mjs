@@ -95,12 +95,109 @@ test('asset imports accept metadata only and reject Renderer native paths or arb
   const checkpoint = { kind: 'checkpoint', metadata: METADATA }, lora = { kind: 'lora', metadata: LORA_METADATA }
   assert.deepEqual(parseImageAssetImportParams(checkpoint), checkpoint)
   assert.deepEqual(parseImageAssetImportParams(lora), lora)
+  assert.deepEqual(parseImageAssetImportParams({ kind: 'checkpoint' }), { kind: 'checkpoint' })
+  assert.deepEqual(parseImageAssetImportParams({ kind: 'lora', targetProfileId: 'reviewed-sdxl' }),
+    { kind: 'lora', targetProfileId: 'reviewed-sdxl' })
   for (const invalid of [null, { ...lora, sourcePath: 'C:/private.safetensors' },
     { ...lora, metadata: { ...LORA_METADATA, loraName: 'private.safetensors' } },
     { ...lora, metadata: { ...LORA_METADATA, targetProfileId: '../outside' } },
-    { kind: 'workflow', metadata: {} }, { ...checkpoint, workflow: {} }]) {
+    { kind: 'workflow', metadata: {} }, { ...checkpoint, workflow: {} },
+    { kind: 'checkpoint', sourcePath: 'C:/private' }, { kind: 'lora' },
+    { kind: 'lora', targetProfileId: '../outside' }, { kind: 'checkpoint', metadata: undefined }]) {
     assert.throws(() => parseImageAssetImportParams(invalid), ImageSettingsError)
   }
+})
+
+test('file-only checkpoint import derives reviewed metadata before native consent and publication', async () => {
+  await fixture(async ({ options, checkpoint }) => {
+    const calls = []
+    const manager = new ImageSettingsManager({ ...options,
+      confirmAssetImport: async review => {
+        calls.push('consent')
+        assert.deepEqual(review.params, { kind: 'checkpoint', metadata: METADATA })
+        return true
+      },
+      runWorker: async request => {
+        calls.push(request.op)
+        if (request.op === 'status') return UNCONFIGURED
+        if (request.op === 'assets.inspect') {
+          assert.deepEqual(request, { op: 'assets.inspect', kind: 'checkpoint', sourcePath: checkpoint,
+            sha256: digest('reviewed checkpoint'), targetProfileId: null })
+          return { kind: 'image.asset.metadata', metadata: METADATA }
+        }
+        assert.equal(request.checkpoint.metadata.profileId, 'reviewed-sdxl')
+        return READY
+      },
+    })
+    await manager.importAsset({ kind: 'checkpoint' }, async () => { calls.push('stop') })
+    assert.deepEqual(calls, ['status', 'assets.inspect', 'consent', 'stop', 'assets.import'])
+    await manager.close()
+  })
+})
+
+test('file-only LoRA inspection cannot change the chosen target or smuggle native metadata', async () => {
+  await fixture(async ({ options, checkpoint }) => {
+    for (const receipt of [
+      { kind: 'image.asset.metadata', metadata: { ...LORA_METADATA, targetProfileId: 'foreign-profile' } },
+      { kind: 'image.asset.metadata', metadata: { ...LORA_METADATA, sourcePath: 'private' } },
+      { kind: 'image.asset.metadata', metadata: LORA_METADATA, runtimeRoot: 'private' },
+      { kind: 'wrong-receipt', metadata: LORA_METADATA },
+    ]) {
+      const calls = []
+      const manager = new ImageSettingsManager({ ...options, chooseLora: async () => checkpoint,
+        confirmAssetImport: async () => { throw new Error('Must not show unbound metadata') },
+        runWorker: async request => { calls.push(request.op); return request.op === 'status' ? READY : receipt },
+      })
+      await assert.rejects(manager.importAsset({ kind: 'lora', targetProfileId: 'reviewed-sdxl' }), ImageSettingsError)
+      assert.deepEqual(calls, ['status', 'assets.inspect'])
+      await manager.close()
+    }
+  })
+})
+
+test('file-only LoRA import preserves the target and reports duplicate assets without stopping Backend', async () => {
+  await fixture(async ({ options, checkpoint }) => {
+    const calls = []
+    const baseline = { ...READY, profiles: [{ ...READY.profiles[0], loras: [{
+      loraId: 'reviewed-lora', displayName: 'Reviewed LoRA', available: true, message: 'ready',
+      defaultStrengthModel: 1, defaultStrengthClip: 1,
+    }] }] }
+    const manager = new ImageSettingsManager({ ...options, chooseLora: async () => checkpoint,
+      confirmAssetImport: async () => { throw new Error('Already imported') },
+      runWorker: async request => {
+        calls.push(request.op)
+        return request.op === 'status' ? baseline : { kind: 'image.asset.metadata', metadata: LORA_METADATA }
+      },
+    })
+    await assert.rejects(manager.importAsset({ kind: 'lora', targetProfileId: 'reviewed-sdxl' },
+      async () => { throw new Error('Must remain running') }), error => error.reason === 'duplicate-asset')
+    assert.deepEqual(calls, ['status', 'assets.inspect'])
+    await manager.close()
+  })
+})
+
+test('reselecting an exactly missing LoRA can reach the guarded restore worker', async () => {
+  await fixture(async ({ options, checkpoint }) => {
+    const calls = []
+    const baseline = { ...READY, profiles: [{ ...READY.profiles[0], loras: [{
+      loraId: 'reviewed-lora', displayName: 'Reviewed LoRA', available: false, message: 'missing_lora',
+      defaultStrengthModel: 1, defaultStrengthClip: 1,
+    }] }] }
+    const manager = new ImageSettingsManager({ ...options, chooseLora: async () => checkpoint,
+      confirmAssetImport: async () => true,
+      runWorker: async request => {
+        calls.push(request.op)
+        if (request.op === 'status') return baseline
+        if (request.op === 'assets.inspect') return { kind: 'image.asset.metadata', metadata: LORA_METADATA }
+        return { ...READY, revision: 2 }
+      },
+    })
+    const restored = await manager.importAsset({ kind: 'lora', targetProfileId: 'reviewed-sdxl' },
+      async () => { calls.push('stop') })
+    assert.equal(restored.revision, 2)
+    assert.deepEqual(calls, ['status', 'assets.inspect', 'stop', 'assets.import'])
+    await manager.close()
+  })
 })
 
 test('public optional LoRA summaries expose logical availability with fixed messages', () => {
@@ -550,6 +647,34 @@ test('the real Python worker saves reviewed configuration through the private DT
     const saved = JSON.parse(await readFile(path.join(options.dataRoot, 'workspace', 'settings', 'images.json'), 'utf8'))
     assert.equal(saved.installation.default_profile_id, METADATA.profileId)
     assert.equal(saved.installation.profiles[0].checkpoint_sha256, digest('reviewed checkpoint'))
+    await manager.close()
+  })
+})
+
+test('the real file-only import derives metadata and copies a valid safetensors checkpoint', async () => {
+  await fixture(async ({ options, checkpoint }) => {
+    const rawHeader = JSON.stringify({ 'model.diffusion_model.weight': { dtype: 'F32', shape: [1], data_offsets: [0, 4] } })
+    const header = Buffer.from(rawHeader.padEnd(Math.ceil(Buffer.byteLength(rawHeader) / 8) * 8, ' '))
+    const length = Buffer.alloc(8)
+    length.writeBigUInt64LE(BigInt(header.length))
+    const bytes = Buffer.concat([length, header, Buffer.alloc(4)])
+    await writeFile(checkpoint, bytes)
+    const sha256 = digest(bytes)
+    const manager = new ImageSettingsManager({ ...options, runWorker: undefined,
+      confirmAssetImport: async review => {
+        assert.equal(review.sha256, sha256)
+        assert.equal(review.params.metadata.profileId, `model-${sha256.slice(0, 16)}`)
+        assert.equal(review.params.metadata.displayName, 'model')
+        return true
+      },
+    })
+    const status = await manager.importAsset({ kind: 'checkpoint' })
+    assert.equal(status.configured, true)
+    assert.equal(status.ready, process.platform === 'win32')
+    assert.equal(status.revision, 1)
+    const target = path.join(options.dataRoot, 'workspace', 'image-models', 'checkpoints', `${sha256}.safetensors`)
+    assert.deepEqual(await readFile(target), bytes)
+    assert.deepEqual(await readFile(checkpoint), bytes)
     await manager.close()
   })
 })

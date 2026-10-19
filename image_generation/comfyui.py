@@ -38,6 +38,7 @@ from .exceptions import (
     ImageGenerationProtocolError,
     ImageGenerationUnavailableError,
 )
+from .domain import MAX_SELECTED_LORAS
 from .png import CanonicalPng, MAX_GENERATED_PNG_BYTES, canonicalize_png
 from .profiles import ModelLoraProfile, ModelProfile
 from .workflow import CompiledWorkflow, MAX_WORKFLOW_JSON_BYTES
@@ -63,6 +64,32 @@ _REQUIRED_NODE_CLASSES: Final = (
 _UNAVAILABLE_MESSAGE: Final = "Local image runtime is not running or reachable."
 _INVALID_RESPONSE_MESSAGE: Final = "Local image runtime returned an invalid response."
 _FAILED_MESSAGE: Final = "Local image generation failed."
+
+
+def _normalize_profile_loras(
+    profile: ModelProfile,
+    lora: ModelLoraProfile | None,
+    loras: tuple[ModelLoraProfile, ...],
+) -> tuple[ModelLoraProfile, ...]:
+    """Resolve compatibility arguments to an exact ordered trusted asset tuple.
+
+    Object identity ensures that a lookalike asset declaration cannot replace
+    the catalog entry whose checksum and allowed model root were reviewed.
+    """
+
+    if (
+        type(loras) is not tuple or len(loras) > MAX_SELECTED_LORAS
+        or (lora is not None and loras)
+    ):
+        raise TypeError("Select at most four reviewed LoRAs without alias overlap.")
+    selected = (lora,) if lora is not None else loras
+    if (
+        any(type(asset) is not ModelLoraProfile for asset in selected)
+        or len({asset.lora_id for asset in selected}) != len(selected)
+        or any(profile.lora(asset.lora_id) is not asset for asset in selected)
+    ):
+        raise TypeError("LoRAs must be exact distinct reviewed profile assets.")
+    return selected
 
 
 class _WallClockDeadlineExceeded(Exception):
@@ -543,7 +570,10 @@ class HttpComfyUiClient:
             body=body,
         )
 
-    def ensure_ready(self, profile: ModelProfile, *, lora: ModelLoraProfile | None = None) -> None:
+    def ensure_ready(
+        self, profile: ModelProfile, *, lora: ModelLoraProfile | None = None,
+        loras: tuple[ModelLoraProfile, ...] = (),
+    ) -> None:
         """Verify required built-in nodes and the selected checkpoint/LoRA keys.
 
         The raw ComfyUI model-list endpoint does not expose a file digest.  The
@@ -554,11 +584,8 @@ class HttpComfyUiClient:
 
         if type(profile) is not ModelProfile:
             raise TypeError("profile must be ModelProfile.")
-        if lora is not None and (
-            type(lora) is not ModelLoraProfile or profile.lora(lora.lora_id) is not lora
-        ):
-            raise TypeError("lora must be the exact reviewed profile LoRA.")
-        node_classes = (*_REQUIRED_NODE_CLASSES, "LoraLoader") if lora is not None else _REQUIRED_NODE_CLASSES
+        selected_loras = _normalize_profile_loras(profile, lora, loras)
+        node_classes = (*_REQUIRED_NODE_CLASSES, "LoraLoader") if selected_loras else _REQUIRED_NODE_CLASSES
         for node_class in node_classes:
             document = self._request_json(
                 "GET",
@@ -584,17 +611,17 @@ class HttpComfyUiClient:
             raise ImageGenerationUnavailableError(
                 "The configured local image checkpoint is unavailable."
             )
-        if lora is not None:
-            loras = self._request_json(
+        if selected_loras:
+            available_loras = self._request_json(
                 "GET", "/models/loras", timeout_seconds=self._config.probe_timeout_seconds,
             )
             if (
-                not isinstance(loras, list)
-                or len(loras) > MAX_COMFYUI_QUEUE_RECORDS
-                or not all(type(model) is str for model in loras)
+                not isinstance(available_loras, list)
+                or len(available_loras) > MAX_COMFYUI_QUEUE_RECORDS
+                or not all(type(model) is str for model in available_loras)
             ):
                 raise ImageGenerationProtocolError(_INVALID_RESPONSE_MESSAGE)
-            if lora.lora_name not in loras:
+            if any(asset.lora_name not in available_loras for asset in selected_loras):
                 raise ImageGenerationUnavailableError("The selected reviewed LoRA is unavailable.")
 
     def probe_ready(self) -> None:

@@ -600,13 +600,8 @@ class ImageLoraSelectionParams(TypedDict):
     strengthClip: float
 
 
-class ImageGenerateParams(TypedDict):
-    """Describe one new original fictional character image request.
-
-    The new-character intent is fixed by the Backend and therefore is not a
-    caller-selectable wire field. Explicit and non-explicit descriptions use
-    this same DTO; no content-mode or policy-bypass switch exists.
-    """
+class _ImageGenerateCommonParams(TypedDict):
+    """Share prompt fields while keeping identity confirmation branches disjoint."""
 
     profileId: str
     sizePresetId: str
@@ -619,8 +614,24 @@ class ImageGenerateParams(TypedDict):
     lighting: str
     negativePrompt: str
     seed: int
-    originalFictionalConfirmed: Literal[True]
     lora: NotRequired[ImageLoraSelectionParams]
+    loras: NotRequired[list[ImageLoraSelectionParams]]
+
+
+class OriginalImageGenerateParams(_ImageGenerateCommonParams):
+    """Retain the original-character confirmation contract for existing callers."""
+
+    originalFictionalConfirmed: Literal[True]
+
+
+class ElysiaImageGenerateParams(_ImageGenerateCommonParams):
+    """Select the sole supported named character with explicit adult confirmation."""
+
+    characterId: Literal["elysia"]
+    fictionalAdultConfirmed: Literal[True]
+
+
+ImageGenerateParams = OriginalImageGenerateParams | ElysiaImageGenerateParams
 
 
 class ImageGalleryListParams(TypedDict):
@@ -2055,11 +2066,11 @@ def _validate_image_lora_selection(value: object) -> None:
 
 
 def _validate_image_generate_params(params: JsonObject) -> None:
-    """Validate the sole generation DTO without caller-selectable intent.
+    """Validate either reviewed identity branch and one ordered trusted LoRA set.
 
-    Exact fields are a security boundary: accepting a mode, policy toggle,
-    workflow, path, model name, or intent would silently broaden the reviewed
-    Backend-owned new-character workflow.
+    Exact fields prevent policy toggles or arbitrary identities from bypassing
+    the Backend-owned intent. Legacy original-character requests remain valid;
+    the Elysia branch cannot borrow their confirmation to hide mixed identities.
     """
 
     context = "image.generate params"
@@ -2077,10 +2088,12 @@ def _validate_image_generate_params(params: JsonObject) -> None:
             "lighting",
             "negativePrompt",
             "seed",
-            "originalFictionalConfirmed",
         },
         context,
-        optional={"lora"},
+        optional={
+            "lora", "loras", "originalFictionalConfirmed", "characterId",
+            "fictionalAdultConfirmed",
+        },
     )
     _validate_image_public_id(params, "profileId", context)
     _validate_image_public_id(params, "sizePresetId", context)
@@ -2126,13 +2139,43 @@ def _validate_image_generate_params(params: JsonObject) -> None:
             "protocol.invalid_params",
             f"{context}.seed cannot be negative.",
         )
-    if _require_boolean(params, "originalFictionalConfirmed", context) is not True:
+    if "characterId" in params or "fictionalAdultConfirmed" in params:
+        if (
+            "originalFictionalConfirmed" in params
+            or params.get("characterId") != "elysia"
+            or _require_boolean(params, "fictionalAdultConfirmed", context) is not True
+        ):
+            raise ProtocolValidationError(
+                "protocol.invalid_params",
+                f"{context} requires the exclusive confirmed adult Elysia identity.",
+            )
+    elif _require_boolean(params, "originalFictionalConfirmed", context) is not True:
         raise ProtocolValidationError(
             "protocol.invalid_params",
             f"{context}.originalFictionalConfirmed must be true.",
         )
+    if "lora" in params and "loras" in params:
+        raise ProtocolValidationError(
+            "protocol.invalid_params", f"{context} cannot combine lora and loras.",
+        )
     if "lora" in params:
         _validate_image_lora_selection(params["lora"])
+    if "loras" in params:
+        selections = params["loras"]
+        if not isinstance(selections, list) or not 1 <= len(selections) <= 4:
+            raise ProtocolValidationError(
+                "protocol.invalid_params", f"{context}.loras must contain 1 to 4 selections.",
+            )
+        identifiers: set[str] = set()
+        for selection in selections:
+            _validate_image_lora_selection(selection)
+            identifier = _as_object(selection, f"{context}.loras")["loraId"]
+            assert isinstance(identifier, str)
+            if identifier in identifiers:
+                raise ProtocolValidationError(
+                    "protocol.invalid_params", f"{context}.loras contains duplicate IDs.",
+                )
+            identifiers.add(identifier)
 
 
 def _validate_image_gallery_list_params(params: JsonObject) -> None:

@@ -1333,7 +1333,7 @@ const desktopApi = {
     return clone(imageSettings)
   },
 
-  /** Append one metadata-selected asset while every native filename stays in Main. */
+  /** Derive fixture metadata for minimal native imports without exposing selected filenames. */
   importImageAsset: async (params) => {
     record('importImageAsset', [params])
     if (pendingImageConfiguration !== null) throw new Error('Local image maintenance is already active.')
@@ -1348,8 +1348,11 @@ const desktopApi = {
     nextImageConfigurationResult = undefined
     if (result === null) return clone(imageSettings)
     if (result !== undefined) { imageSettings = clone(result); return clone(imageSettings) }
-    const metadata = params.metadata
     if (params.kind === 'checkpoint') {
+      const metadata = params.metadata ?? {
+        profileId: `imported-model-${imageSettings.revision + 1}`, displayName: '导入的 SDXL 模型',
+        promptDialect: 'sdxl-natural', defaultSizePresetId: 'square',
+      }
       if (imageSettings.profiles.some((profile) => profile.profileId === metadata.profileId)) throw new Error('图片模型 ID 已存在。')
       imageSettings = { ...imageSettings, configured: true, ready: true, state: 'ready',
         revision: imageSettings.revision + 1, message: '本地图片模型已就绪。',
@@ -1362,6 +1365,10 @@ const desktopApi = {
         }],
       }
     } else {
+      const metadata = params.metadata ?? {
+        targetProfileId: params.targetProfileId, loraId: `imported-lora-${imageSettings.revision + 1}`,
+        displayName: '导入的 LoRA',
+      }
       const target = imageSettings.profiles.find((profile) => profile.profileId === metadata.targetProfileId)
       if (target === undefined) throw new Error('请先导入适用的图片模型。')
       if (target.loras?.some((lora) => lora.loraId === metadata.loraId)) throw new Error('LoRA ID 已存在。')

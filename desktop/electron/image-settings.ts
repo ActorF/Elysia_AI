@@ -10,7 +10,7 @@ import { constants, type BigIntStats } from 'node:fs'
 import { lstat, open, realpath } from 'node:fs/promises'
 import path from 'node:path'
 import type { ImageAssetImportParams, ImageLoraMetadata, ImageLoraSummary,
-  ImageProfileMetadata, ImagePromptDialect } from './image-client.js'
+  ImageProfileMetadata, ImagePromptDialect, ReviewedImageAssetImportParams } from './image-client.js'
 export type { ImageProfileMetadata, ImagePromptDialect } from './image-client.js'
 
 /** Describe one bounded canvas through a logical identifier. */
@@ -55,7 +55,7 @@ export interface ImageInstallationReview {
 
 /** Show the selected source and its digest only inside Main's native confirmation. */
 export interface ImageAssetImportReview {
-  readonly params: ImageAssetImportParams
+  readonly params: ReviewedImageAssetImportParams
   readonly sourcePath: string
   readonly sha256: string
   readonly installation: {
@@ -107,8 +107,14 @@ export interface ImageSettingsOptions {
 /** Expose stable failure categories while withholding native errors and output. */
 export class ImageSettingsError extends Error {
   /** Construct a fixed-message settings failure suitable for guarded IPC. */
-  constructor(readonly reason: 'busy' | 'closed' | 'cancelled' | 'invalid-metadata' | 'unavailable' | 'timeout') {
-    super('Local image settings could not be checked or saved.')
+  constructor(readonly reason: 'busy' | 'closed' | 'cancelled' | 'invalid-metadata' | 'unavailable' | 'timeout' | 'duplicate-asset') {
+    const messages = {
+      busy: '图片设置正在处理，请稍后重试。', closed: '图片设置已关闭。', cancelled: '操作已取消。',
+      'invalid-metadata': '无法识别导入资料，请重新选择文件。',
+      unavailable: '无法校验文件或本地运行环境，请检查安装后重试。',
+      timeout: '文件检查超时，请稍后重试。', 'duplicate-asset': '这个文件已经导入，无需重复添加。',
+    }
+    super(messages[reason])
     this.name = 'ImageSettingsError'
   }
 }
@@ -161,6 +167,16 @@ export function parseImageProfileMetadata(value: unknown): ImageProfileMetadata 
 /** Validate a closed metadata-only import request before showing any native UI. */
 export function parseImageAssetImportParams(value: unknown): ImageAssetImportParams {
   try {
+    if (value !== null && typeof value === 'object' && !Object.hasOwn(value, 'metadata')) {
+      const simple = value as Record<string, unknown>
+      if (simple.kind === 'checkpoint') {
+        fields(value, ['kind'])
+        return Object.freeze({ kind: 'checkpoint' })
+      }
+      fields(value, ['kind', 'targetProfileId'])
+      if (simple.kind !== 'lora') throw new Error()
+      return Object.freeze({ kind: 'lora', targetProfileId: publicId(simple.targetProfileId) })
+    }
     const raw = fields(value, ['kind', 'metadata'])
     if (raw.kind === 'checkpoint') return Object.freeze({ kind: 'checkpoint', metadata: parseImageProfileMetadata(raw.metadata) })
     if (raw.kind !== 'lora') throw new Error()
@@ -369,10 +385,9 @@ export class ImageSettingsManager {
   private async importOnce(params: ImageAssetImportParams, signal: AbortSignal, beforeApply: () => Promise<void>): Promise<ImageSettingsStatus> {
     if (this.options.confirmAssetImport === undefined) throw new ImageSettingsError('unavailable')
     const baseline = await this.invoke({ op: 'status' }, signal)
-    const target = params.kind === 'lora'
-      ? baseline.profiles.find(profile => profile.profileId === params.metadata.targetProfileId) : undefined
-    if (params.kind === 'checkpoint' && baseline.profiles.some(profile => profile.profileId === params.metadata.profileId)
-      || params.kind === 'lora' && (target === undefined || target.loras?.some(lora => lora.loraId === params.metadata.loraId))) {
+    const targetId = params.kind === 'lora' ? ('metadata' in params ? params.metadata.targetProfileId : params.targetProfileId) : null
+    const target = baseline.profiles.find(profile => profile.profileId === targetId)
+    if (params.kind === 'lora' && target === undefined) {
       throw new ImageSettingsError('invalid-metadata')
     }
     const deadline = performance.now() + this.importTimeoutMs
@@ -399,7 +414,30 @@ export class ImageSettingsManager {
     if (path.extname(sourcePath).toLowerCase() !== '.safetensors') throw new ImageSettingsError('unavailable')
     const file = await hashFile(sourcePath, signal, deadline)
     reviewed.push(file)
-    const review: ImageAssetImportReview = Object.freeze({ params, sourcePath, sha256: file.sha256, installation })
+    let resolved: ReviewedImageAssetImportParams
+    if ('metadata' in params) resolved = params
+    else {
+      const result = fields(await this.invokeRaw({ op: 'assets.inspect', kind: params.kind,
+        sourcePath, sha256: file.sha256, targetProfileId: targetId }, signal, this.importTimeoutMs), ['kind', 'metadata'])
+      if (result.kind !== 'image.asset.metadata') throw new ImageSettingsError('unavailable')
+      const checked = parseImageAssetImportParams({ kind: params.kind, metadata: result.metadata })
+      if (!('metadata' in checked) || checked.kind === 'lora' && checked.metadata.targetProfileId !== targetId) {
+        throw new ImageSettingsError('unavailable')
+      }
+      resolved = checked
+    }
+    const existingCheckpoint = resolved.kind === 'checkpoint'
+      ? baseline.profiles.find(profile => profile.profileId === resolved.metadata.profileId) : undefined
+    const existingLora = resolved.kind === 'lora'
+      ? target?.loras?.find(lora => lora.loraId === resolved.metadata.loraId) : undefined
+    // A missing immutable copy can be restored through the same native picker.
+    // The worker independently requires the existing ID/hash/key and absence;
+    // altered or conflicting files are never overwritten as a "repair".
+    if (existingCheckpoint && baseline.state !== 'missing_model'
+      || existingLora && (existingLora.available || existingLora.message !== 'LoRA 文件缺失')) {
+      throw new ImageSettingsError('duplicate-asset')
+    }
+    const review: ImageAssetImportReview = Object.freeze({ params: resolved, sourcePath, sha256: file.sha256, installation })
     if (await callback(() => this.options.confirmAssetImport!(review, signal), signal) !== true) return baseline
     // Only native-selected paths cross this private worker boundary. Recheck
     // every reviewed identity after consent; the worker independently copies
@@ -415,8 +453,8 @@ export class ImageSettingsManager {
     checkAbort(signal)
     return this.invoke({ op: 'assets.import', trustedConfirmation: true, expectedRevision: baseline.revision,
       installation,
-      checkpoint: params.kind === 'checkpoint' ? { sourcePath, sha256: file.sha256, metadata: params.metadata } : null,
-      lora: params.kind === 'lora' ? { sourcePath, sha256: file.sha256, ...params.metadata } : null,
+      checkpoint: resolved.kind === 'checkpoint' ? { sourcePath, sha256: file.sha256, metadata: resolved.metadata } : null,
+      lora: resolved.kind === 'lora' ? { sourcePath, sha256: file.sha256, ...resolved.metadata } : null,
     }, signal, this.importTimeoutMs)
   }
 

@@ -1015,6 +1015,42 @@
       }
     },
     {
+      "name": "adult Elysia image generation with ordered character and style LoRAs",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "image-elysia-loras-1",
+        "method": "image.generate",
+        "params": {
+          "profileId": "wai_illustrious_v8", "sizePresetId": "portrait",
+          "appearance": "Elysia, adult fictional woman", "outfit": "white dress",
+          "pose": "standing", "scene": "garden", "style": "anime illustration",
+          "camera": "medium shot", "lighting": "soft daylight", "negativePrompt": "extra fingers",
+          "seed": 42, "characterId": "elysia", "fictionalAdultConfirmed": true,
+          "loras": [
+            { "loraId": "hikari_elysia", "strengthModel": 0.8, "strengthClip": 0.8 },
+            { "loraId": "starrail_style", "strengthModel": 0.6, "strengthClip": 0.6 }
+          ]
+        }
+      }
+    },
+    {
+      "name": "adult Elysia image generation without LoRAs",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "image-elysia-off-1",
+        "method": "image.generate",
+        "params": {
+          "profileId": "wai_illustrious_v8", "sizePresetId": "portrait",
+          "appearance": "Elysia, adult fictional woman", "outfit": "white dress",
+          "pose": "standing", "scene": "garden", "style": "anime illustration",
+          "camera": "medium shot", "lighting": "soft daylight", "negativePrompt": "extra fingers",
+          "seed": 42, "characterId": "elysia", "fictionalAdultConfirmed": true
+        }
+      }
+    },
+    {
       "name": "image gallery list request",
       "message": {
         "type": "request",
@@ -5250,6 +5286,64 @@
           "speechStartSample": 0,
           "speechEndSample": 3200,
           "pcmBase64": "AB=="
+        }
+      }
+    },
+    {
+      "name": "image generation rejects duplicate LoRA IDs with different strengths",
+      "runtimeOnly": true,
+      "message": {
+        "type": "request", "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "image-loras-duplicate", "method": "image.generate",
+        "params": {
+          "profileId": "anime_default", "sizePresetId": "portrait",
+          "appearance": "adult fictional Elysia", "outfit": "", "pose": "",
+          "scene": "", "style": "", "camera": "", "lighting": "", "negativePrompt": "",
+          "seed": 42, "characterId": "elysia", "fictionalAdultConfirmed": true,
+          "loras": [
+            { "loraId": "character_style", "strengthModel": 1, "strengthClip": 1 },
+            { "loraId": "character_style", "strengthModel": 0.5, "strengthClip": 0.5 }
+          ]
+        }
+      }
+    },
+    {
+      "name": "image generation rejects mixed identity confirmations",
+      "message": {
+        "type": "request", "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "image-identity-mixed", "method": "image.generate",
+        "params": {
+          "profileId": "anime_default", "sizePresetId": "portrait",
+          "appearance": "adult fictional Elysia", "outfit": "", "pose": "",
+          "scene": "", "style": "", "camera": "", "lighting": "", "negativePrompt": "",
+          "seed": 42, "characterId": "elysia", "fictionalAdultConfirmed": true,
+          "originalFictionalConfirmed": true
+        }
+      }
+    },
+    {
+      "name": "image generation rejects unreviewed named characters",
+      "message": {
+        "type": "request", "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "image-identity-unsupported", "method": "image.generate",
+        "params": {
+          "profileId": "anime_default", "sizePresetId": "portrait",
+          "appearance": "adult fictional woman", "outfit": "", "pose": "",
+          "scene": "", "style": "", "camera": "", "lighting": "", "negativePrompt": "",
+          "seed": 42, "characterId": "someone_else", "fictionalAdultConfirmed": true
+        }
+      }
+    },
+    {
+      "name": "image generation rejects empty LoRA list",
+      "message": {
+        "type": "request", "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "image-loras-empty", "method": "image.generate",
+        "params": {
+          "profileId": "anime_default", "sizePresetId": "portrait",
+          "appearance": "adult fictional Elysia", "outfit": "", "pose": "",
+          "scene": "", "style": "", "camera": "", "lighting": "", "negativePrompt": "",
+          "seed": 42, "characterId": "elysia", "fictionalAdultConfirmed": true, "loras": []
         }
       }
     },
