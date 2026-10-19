@@ -5724,6 +5724,43 @@ function imageGenerateRequest() {
   return structuredClone(sample.message)
 }
 
+test('image generation preserves omission and accepts bounded complete LoRA selection', () => {
+  const legacy = imageGenerateRequest()
+  assert.equal(Object.hasOwn(legacy.params, 'lora'), false)
+  assert.deepEqual(parseClientRequest(legacy), legacy)
+  for (const [strengthModel, strengthClip] of [[0, 2], [2, 0], [0.75, 1.25]]) {
+    const request = imageGenerateRequest()
+    request.params.lora = { loraId: 'character_style', strengthModel, strengthClip }
+    assert.deepEqual(parseClientRequest(request).params.lora, request.params.lora)
+  }
+})
+
+test('image generation rejects incomplete or path-bearing LoRA selection', () => {
+  for (const lora of [
+    undefined, null, [], 'character_style', {},
+    { loraId: 'character_style', strengthModel: 1 },
+    { loraId: 'character_style', strengthModel: 1, strengthClip: 1, path: 'private' },
+    { loraId: '../character.safetensors', strengthModel: 1, strengthClip: 1 },
+    { loraId: 'character.safetensors', strengthModel: 1, strengthClip: 1 },
+    { loraId: 'Character', strengthModel: 1, strengthClip: 1 },
+  ]) {
+    const request = imageGenerateRequest()
+    request.params.lora = lora
+    assert.throws(() => parseClientRequest(request), ProtocolValidationError)
+  }
+})
+
+test('image generation requires finite numeric LoRA strengths from zero through two', () => {
+  for (const field of ['strengthModel', 'strengthClip']) {
+    for (const strength of [undefined, null, true, '1', -0.01, 2.01, NaN, Infinity, -Infinity]) {
+      const request = imageGenerateRequest()
+      request.params.lora = { loraId: 'character_style', strengthModel: 1, strengthClip: 1 }
+      request.params.lora[field] = strength
+      assert.throws(() => parseClientRequest(request), ProtocolValidationError)
+    }
+  }
+})
+
 test('image generation keeps policy toggles outside the public DTO', () => {
   for (const field of ['contentMode', 'adultMode', 'nsfw', 'protection']) {
     const request = imageGenerateRequest()

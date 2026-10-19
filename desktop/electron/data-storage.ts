@@ -519,6 +519,14 @@ function classifyDataPath(relativePath: string): PathClassification {
     // Explicitly saved Vision pixels are durable user data, never cache. The
     // data-root move carries them; deletion belongs to Vision history controls.
     vision: 'other',
+    // Reviewed image weights, Gallery artifacts, and private runtime recovery
+    // data move with the root. Even an empty run root is owned by Images;
+    // treating these as cache or unknown would lose recovery state or retain
+    // every old root after otherwise successful, byte-verified migration.
+    'image-models': 'other',
+    gallery: 'other',
+    'image-runs': 'other',
+    'image-recovery': 'other',
     recovery: 'config',
     sources: 'sources',
     attachments: 'sources',

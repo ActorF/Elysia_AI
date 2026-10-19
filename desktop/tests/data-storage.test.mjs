@@ -325,6 +325,116 @@ test('Work bindings and opted-in Vision images migrate as durable data and survi
   })
 })
 
+test('image model pins, Gallery and recovery data move durably and survive temporary cleanup', async () => {
+  await withTempDirectory(async (directory) => {
+    const storage = new ElectronDataStorage({
+      userDataDirectory: path.join(directory, 'user-data'),
+    })
+    const initial = await storage.initialize()
+    const source = initial.state.activeDataRoot
+    const settings = JSON.stringify({
+      schema_version: 3,
+      revision: 1,
+      installation: { models_root: { data_root_relative: 'workspace/image-models' } },
+    })
+    const durable = new Map([
+      ['workspace/settings/images.json', settings],
+      ['workspace/image-models/checkpoints/reviewed.safetensors', 'checkpoint fixture'],
+      ['workspace/image-models/loras/reviewed.safetensors', 'LoRA fixture'],
+      ['workspace/gallery/image_fixture/image.png', 'private PNG fixture'],
+      ['workspace/image-recovery/quarantine_fixture/history.json', 'private recovery fixture'],
+    ])
+    for (const [relativePath, content] of durable) {
+      await writeDataFile(source, relativePath, content)
+    }
+    await mkdir(path.join(source, 'workspace/image-runs'))
+    await writeDataFile(source, 'workspace/cache/temporary.bin', 'remove me')
+    const destination = path.join(directory, 'new-image-data-root')
+    await mkdir(destination)
+
+    const transaction = await storage.prepareMove(destination, initial.state.revision)
+    for (const [relativePath, content] of durable) {
+      assert.equal(await readFile(path.join(destination, relativePath), 'utf8'), content)
+      assert.equal(await readFile(path.join(source, relativePath), 'utf8'), content)
+    }
+    const committed = await storage.commitMove(transaction)
+    assert.equal(committed.oldRootRetained, false)
+    assert.equal(committed.warning, null)
+    await assert.rejects(readdir(source), { code: 'ENOENT' })
+
+    const inventory = await storage.scan()
+    assert.equal(usageByCategory(inventory).other.fileCount, 4)
+    await storage.cleanup({
+      expectedRevision: committed.state.revision,
+      token: inventory.token,
+      categories: ['audio', 'cache', 'logs'],
+    })
+    for (const [relativePath, content] of durable) {
+      assert.equal(await readFile(path.join(destination, relativePath), 'utf8'), content)
+    }
+    assert.deepEqual(await readdir(path.join(destination, 'workspace/image-runs')), [])
+    await assert.rejects(readFile(path.join(destination, 'workspace/cache/temporary.bin')), { code: 'ENOENT' })
+  })
+})
+
+test('image-data move rollback preserves the source and removes only the verified destination', async () => {
+  await withTempDirectory(async (directory) => {
+    const storage = new ElectronDataStorage({
+      userDataDirectory: path.join(directory, 'user-data'),
+    })
+    const initial = await storage.initialize()
+    const source = initial.state.activeDataRoot
+    const durable = new Map([
+      ['workspace/image-models/loras/reviewed.safetensors', 'LoRA fixture'],
+      ['workspace/gallery/image_fixture/image.png', 'private PNG fixture'],
+      ['workspace/image-runs/run_fixture/prompt.json', 'private unfinished prompt'],
+      ['workspace/image-recovery/quarantine_fixture/history.json', 'private recovery fixture'],
+    ])
+    for (const [relativePath, content] of durable) {
+      await writeDataFile(source, relativePath, content)
+    }
+    const destination = path.join(directory, 'rolled-back-image-data-root')
+    await mkdir(destination)
+
+    const transaction = await storage.prepareMove(destination, initial.state.revision)
+    const rolledBack = await storage.rollbackMove(transaction)
+
+    assert.equal(rolledBack.state.activeDataRoot, source)
+    assert.equal(rolledBack.newRootRetained, false)
+    assert.equal(rolledBack.warning, null)
+    await assert.rejects(readdir(destination), { code: 'ENOENT' })
+    for (const [relativePath, content] of durable) {
+      assert.equal(await readFile(path.join(source, relativePath), 'utf8'), content)
+    }
+  })
+})
+
+test('image model changes after staging retain the original data root', async () => {
+  await withTempDirectory(async (directory) => {
+    const storage = new ElectronDataStorage({
+      userDataDirectory: path.join(directory, 'user-data'),
+    })
+    const initial = await storage.initialize()
+    const model = await writeDataFile(
+      initial.state.activeDataRoot, 'workspace/image-models/loras/reviewed.safetensors', 'original weights',
+    )
+    const destination = path.join(directory, 'new-image-data-root')
+    await mkdir(destination)
+    const transaction = await storage.prepareMove(destination, initial.state.revision)
+
+    await writeFile(model, 'changed weights')
+    const committed = await storage.commitMove(transaction)
+
+    assert.equal(committed.oldRootRetained, true)
+    assert.equal(committed.retainedRoot, initial.state.activeDataRoot)
+    assert.equal(await readFile(model, 'utf8'), 'changed weights')
+    assert.equal(
+      await readFile(path.join(destination, 'workspace/image-models/loras/reviewed.safetensors'), 'utf8'),
+      'original weights',
+    )
+  })
+})
+
 test('commit retains an old root containing unknown content', async () => {
   await withTempDirectory(async (directory) => {
     const storage = new ElectronDataStorage({

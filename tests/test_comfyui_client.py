@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import struct
@@ -24,7 +25,7 @@ from image_generation.comfyui import (
     HttpComfyUiClient,
     normalize_comfyui_base_url,
 )
-from image_generation.domain import ImageGenerationSpec
+from image_generation.domain import ImageGenerationSpec, ImageLoraSelection
 from image_generation.exceptions import (
     ImageGenerationFailedError,
     ImageGenerationProtocolError,
@@ -34,6 +35,7 @@ from image_generation.png import PNG_SIGNATURE
 from image_generation.profiles import (
     ImageSizePreset,
     ModelArchitecture,
+    ModelLoraProfile,
     ModelProfile,
     PromptDialect,
 )
@@ -108,6 +110,8 @@ class _ServerState:
 
         self.prompt_id = str(uuid4())
         self.models = [_profile().checkpoint_name]
+        self.loras: object = []
+        self.missing_nodes: set[str] = set()
         self.running: list[list[object]] = []
         self.pending: list[list[object]] = []
         self.history_override: object | None = None
@@ -223,10 +227,16 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if parsed.path.startswith("/object_info/"):
             node_class = parsed.path.rsplit("/", 1)[1]
+            if node_class in state.missing_nodes:
+                self._json({})
+                return
             self._json({node_class: {"input": {}}})
             return
         if parsed.path == "/models/checkpoints":
             self._json(state.models)
+            return
+        if parsed.path == "/models/loras":
+            self._json(state.loras)
             return
         if parsed.path.startswith("/history/"):
             prompt_id = parsed.path.rsplit("/", 1)[1]
@@ -421,7 +431,7 @@ def test_readiness_probe_accepts_initialized_runtime_without_returning_stats(
 
     caplog.set_level("DEBUG")
     with _fake_server() as (base_url, state):
-        result = _client(base_url).probe_ready()
+        result = _client(base_url).probe_ready()  # type: ignore[func-returns-value]
 
     assert result is None
     assert ("GET", "/system_stats", {}) in state.requests
@@ -462,6 +472,68 @@ def test_probe_fails_closed_when_the_checkpoint_is_not_installed() -> None:
 
         with pytest.raises(ImageGenerationUnavailableError, match="checkpoint"):
             _client(base_url).ensure_ready(_profile())
+
+
+@pytest.mark.parametrize("problem", ["none", "missing-file", "missing-node", "invalid-list"])
+def test_selected_lora_readiness_is_conditional_and_checks_exact_key(problem: str) -> None:
+    """Probe the fixed loader and selected model only when the optional asset is used."""
+
+    lora = ModelLoraProfile(
+        lora_id="reviewed", display_name="Reviewed fixture", architecture=ModelArchitecture.SDXL,
+        lora_name="fixtures/reviewed.safetensors", lora_sha256="a" * 64,
+        lora_source="Synthetic fixture", lora_license="Synthetic declaration",
+    )
+    profile = replace(_profile(), loras=(lora,))
+    with _fake_server() as (base_url, state):
+        client = _client(base_url)
+        client.ensure_ready(profile)
+        assert not any(path in {"/models/loras", "/object_info/LoraLoader"} for _, path, _ in state.requests)
+        state.loras = [lora.lora_name]
+        if problem == "missing-file":
+            state.loras = ["different.safetensors"]
+        elif problem == "missing-node":
+            state.missing_nodes = {"LoraLoader"}
+        elif problem == "invalid-list":
+            state.loras = {"loras": [lora.lora_name]}
+        if problem == "none":
+            client.ensure_ready(profile, lora=lora)
+            assert ("GET", "/models/loras", {}) in state.requests
+        else:
+            error = ImageGenerationProtocolError if problem == "invalid-list" else ImageGenerationUnavailableError
+            with pytest.raises(error):
+                client.ensure_ready(profile, lora=lora)
+
+
+def test_adapter_submits_selected_sealed_lora_graph_without_extending_graph_inputs() -> None:
+    """Send the fixed optional loader through the same correlated PNG pipeline."""
+
+    lora = ModelLoraProfile(
+        lora_id="reviewed", display_name="Reviewed fixture", architecture=ModelArchitecture.SDXL,
+        lora_name="fixtures/reviewed.safetensors", lora_sha256="a" * 64,
+        lora_source="Synthetic fixture", lora_license="Synthetic declaration",
+    )
+    profile = replace(_profile(), loras=(lora,))
+    workflow = compile_txt2img_workflow(
+        ImageGenerationSpec(
+            profile_id=profile.profile_id, size_preset_id="square", appearance="original adult portrait",
+            original_fictional_confirmed=True, lora=ImageLoraSelection(lora.lora_id, 0.75, 0.5),
+        ), profile, job_id=str(uuid4()),
+    )
+    with _fake_server() as (base_url, state):
+        state.loras = [lora.lora_name]
+        client = _client(base_url)
+        client.ensure_ready(profile, lora=lora)
+        handle = client.submit(workflow)
+        descriptor = client.wait_for_output(handle, "7")
+        image = client.fetch_png(descriptor, expected_width=512, expected_height=512)
+
+    assert image.width == image.height == 512
+    assert state.submitted is not None
+    graph = state.submitted["prompt"]
+    assert len(graph) == 8
+    assert graph["8"]["inputs"]["lora_name"] == lora.lora_name
+    assert graph["8"]["inputs"]["strength_model"] == 0.75
+    assert graph["8"]["inputs"]["strength_clip"] == 0.5
 
 
 def test_redirect_is_rejected_without_following_its_location() -> None:

@@ -1333,6 +1333,48 @@ const desktopApi = {
     return clone(imageSettings)
   },
 
+  /** Append one metadata-selected asset while every native filename stays in Main. */
+  importImageAsset: async (params) => {
+    record('importImageAsset', [params])
+    if (pendingImageConfiguration !== null) throw new Error('Local image maintenance is already active.')
+    if (delayImageConfiguration) await new Promise((resolve) => { pendingImageConfiguration = resolve })
+    pendingImageConfiguration = null
+    if (nextImageConfigurationError !== null) {
+      const message = nextImageConfigurationError
+      nextImageConfigurationError = null
+      throw new Error(message)
+    }
+    const result = nextImageConfigurationResult
+    nextImageConfigurationResult = undefined
+    if (result === null) return clone(imageSettings)
+    if (result !== undefined) { imageSettings = clone(result); return clone(imageSettings) }
+    const metadata = params.metadata
+    if (params.kind === 'checkpoint') {
+      if (imageSettings.profiles.some((profile) => profile.profileId === metadata.profileId)) throw new Error('图片模型 ID 已存在。')
+      imageSettings = { ...imageSettings, configured: true, ready: true, state: 'ready',
+        revision: imageSettings.revision + 1, message: '本地图片模型已就绪。',
+        defaultProfileId: imageSettings.defaultProfileId ?? metadata.profileId,
+        profiles: [...imageSettings.profiles, {
+          profileId: metadata.profileId, displayName: metadata.displayName, architecture: 'sdxl',
+          promptDialect: metadata.promptDialect, defaultSizePresetId: metadata.defaultSizePresetId,
+          sizePresets: [{ presetId: 'square', width: 1024, height: 1024 },
+            { presetId: 'portrait', width: 832, height: 1216 }, { presetId: 'landscape', width: 1216, height: 832 }],
+        }],
+      }
+    } else {
+      const target = imageSettings.profiles.find((profile) => profile.profileId === metadata.targetProfileId)
+      if (target === undefined) throw new Error('请先导入适用的图片模型。')
+      if (target.loras?.some((lora) => lora.loraId === metadata.loraId)) throw new Error('LoRA ID 已存在。')
+      imageSettings = { ...imageSettings, revision: imageSettings.revision + 1,
+        profiles: imageSettings.profiles.map((profile) => profile.profileId !== metadata.targetProfileId ? profile : {
+          ...profile, loras: [...(profile.loras ?? []), { loraId: metadata.loraId, displayName: metadata.displayName,
+            available: true, message: 'LoRA 已就绪。', defaultStrengthModel: 1, defaultStrengthClip: 1 }],
+        }),
+      }
+    }
+    return clone(imageSettings)
+  },
+
   /** Model native recovery consent while recording the exact argument-free renderer request. */
   recoverImageRuntime: async (...args) => {
     record('recoverImageRuntime', args)

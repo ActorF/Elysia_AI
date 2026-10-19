@@ -41,6 +41,7 @@ Core 只接收 `is_managed_private_runtime is True` 且持有组合根私有 cap
 | `seed` | 0 至 JSON safe integer 上限 |
 | `original_fictional_confirmed` | 必须为 `true` |
 | `intent` | 仅 `new-character` |
+| `lora` | 可选单个 `ImageLoraSelection`，只含受信逻辑 ID 和两项有限强度 0–2；关闭时省略 |
 
 控制字符、surrogate 和超长文本在编译前拒绝；编译后的正负提示词各最多 6000 code points。LLM 若参与填写，输出仍必须先通过同一合同，不能直接控制节点、模型或路径。
 
@@ -56,7 +57,7 @@ Core 只接收 `is_managed_private_runtime is True` 且持有组合根私有 cap
 
 `image_generation/prompting.py` 按方言添加固定质量前缀和原创虚构成年人描述，再按稳定顺序连接字段。系统负面词不可删除；该模块不做自动扩写或随机提示词池。
 
-`image_generation/workflow.py` 仅编译 `core-sdxl-txt2img` v1：
+`image_generation/workflow.py` 编译固定 `core-sdxl-txt2img`；未选择 LoRA 时仍使用原 v1 图：
 
 ```text
 CheckpointLoaderSimple
@@ -66,11 +67,13 @@ CheckpointLoaderSimple
 
 节点、连接、`batch_size=1`、`denoise=1.0` 和输出节点由源码固定；可变值只能来自已验证 Spec/Profile。Canonical JSON 形成 Workflow Digest，`request_graph()` 每次返回新对象，防止调用者修改污染后续提交。输出前缀只含固定标识与 Core UUID，返回文件名从不当作本机路径打开。
 
+选择 LoRA 使用 v2，唯一新增固定节点 8 `LoraLoader`：Checkpoint 的 MODEL/CLIP 进入该节点，输出分别连接 KSampler 和两个 CLIPTextEncode；VAE 继续来自 Checkpoint。每次最多一个受信 LoRA，不接受节点 JSON、文件名或路径。无 LoRA 的旧 Profile Digest 保持兼容；非空目录的 ID、摘要、来源、许可进入 Profile Digest，具体选择和强度进入 Workflow Digest 与编译封印。不会自动追加模型元数据中的触发词。
+
 ## 私有 Runtime 与信任边界
 
 普通 ComfyUI 的 `SaveImage` 会落盘，History 会保留 Graph/提示词；只清除返回 PNG 元数据不足以清理它们。因此生产为每个任务启动独立实例，发布前终止完整进程树并删除 Input、Output、Temp、User、Cache 和空 Frontend 目录。
 
-启动前按 SHA-256 验证 Python、ComfyUI `main.py` 和 Checkpoint，并以 Windows 只读文件守卫固定身份/内容。命令使用 Volume-GUID 稳定路径，避免盘符重映射；随机回环端口必须属于准确 Child PID。HTTP 仍核对模型 Key。
+启动前按 SHA-256 验证 Python、ComfyUI `main.py`、Checkpoint 以及本次选择的 LoRA，并以 Windows 只读文件守卫固定身份/内容。LoRA 是独立的第 4 项声明，必须和 Checkpoint 同属已审核模型根，守卫保留到完整子进程清理结束。命令使用 Volume-GUID 稳定路径，避免盘符重映射；随机回环端口必须属于准确 Child PID。HTTP 仍核对模型 Key，选用 LoRA 时还验证内置 Loader 与其模型目录。
 
 私有根必须在固定本机卷，不能与 Runtime、解释器或模型路径重叠；已有任何条目都拒绝新任务。启动参数禁用 metadata、custom nodes、在线 assets、partner nodes 和浏览器自动打开；闭合环境将 HF/Torch/CUDA/Triton 等缓存全部指向当前任务根，不继承代理。
 
@@ -173,9 +176,15 @@ Electron Main 创建并拥有 fd4，Python 接管前验证它是 Pipe 并关闭�
 
 Settings 的“图片生成”页通过 Main 原生选择 ComfyUI 目录、解释器和 `models/checkpoints` 下的 SDXL 模型。Renderer 只提交逻辑 Profile、默认尺寸、来源和许可；Main 流式计算稳定文件 SHA-256，原生确认后通过私有 Worker 写入固定配置。配置期间保留维护准入，取消不重启 Backend；成功写入新 Revision 后重启以重新验证并广告 Capability。
 
+“导入 Checkpoint / 导入 LoRA”支持从任意原生选择位置复制普通 safetensors 文件，保留原文件、已有 Profile 和默认模型。Renderer 仅提交种类、逻辑元数据和目标 Profile；Main 独占路径、摘要与确认窗口。首装额外选择已受信 ComfyUI/Python，模型复制到 `workspace/image-models`；已有安装继续使用其模型根。Worker 在文件守卫内检查有界 safetensors Header、张量布局和角色，流式复制到摘要命名的普通文件，以排他 Rename 发布，最后 CAS 保存配置。冲突不覆盖已有文件；保存失败可保留已验证的未引用资产供重试，只清理本次仍同身份的临时文件。导入 Worker 最多运行 600 秒，退出时先终止并排空再释放维护准入。
+
+原生确认后，Main 先排空 Backend，再获取原 Gallery Lease 导入；成功或失败都在释放维护准入前重启已停止的 Backend。取消原生窗口不会停机。每个 Profile 有独立 LoRA 目录；缺失或摘要变化只禁用对应选项，关闭 LoRA 仍可使用主模型。生成页每次可选“不使用”，或选一个兼容且可用的 LoRA，分别调模型/CLIP 强度（默认各 1）。切换 Profile 清除不兼容选择，任务执行与隐藏页面期间保留已提交选择。
+
+私有配置兼容读取 schema1/2，显式保存为 schema3；首装的精确私有模型根以固定标记 `{ "data_root_relative": "workspace/image-models" }` 持久化，随应用数据根移动解析，其他已审核外部路径保持绝对路径。移动数据保持配置字节不变，保留原有复制校验/回滚合同；模型、Gallery、运行目录及隔离目录均属于持久数据，普通缓存清理不会删除。Gallery 现有 Manifest/API 不迁移：摘要绑定条件，但列表仍不显示/恢复选用的 LoRA ID 和强度。
+
 配置保存到私有数据根的 `workspace/settings/images.json`，使用 Revision 比较交换和原子发布。Backend 启动只从该受信配置组合 Runtime/Profile/Gallery；缺失模型、摘要变化和不可用安装明确呈现。损坏配置只能在原生确认后修复，原字节备份到固定私有文件，Gallery 保留。启动期间读取多 GiB 模型摘要，因此握手期限为 180 秒。
 
-Windows 受管启动保留卷 GUID 文件身份，解释器的原生启动拼写使用同一卷的 `\\.\Volume{GUID}\...`；入口和模型仍使用受保护路径。私有工作目录为应用拥有的普通 DOS 路径，不具有这些文件的原生卷身份固定保证。Windows venv 重定向器不能通过该命名空间查找 `pyvenv.cfg`，因此需选择完整解释器。嵌入式 Python 的 `_pth` 需审查并使用安装内标准库与依赖的绝对路径，保持 CPython 原有安全 DLL 搜索标志。三项固定摘要保护解释器、ComfyUI 入口和 Checkpoint；第三方 DLL、标准库和 `site-packages` 属于受信完整安装，使用 Windows/CPython 常规路径解析，不享有上述卷身份固定保证。依赖清单与文件摘要审计不能视为进程沙箱或第三方代码无缺陷的证明。
+Windows 受管启动保留卷 GUID 文件身份，解释器的原生启动拼写使用同一卷的 `\\.\Volume{GUID}\...`；入口和模型仍使用受保护路径。私有工作目录为应用拥有的普通 DOS 路径，不具有这些文件的原生卷身份固定保证。Windows venv 重定向器不能通过该命名空间查找 `pyvenv.cfg`，因此需选择完整解释器。嵌入式 Python 的 `_pth` 需审查并使用安装内标准库与依赖的绝对路径，保持 CPython 原有安全 DLL 搜索标志。固定摘要保护解释器、ComfyUI 入口、Checkpoint 和所选 LoRA；第三方 DLL、标准库和 `site-packages` 属于受信完整安装，使用 Windows/CPython 常规路径解析，不享有上述卷身份固定保证。依赖清单与文件摘要审计不能视为进程沙箱或第三方代码无缺陷的证明。
 
 实际依赖摘要、模型许可和来源见[运行环境审计](17-LOCAL-IMAGE-RUNTIME-AUDIT.md)；本机真实生成、私有预览、导出、取消及持续运行的事实与范围见[真实验收记录](18-LOCAL-IMAGE-REAL-ACCEPTANCE.md)。
 

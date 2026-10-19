@@ -1,4 +1,4 @@
-/** @fileoverview Define the path-free image preview capability exposed by Main. */
+/** @fileoverview Define Main's path-free image generation, trusted asset metadata, settings, and preview APIs. */
 
 import type { ImageGenerateParams, ImageGenerationResult, ImageGalleryListParams,
   ImageGalleryListResult, ImageGalleryDeleteResult, ImageGalleryGetResult } from './protocol.js'
@@ -16,6 +16,30 @@ export interface ImageProfileMetadata {
   readonly defaultSizePresetId: 'square' | 'portrait' | 'landscape'
 }
 
+/** Describe one reviewed adapter without granting Renderer a filesystem path. */
+export interface ImageLoraMetadata {
+  readonly loraId: string
+  readonly displayName: string
+  readonly targetProfileId: string
+  readonly source: string
+  readonly license: string
+}
+
+/** Choose the asset kind while Main owns native selection, hashing, and consent. */
+export type ImageAssetImportParams =
+  | { readonly kind: 'checkpoint'; readonly metadata: ImageProfileMetadata }
+  | { readonly kind: 'lora'; readonly metadata: ImageLoraMetadata }
+
+/** Report adapter availability independently of the underlying checkpoint. */
+export interface ImageLoraSummary {
+  readonly loraId: string
+  readonly displayName: string
+  readonly available: boolean
+  readonly message: string
+  readonly defaultStrengthModel: number
+  readonly defaultStrengthClip: number
+}
+
 /** Path-free model readiness and reviewed preset choices. */
 export interface ImageSettingsSummary {
   configured: boolean
@@ -31,6 +55,7 @@ export interface ImageSettingsSummary {
     promptDialect: string
     defaultSizePresetId: string
     sizePresets: ReadonlyArray<{ presetId: string; width: number; height: number }>
+    loras?: readonly ImageLoraSummary[]
   }>
 }
 
@@ -49,6 +74,8 @@ export interface ImageClient {
   getImageSettings(): Promise<ImageSettingsSummary>
   /** Run native installation picks and explicit hash/provenance consent before saving. */
   configureImageInstallation(metadata: ImageProfileMetadata): Promise<ImageSettingsSummary>
+  /** Import a native-selected checkpoint or adapter without replacing existing profiles. */
+  importImageAsset(params: ImageAssetImportParams): Promise<ImageSettingsSummary>
   /** Quarantine incomplete private runs after Main's native confirmation, retaining their files. */
   recoverImageRuntime(): Promise<ImageSettingsSummary>
   /** Generate and commit one structured original-character request. */

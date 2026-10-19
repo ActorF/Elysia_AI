@@ -39,7 +39,7 @@ from .exceptions import (
     ImageGenerationUnavailableError,
 )
 from .png import CanonicalPng, MAX_GENERATED_PNG_BYTES, canonicalize_png
-from .profiles import ModelProfile
+from .profiles import ModelLoraProfile, ModelProfile
 from .workflow import CompiledWorkflow, MAX_WORKFLOW_JSON_BYTES
 
 
@@ -543,18 +543,23 @@ class HttpComfyUiClient:
             body=body,
         )
 
-    def ensure_ready(self, profile: ModelProfile) -> None:
-        """Verify required built-in nodes and the configured checkpoint key.
+    def ensure_ready(self, profile: ModelProfile, *, lora: ModelLoraProfile | None = None) -> None:
+        """Verify required built-in nodes and the selected checkpoint/LoRA keys.
 
         The raw ComfyUI model-list endpoint does not expose a file digest.  The
-        profile's SHA-256 therefore records the administrator's declaration but
-        cannot prove runtime bytes here; a future managed runtime must verify
-        that file before launch when exact model provenance is required.
+        profile's SHA-256 records the administrator's declaration; the managed
+        runtime verifies and pins actual files before exposing this adapter.
+        Unselected optional LoRAs do not affect base runtime readiness.
         """
 
         if type(profile) is not ModelProfile:
             raise TypeError("profile must be ModelProfile.")
-        for node_class in _REQUIRED_NODE_CLASSES:
+        if lora is not None and (
+            type(lora) is not ModelLoraProfile or profile.lora(lora.lora_id) is not lora
+        ):
+            raise TypeError("lora must be the exact reviewed profile LoRA.")
+        node_classes = (*_REQUIRED_NODE_CLASSES, "LoraLoader") if lora is not None else _REQUIRED_NODE_CLASSES
+        for node_class in node_classes:
             document = self._request_json(
                 "GET",
                 f"/object_info/{node_class}",
@@ -579,6 +584,18 @@ class HttpComfyUiClient:
             raise ImageGenerationUnavailableError(
                 "The configured local image checkpoint is unavailable."
             )
+        if lora is not None:
+            loras = self._request_json(
+                "GET", "/models/loras", timeout_seconds=self._config.probe_timeout_seconds,
+            )
+            if (
+                not isinstance(loras, list)
+                or len(loras) > MAX_COMFYUI_QUEUE_RECORDS
+                or not all(type(model) is str for model in loras)
+            ):
+                raise ImageGenerationProtocolError(_INVALID_RESPONSE_MESSAGE)
+            if lora.lora_name not in loras:
+                raise ImageGenerationUnavailableError("The selected reviewed LoRA is unavailable.")
 
     def probe_ready(self) -> None:
         """Confirm that ComfyUI finished route and node initialization.

@@ -1,6 +1,6 @@
 # 本地图片生成真实环境验收
 
-本次验收使用 Windows、RTX 4070 SUPER 12 GiB、官方 ComfyUI v0.41.0
+2026-10-16 基线验收使用 Windows、RTX 4070 SUPER 12 GiB、官方 ComfyUI v0.41.0
 便携运行时和官方 SDXL Base 1.0。安装、模型、运行目录和 Gallery 均放在
 忽略的验收目录，未覆盖用户的正式图片配置。来源、固定摘要、许可证和
 依赖清单见 [运行时审计](17-LOCAL-IMAGE-RUNTIME-AUDIT.md)。
@@ -172,3 +172,28 @@ GPU 采样报告全卡已用显存的基线、峰值和末次值，其中包含�
 `--soak-seconds` 的范围为 0–3600，最多生成 50 张；达到数量上限但未达到请求
 时长会报告失败。实际耗时和全部结果写入验收数据根中的 `acceptance.json`。
 验收不得被描述成 24 小时压力测试或对其他 GPU/驱动/模型的全面保证。
+
+## 2026-10-18 WAI 与可选 LoRA 桥接验收
+
+用户明确指定的 Checkpoint/LoRA 已导入正式配置的已有模型根，保留两份原文件、原 SDXL Profile 和默认模型。正式配置仅增加 `wai-illustrious-v80` 与其 `hikari-elysia-il-v1` 目录项，Revision 1→2。来源、精确摘要和各自条款见[资产补充审计](17-LOCAL-IMAGE-RUNTIME-AUDIT.md#2026-10-18-用户指定的本地资产)。此导入采用用户对给定文件的明确授权，未伪称自动点击原生确认窗口；日常产品流程由 Main 原生选择和确认，相关分支由 Manager/UI 测试覆盖。
+
+真实生成仍使用独立的 `tmp/image-lora-acceptance/3014d71d3d4d42b1b3f9fda5ee19a13c` 数据根，没有向正式 Gallery 添加或删除图片。沿用同一 ComfyUI 安装、1024×1024、28 Steps、Seed 420042，提示词为原创虚构、明确 28 岁、穿完整外套/衬衫/长裙的花园人物，没有角色触发词。分别运行生产 Backend/Main GPU Broker/私有 fd4/原生导出链路：
+
+| 用例 | 结果 | 全套耗时 | 规范 PNG |
+| --- | --- | --- | --- |
+| WAI，不使用 LoRA（v1） | 生成、提交、预览摘要、一次性 URL、原子导出、取消无提交、删除与关闭通过 | 216.282 秒 | 1,479,664 字节；`be797f20b2c893c0e6b7512d576189161eeac81b9c903aedb3b4b1c2c96ef37a` |
+| WAI + Hikari（v2，模型/CLIP 强度各 1） | 同一套链路全部通过 | 546.319 秒 | 1,414,759 字节；`5047bf510f312b68a639ff598f7e93d258cc1be21540211314909320b7e525a2` |
+
+两个 PNG 均已目视检查。LoRA 开启样本出现重复人物构图：技术验收验证了所选资产进入实际推理和图片完整性，并不证明模型会严格满足人物数量、年龄或身份语义。现有文本合同不包含输出图像分类器；导入 LoRA 不应被解释为已实现角色锁定或输出语义认证。
+
+另外通过生产 `ImageSettingsManager` 检查正式双模型配置，并仅启动/关闭正式 Backend，不生成或改动画廊：Readiness 71.330 秒、Backend Ready 111.805 秒，均在现有 120/180 秒期限内；两份 Profile、LoRA 可用状态、Revision 2 和图片 Capability 均匹配。检查后已排空 Backend 和 GPU Coordinator。
+
+启用 LoRA 的整段观察得到 303 次全卡显存采样：基线 3,177 MiB、峰值 11,196 MiB、末次 2,438 MiB，总量 12,282 MiB，包含其他应用。独立观察到 9 个本次后代 PID，结束时残留 0、观察无失败；两个独立运行根均为空，Main GPU Lease 均释放。原始证据分别为 `off/backend-smoke/report.json`、`on/backend-smoke/report.json` 和 `on/gpu-report.json`。全套耗时包括启动检查、成功生成和另一次取消用例，不是单张推理耗时；本次没有重复长时间 Soak，也没有重新认证全部依赖。
+
+操作员可在明确拥有 `.image-acceptance-root` 标记、已配置的独立数据根复现：
+
+```bat
+cd desktop
+npm run smoke:image-backend -- --data-root <独立验收根> --profile wai-illustrious-v80 --preset square
+npm run smoke:image-backend -- --data-root <另一个独立验收根> --profile wai-illustrious-v80 --preset square --lora hikari-elysia-il-v1
+```

@@ -52,7 +52,7 @@ from .exceptions import (
     ImageGenerationUnavailableError,
 )
 from .png import CanonicalPng
-from .profiles import ModelProfile
+from .profiles import ModelLoraProfile, ModelProfile
 from .python_environment import PythonEnvironmentError, check_python_environment
 from .service import _MANAGED_RUNTIME_CAPABILITY
 from .workflow import CompiledWorkflow
@@ -98,8 +98,8 @@ class _FileGuard(Protocol):
 class _RawClient(Protocol):
     """Describe the reviewed raw ComfyUI adapter behind the supervisor."""
 
-    def ensure_ready(self, profile: ModelProfile) -> None:
-        """Probe required built-in nodes and the selected checkpoint key."""
+    def ensure_ready(self, profile: ModelProfile, *, lora: ModelLoraProfile | None = None) -> None:
+        """Probe required built-in nodes and selected checkpoint/LoRA keys."""
 
     def probe_ready(self) -> None:
         """Confirm that the private server finished API route initialization."""
@@ -283,6 +283,7 @@ class _Preflight:
 
     profile: ModelProfile
     declarations: tuple[GuardedFileDeclaration, ...]
+    lora: ModelLoraProfile | None = None
 
 
 @dataclass(slots=True)
@@ -652,13 +653,14 @@ class ManagedComfyUiRuntime:
 
         return _MANAGED_RUNTIME_CAPABILITY
 
-    def ensure_ready(self, profile: ModelProfile) -> None:
+    def ensure_ready(self, profile: ModelProfile, *, lora: ModelLoraProfile | None = None) -> None:
         """Verify trusted files without allocating runtime resources.
 
         The core checks cancellation immediately after this call without a
         matching finalizer.  Consequently this phase may retain only immutable
         in-memory facts; process, port, native guard, and directory allocation
-        all begin later inside :meth:`prepare`.
+        all begin later inside :meth:`prepare`.  Only a selected LoRA is
+        verified, so missing optional assets never disable checkpoint-only use.
         """
 
         if type(profile) is not ModelProfile:
@@ -672,6 +674,10 @@ class ManagedComfyUiRuntime:
             self._preflight = None
             self._state = "checking"
         try:
+            if lora is not None and (
+                type(lora) is not ModelLoraProfile or profile.lora(lora.lora_id) is not lora
+            ):
+                raise ImageGenerationUnavailableError(_UNAVAILABLE_MESSAGE)
             if self._dependencies.platform_name != "nt":
                 raise ImageGenerationUnavailableError(_UNAVAILABLE_MESSAGE)
             for path in (
@@ -715,7 +721,7 @@ class ManagedComfyUiRuntime:
                 or checkpoint_digest != profile.checkpoint_sha256
             ):
                 raise ImageGenerationUnavailableError(_UNAVAILABLE_MESSAGE)
-            declarations = (
+            declarations: tuple[GuardedFileDeclaration, ...] = (
                 GuardedFileDeclaration(
                     self._config.python_executable,
                     python_size,
@@ -732,6 +738,18 @@ class ManagedComfyUiRuntime:
                     checkpoint_digest,
                 ),
             )
+            if lora is not None:
+                # Optional assets are checked only when selected.  A missing
+                # LoRA cannot disable checkpoint-only generation, but selected
+                # bytes require the same full-lifetime native guard as it.
+                loras_root = self._config.models_root / "loras"
+                _require_safe_existing_path(loras_root, directory=True)
+                self._dependencies.path_volume_verifier(loras_root)
+                lora_path = loras_root.joinpath(*lora.lora_name.replace("\\", "/").split("/"))
+                lora_size, lora_digest = _hash_stable_file(lora_path)
+                if lora_digest != lora.lora_sha256:
+                    raise ImageGenerationUnavailableError(_UNAVAILABLE_MESSAGE)
+                declarations += (GuardedFileDeclaration(lora_path, lora_size, lora_digest),)
         except ImageGenerationUnavailableError:
             with self._lock:
                 if self._state == "checking":
@@ -745,13 +763,14 @@ class ManagedComfyUiRuntime:
         with self._lock:
             if self._state != "checking":
                 raise ImageGenerationUnavailableError(_UNAVAILABLE_MESSAGE)
-            self._preflight = _Preflight(profile, declarations)
+            self._preflight = _Preflight(profile, declarations, lora)
             self._state = "preflighted"
 
     def _stable_launch_paths(
         self,
         guard: _FileGuard,
         profile: ModelProfile,
+        lora: ModelLoraProfile | None = None,
     ) -> tuple[Path, Path, Path]:
         """Derive interpreter, entry-point, and model roots from guarded handles.
 
@@ -767,12 +786,12 @@ class ManagedComfyUiRuntime:
             raise ImageGenerationUnavailableError(_UNAVAILABLE_MESSAGE) from error
         if (
             type(values) is not tuple
-            or len(values) != 3
+            or len(values) != (3 if lora is None else 4)
             or any(type(value) is not str or not value for value in values)
         ):
             raise ImageGenerationUnavailableError(_UNAVAILABLE_MESSAGE)
         python_path, main_path, checkpoint_path = (
-            Path(value) for value in values
+            Path(value) for value in values[:3]
         )
         checkpoint_suffix = (
             "checkpoints",
@@ -790,6 +809,15 @@ class ManagedComfyUiRuntime:
         models_root = checkpoint_path
         for _part in checkpoint_suffix:
             models_root = models_root.parent
+        if lora is not None:
+            # Use the checkpoint's guarded volume root for both asset kinds.
+            # A LoRA guard on another volume/root must never be substituted by
+            # a similarly named file exposed by ComfyUI's model directory.
+            expected_lora = (models_root / "loras").joinpath(
+                *lora.lora_name.replace("\\", "/").split("/"),
+            )
+            if Path(values[3]) != expected_lora:
+                raise ImageGenerationUnavailableError(_UNAVAILABLE_MESSAGE)
         return python_path, main_path, models_root
 
     def _command(
@@ -917,6 +945,12 @@ class ManagedComfyUiRuntime:
             if (
                 workflow.profile_id != preflight.profile.profile_id
                 or workflow.profile_digest != preflight.profile.profile_digest
+                or workflow.lora_id != (preflight.lora.lora_id if preflight.lora is not None else None)
+                or workflow.lora_sha256 != (preflight.lora.lora_sha256 if preflight.lora is not None else None)
+                or (
+                    preflight.lora is not None
+                    and workflow.request_graph()["8"]["inputs"]["lora_name"] != preflight.lora.lora_name
+                )
             ):
                 raise ImageGenerationProtocolError(
                     "Compiled workflow does not match the verified model profile."
@@ -937,6 +971,7 @@ class ManagedComfyUiRuntime:
             python_path, main_path, models_root = self._stable_launch_paths(
                 guard,
                 preflight.profile,
+                preflight.lora,
             )
             # Repeat the default-config absence check after directory/file
             # guards are active and immediately before starting the child.
@@ -988,7 +1023,10 @@ class ManagedComfyUiRuntime:
                         # initialized routes and nodes.  A missing built-in node
                         # or checkpoint after that point is a stable install
                         # error, not a startup condition worth retrying for 90s.
-                        candidate.ensure_ready(preflight.profile)
+                        if preflight.lora is None:
+                            candidate.ensure_ready(preflight.profile)
+                        else:
+                            candidate.ensure_ready(preflight.profile, lora=preflight.lora)
                         raw = candidate
                         break
                 remaining = deadline - self._dependencies.monotonic_clock()

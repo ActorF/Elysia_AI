@@ -509,6 +509,7 @@ def test_generation_translates_dto_progress_and_durable_receipt(tmp_path: Path) 
         )
         assert spec.negative_prompt == "low contrast"
         assert spec.seed == 42
+        assert spec.lora is None
         progress = [item for item in output.messages() if item.get("type") == "progress" and item.get("requestId") == "generate"]
         assert [(item["message"], item["completed"]) for item in progress] == [(str(stage), percent) for stage, percent in _STAGES.items()]
         assert all(item["operation"] == "image.generate" and item["total"] == 100 for item in progress)
@@ -516,6 +517,33 @@ def test_generation_translates_dto_progress_and_durable_receipt(tmp_path: Path) 
         assert "adult original woman" not in output.getvalue()
         assert str(tmp_path) not in output.getvalue()
         assert not any("base64" in key.lower() or "path" in key.lower() for key in artifact)
+    finally:
+        _shutdown(backend)
+
+
+@pytest.mark.parametrize("strength_model,strength_clip", [(0, 2), (0.75, 1.25)])
+def test_generation_maps_optional_lora_without_changing_public_artifact(
+    tmp_path: Path,
+    strength_model: float,
+    strength_clip: float,
+) -> None:
+    """Pass only typed selection to the application while retaining Gallery metadata."""
+
+    backend, output, _stream, core, _gallery, _service = _ready(tmp_path)
+    try:
+        selection = {
+            "loraId": "character_style",
+            "strengthModel": strength_model,
+            "strengthClip": strength_clip,
+        }
+        assert backend._handle_line(_request("generate-lora", "image.generate", _params(lora=selection)))
+        artifact = _success(output, "generate-lora")["artifact"]
+        spec, = core.specs
+        assert spec.lora is not None
+        assert spec.lora.lora_id == "character_style"
+        assert spec.lora.strength_model == strength_model
+        assert spec.lora.strength_clip == strength_clip
+        assert "lora" not in artifact
     finally:
         _shutdown(backend)
 
@@ -530,6 +558,10 @@ def test_generation_translates_dto_progress_and_durable_receipt(tmp_path: Path) 
     {"nsfw": True},
     {"workflow": {}},
     {"profileId": r"D:\private\model.safetensors"},
+    {"lora": None},
+    {"lora": {"loraId": "character_style", "strengthModel": 1}},
+    {"lora": {"loraId": "../private.safetensors", "strengthModel": 1, "strengthClip": 1}},
+    {"lora": {"loraId": "character_style", "strengthModel": 1, "strengthClip": 3}},
 ])
 def test_generation_rejects_nonliteral_confirmation_and_unreviewed_fields(
     tmp_path: Path,

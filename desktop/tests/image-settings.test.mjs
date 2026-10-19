@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 
 import {
-  ImageSettingsError, ImageSettingsManager, parseImageProfileMetadata, parseImageSettingsStatus,
+  ImageSettingsError, ImageSettingsManager, parseImageProfileMetadata, parseImageSettingsStatus, parseImageAssetImportParams,
 } from '../dist-electron/image-settings.js'
 
 const PROJECT = path.resolve(fileURLToPath(new URL('../../', import.meta.url)))
@@ -31,6 +31,8 @@ const METADATA = {
   displayName: 'Reviewed SDXL', profileId: 'reviewed-sdxl', promptDialect: 'sdxl-natural',
   checkpointSource: 'https://example.test/model', checkpointLicense: 'Fixture license', defaultSizePresetId: 'square',
 }
+const LORA_METADATA = { loraId: 'reviewed-lora', displayName: 'Reviewed LoRA', targetProfileId: 'reviewed-sdxl',
+  source: 'https://example.test/lora', license: 'Fixture terms' }
 const UNCONFIGURED = {
   configured: false, ready: false, state: 'unconfigured', message: 'Choose an installation.',
   revision: 0, defaultProfileId: null, profiles: [],
@@ -87,6 +89,128 @@ test('metadata accepts only reviewed logical fields and supported defaults', () 
     { ...METADATA, profileId: '../profile' }, { ...METADATA, promptDialect: 'custom' },
     { ...METADATA, defaultSizePresetId: 'custom' }, { ...METADATA, checkpointLicense: '' },
   ]) assert.throws(() => parseImageProfileMetadata(invalid), ImageSettingsError)
+})
+
+test('asset imports accept metadata only and reject Renderer native paths or arbitrary graphs', () => {
+  const checkpoint = { kind: 'checkpoint', metadata: METADATA }, lora = { kind: 'lora', metadata: LORA_METADATA }
+  assert.deepEqual(parseImageAssetImportParams(checkpoint), checkpoint)
+  assert.deepEqual(parseImageAssetImportParams(lora), lora)
+  for (const invalid of [null, { ...lora, sourcePath: 'C:/private.safetensors' },
+    { ...lora, metadata: { ...LORA_METADATA, loraName: 'private.safetensors' } },
+    { ...lora, metadata: { ...LORA_METADATA, targetProfileId: '../outside' } },
+    { kind: 'workflow', metadata: {} }, { ...checkpoint, workflow: {} }]) {
+    assert.throws(() => parseImageAssetImportParams(invalid), ImageSettingsError)
+  }
+})
+
+test('public optional LoRA summaries expose logical availability with fixed messages', () => {
+  const lora = { loraId: 'reviewed-lora', displayName: 'Reviewed LoRA', available: true, message: 'ready',
+    defaultStrengthModel: 1, defaultStrengthClip: 1 }
+  const status = value => ({ ...READY, profiles: [{ ...READY.profiles[0], loras: value }] })
+  const parsed = parseImageSettingsStatus(status([lora])).profiles[0].loras
+  assert.equal(parsed[0].message, '已就绪')
+  assert.equal(Object.isFrozen(parsed), true)
+  assert.equal(parseImageSettingsStatus(status(Array.from({ length: 64 }, (_, index) => ({
+    ...lora, loraId: `adapter-${index}`,
+  })))).profiles[0].loras.length, 64)
+  for (const invalid of [null, [lora, lora], [{ ...lora, path: 'private' }],
+    [{ ...lora, available: false }], [{ ...lora, message: 'C:/private' }], [{ ...lora, defaultStrengthModel: 3 }]]) {
+    assert.throws(() => parseImageSettingsStatus(status(invalid)), ImageSettingsError)
+  }
+  assert.equal(parseImageSettingsStatus(status([{ ...lora, available: false, message: 'missing_lora' }])).ready, true)
+})
+
+test('first checkpoint import binds native installation and source hashes before the worker copy', async () => {
+  await fixture(async ({ options, checkpoint, runtime, python }) => {
+    const calls = []
+    const manager = new ImageSettingsManager({ ...options,
+      confirmAssetImport: async review => {
+        assert.deepEqual(review.params, { kind: 'checkpoint', metadata: METADATA })
+        assert.equal(review.sourcePath, checkpoint)
+        assert.equal(review.sha256, digest('reviewed checkpoint'))
+        assert.equal(review.installation.runtimeRoot, runtime)
+        return true
+      },
+      runWorker: async request => { calls.push(request); return request.op === 'status' ? UNCONFIGURED : READY },
+    })
+    assert.equal((await manager.importAsset({ kind: 'checkpoint', metadata: METADATA })).revision, 1)
+    assert.deepEqual(calls[1], { op: 'assets.import', expectedRevision: 0, trustedConfirmation: true,
+      checkpoint: { sourcePath: checkpoint, sha256: digest('reviewed checkpoint'), metadata: METADATA }, lora: null,
+      installation: { runtimeRoot: runtime, pythonExecutable: python, pythonSha256: digest('reviewed python'),
+        comfyuiMainSha256: digest('reviewed main') } })
+    await manager.close()
+  })
+})
+
+test('LoRA import appends to its existing profile without repicking or replacing the installation', async () => {
+  await fixture(async ({ options, checkpoint }) => {
+    const calls = []
+    const manager = new ImageSettingsManager({ ...options, chooseLora: async () => checkpoint,
+      chooseRuntimeRoot: async () => { throw new Error('Must keep installation') },
+      confirmAssetImport: async review => { assert.equal(review.installation, null); return true },
+      runWorker: async request => { calls.push(request); return READY },
+    })
+    await manager.importAsset({ kind: 'lora', metadata: LORA_METADATA })
+    assert.deepEqual(calls[1], { op: 'assets.import', expectedRevision: 1, trustedConfirmation: true,
+      checkpoint: null, installation: null, lora: { sourcePath: checkpoint,
+        sha256: digest('reviewed checkpoint'), ...LORA_METADATA } })
+    await manager.close()
+  })
+})
+
+test('native cancellation and nonliteral consent never start an asset copy', async () => {
+  await fixture(async ({ options, checkpoint }) => {
+    for (const consent of [false, 1, 'true']) {
+      const calls = []
+      const manager = new ImageSettingsManager({ ...options, chooseLora: async () => checkpoint,
+        confirmAssetImport: async () => consent,
+        runWorker: async request => { calls.push(request.op); return READY },
+      })
+      await manager.importAsset({ kind: 'lora', metadata: LORA_METADATA })
+      assert.deepEqual(calls, ['status'])
+      await manager.close()
+    }
+    const manager = new ImageSettingsManager({ ...options, chooseLora: async () => null,
+      confirmAssetImport: async () => { throw new Error('Must not prompt') }, runWorker: async () => READY })
+    await manager.importAsset({ kind: 'lora', metadata: LORA_METADATA })
+    await manager.close()
+  })
+})
+
+test('source mutation during import review invalidates the approved hash before any worker copy', async () => {
+  await fixture(async ({ options, checkpoint }) => {
+    const calls = []
+    const manager = new ImageSettingsManager({ ...options, chooseLora: async () => checkpoint,
+      confirmAssetImport: async () => { await writeFile(checkpoint, 'changed model'); return true },
+      runWorker: async request => { calls.push(request.op); return READY },
+    })
+    await assert.rejects(manager.importAsset({ kind: 'lora', metadata: LORA_METADATA }), ImageSettingsError)
+    assert.deepEqual(calls, ['status'])
+    assert.equal(manager.isBusy(), false)
+    await manager.close()
+  })
+})
+
+test('asset import joins physical Backend stop on close and never copies after that cancellation', async () => {
+  await fixture(async ({ options, checkpoint }) => {
+    const entered = deferred(), stopping = deferred(), calls = []
+    const manager = new ImageSettingsManager({ ...options, chooseLora: async () => checkpoint,
+      confirmAssetImport: async () => true,
+      runWorker: async request => { calls.push(request.op); return READY },
+    })
+    const importing = manager.importAsset({ kind: 'lora', metadata: LORA_METADATA },
+      async () => { entered.resolve(); await stopping.promise })
+    const cancelled = assert.rejects(importing, error => error.reason === 'cancelled')
+    await entered.promise
+    let drained = false
+    const closing = manager.close().then(() => { drained = true })
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(drained, false)
+    assert.equal(manager.isBusy(), true)
+    stopping.resolve()
+    await Promise.all([closing, cancelled])
+    assert.deepEqual(calls, ['status'])
+  })
 })
 
 test('public status rejects native fields and inconsistent readiness', () => {

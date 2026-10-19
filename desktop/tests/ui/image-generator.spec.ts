@@ -33,6 +33,13 @@ function readySettings(): ImageSettingsSummary {
         { presetId: 'square', width: 1024, height: 1024 },
         { presetId: 'portrait', width: 832, height: 1216 },
       ],
+      loras: [
+        { loraId: 'character-style', displayName: '角色 LoRA', available: true, message: 'LoRA 已就绪。', defaultStrengthModel: 1, defaultStrengthClip: 1 },
+        { loraId: 'missing-style', displayName: '待修复 LoRA', available: false, message: 'LoRA 文件缺失，请重新导入。', defaultStrengthModel: 1, defaultStrengthClip: 1 },
+      ],
+    }, {
+      profileId: 'other-sdxl', displayName: 'Other SDXL', architecture: 'sdxl', promptDialect: 'sdxl-natural',
+      defaultSizePresetId: 'square', sizePresets: [{ presetId: 'square', width: 1024, height: 1024 }],
     }],
   }
 }
@@ -138,6 +145,91 @@ test('uses actual image stages, ignores unrelated progress, and cancels without 
   await expect(page.getByRole('button', { name: '生成图片', exact: true })).toBeEnabled()
   expect(await page.evaluate(() => (window as TestWindow).elysiaDesktopTest.getCalls()
     .filter((call) => call.method === 'generateImage'))).toHaveLength(1)
+})
+
+test('LoRA selection uses default strengths, accepts custom values, and freezes through busy navigation', async () => {
+  await openStudio()
+  await describeCharacter()
+  const adapter = page.getByLabel('图片 LoRA', { exact: true })
+  await expect(adapter).toHaveValue('')
+  await expect(page.getByLabel('LoRA 模型强度', { exact: true })).toHaveCount(0)
+  await adapter.selectOption('character-style')
+  await expect(page.getByLabel('LoRA 模型强度', { exact: true })).toHaveValue('1')
+  await expect(page.getByLabel('LoRA CLIP 强度', { exact: true })).toHaveValue('1')
+  await page.getByLabel('LoRA 模型强度', { exact: true }).fill('0.75')
+  await page.getByLabel('LoRA CLIP 强度', { exact: true }).fill('1.25')
+  await page.evaluate(() => { (window as TestWindow).elysiaDesktopTest.setImageGenerationDelay(true) })
+  await page.getByRole('button', { name: '生成图片', exact: true }).click()
+  await expect(adapter).toBeDisabled()
+  await expect(page.getByLabel('LoRA 模型强度', { exact: true })).toBeDisabled()
+  await page.getByRole('button', { name: 'Chat', exact: true }).click()
+  await page.evaluate((summary) => {
+    summary.profiles = summary.profiles.map((profile) => ({ ...profile, loras: [] }))
+    ;(window as TestWindow).elysiaDesktopTest.setImageSettings(summary)
+  }, readySettings())
+  await page.getByRole('button', { name: '图片生成', exact: true }).click()
+  await expect(adapter).toHaveValue('character-style')
+  await expect(page.getByLabel('LoRA 模型强度', { exact: true })).toHaveValue('0.75')
+  await expect(page.getByLabel('LoRA CLIP 强度', { exact: true })).toHaveValue('1.25')
+  await expect(page.getByRole('button', { name: '取消生成', exact: true })).toBeVisible()
+  const requests = await page.evaluate(() => (window as TestWindow).elysiaDesktopTest.getCalls()
+    .filter((call) => call.method === 'generateImage'))
+  expect(requests).toHaveLength(1)
+  expect(requests[0]?.args[0]).toMatchObject({ lora: { loraId: 'character-style', strengthModel: 0.75, strengthClip: 1.25 } })
+  await page.evaluate(() => { (window as TestWindow).elysiaDesktopTest.rejectImageGeneration('图片任务已停止。') })
+  await expect(adapter).toBeEnabled()
+  await page.getByRole('button', { name: '重新检查', exact: true }).click()
+  await expect(adapter).toHaveValue('')
+})
+
+test('switching LoRA off omits the field and invalid strengths prevent generation', async () => {
+  await openStudio()
+  await describeCharacter()
+  const adapter = page.getByLabel('图片 LoRA', { exact: true })
+  const generate = page.getByRole('button', { name: '生成图片', exact: true })
+  await adapter.selectOption('character-style')
+  const model = page.getByLabel('LoRA 模型强度', { exact: true })
+  const clip = page.getByLabel('LoRA CLIP 强度', { exact: true })
+  for (const invalid of ['', '-0.01', '2.01']) {
+    await model.fill(invalid)
+    await expect(model).toHaveAttribute('aria-invalid', 'true')
+    await expect(generate).toBeDisabled()
+  }
+  await model.fill('0')
+  await clip.fill('2')
+  await expect(generate).toBeEnabled()
+  await clip.fill('')
+  await expect(generate).toBeDisabled()
+  await adapter.selectOption('')
+  await expect(model).toHaveCount(0)
+  await expect(generate).toBeEnabled()
+  await page.evaluate(() => { (window as TestWindow).elysiaDesktopTest.setImageGenerationDelay(true) })
+  await generate.click()
+  const params = await page.evaluate(() => (window as TestWindow).elysiaDesktopTest.getCalls()
+    .find((call) => call.method === 'generateImage')?.args[0])
+  expect(params).not.toHaveProperty('lora')
+  await page.evaluate(() => { (window as TestWindow).elysiaDesktopTest.rejectImageGeneration('图片任务已停止。') })
+})
+
+test('profile changes clear incompatible LoRA and missing adapters remain disabled without blocking the base model', async () => {
+  await openStudio()
+  await describeCharacter()
+  const adapter = page.getByLabel('图片 LoRA', { exact: true })
+  await expect(adapter.locator('option[value="missing-style"]')).toHaveAttribute('disabled', '')
+  await expect(page.getByLabel('LoRA 可用状态', { exact: true })).toContainText('LoRA 文件缺失，请重新导入。')
+  await adapter.selectOption('character-style')
+  await page.getByLabel('LoRA 模型强度', { exact: true }).fill('0.5')
+  await page.getByRole('button', { name: 'Chat', exact: true }).click()
+  await page.getByRole('button', { name: '图片生成', exact: true }).click()
+  await expect(adapter).toHaveValue('character-style')
+  await expect(page.getByLabel('LoRA 模型强度', { exact: true })).toHaveValue('0.5')
+  await page.getByLabel('图片模型', { exact: true }).selectOption('other-sdxl')
+  await expect(adapter).toHaveValue('')
+  await expect(adapter.locator('option')).toHaveCount(1)
+  await expect(page.getByLabel('LoRA 模型强度', { exact: true })).toHaveCount(0)
+  await page.getByLabel('图片模型', { exact: true }).selectOption('reviewed-sdxl')
+  await expect(adapter).toHaveValue('')
+  await expect(page.getByRole('button', { name: '生成图片', exact: true })).toBeEnabled()
 })
 
 test('retains a running task across navigation and restores its cancel control', async () => {

@@ -952,6 +952,7 @@ const desktopApi: DesktopApi = {
   getImageSettings: () => ipcRenderer.invoke('elysia:image:settings'),
   /** Main selects installation paths and asks for explicit native hash consent. */
   configureImageInstallation: (metadata) => ipcRenderer.invoke('elysia:image:configure', metadata),
+  importImageAsset: (params) => ipcRenderer.invoke('elysia:image:import', params),
   /** Native confirmation preserves incomplete runs in a fixed private quarantine. */
   recoverImageRuntime: () => ipcRenderer.invoke('elysia:image:recover'),
   /** Structured prompts follow the same fixed protocol for every description. */

@@ -54,6 +54,7 @@ from image_generation import (
     ImageGenerationUnavailableError,
     ImageGenerationValidationError,
     ImageIntent,
+    ImageLoraSelection,
 )
 
 
@@ -307,6 +308,14 @@ class DesktopImageCoordinator:
     def _spec(params: dict[str, Any]) -> ImageGenerationSpec:
         """Translate the closed DTO while fixing intent inside the Backend."""
 
+        lora = None
+        if "lora" in params:
+            selection = params["lora"]
+            lora = ImageLoraSelection(
+                lora_id=selection["loraId"],
+                strength_model=selection["strengthModel"],
+                strength_clip=selection["strengthClip"],
+            )
         return ImageGenerationSpec(
             profile_id=params["profileId"],
             size_preset_id=params["sizePresetId"],
@@ -321,6 +330,7 @@ class DesktopImageCoordinator:
             seed=params["seed"],
             original_fictional_confirmed=params["originalFictionalConfirmed"],
             intent=ImageIntent.NEW_CHARACTER,
+            lora=lora,
         )
 
     def _generate(self, task: _ImageTask, spec: ImageGenerationSpec) -> None:

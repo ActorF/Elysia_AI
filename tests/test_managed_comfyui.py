@@ -9,7 +9,7 @@ cleanup state machine without requiring ComfyUI, a checkpoint, or a GPU.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import os
 from pathlib import Path
@@ -30,7 +30,7 @@ from image_generation.comfyui import (
     ComfyPromptHandle,
     ComfyUiConfig,
 )
-from image_generation.domain import ImageGenerationSpec
+from image_generation.domain import ImageGenerationSpec, ImageLoraSelection
 from image_generation.exceptions import (
     ImageGenerationProtocolError,
     ImageGenerationUnavailableError,
@@ -39,6 +39,7 @@ from image_generation.png import CanonicalPng
 from image_generation.profiles import (
     ImageSizePreset,
     ModelArchitecture,
+    ModelLoraProfile,
     ModelProfile,
     PromptDialect,
 )
@@ -193,10 +194,13 @@ class _FakeRawClient:
                 self.probe_failures -= 1
             raise ImageGenerationUnavailableError("synthetic probe outage")
 
-    def ensure_ready(self, profile: ModelProfile) -> None:
+    def ensure_ready(self, profile: ModelProfile, *, lora: ModelLoraProfile | None = None) -> None:
         """Validate the selected synthetic checkpoint or inject an outage."""
 
         self.calls.append(f"ready:{profile.profile_id}")
+        if lora is not None:
+            assert profile.lora(lora.lora_id) is lora
+            self.calls.append(f"lora:{lora.lora_id}")
         if self.always_unavailable or self.ready_failures:
             if self.ready_failures:
                 self.ready_failures -= 1
@@ -516,6 +520,117 @@ def _prepare(fixture: _RuntimeFixture) -> ComfyPromptHandle:
 
     fixture.runtime.ensure_ready(fixture.profile)
     return fixture.runtime.prepare(fixture.workflow)
+
+
+def _lora_fixture(tmp_path: Path) -> _RuntimeFixture:
+    """Extend the real-file runtime fixture with one optional pinned LoRA."""
+
+    fixture = _runtime_fixture(tmp_path)
+    asset = fixture.config.models_root / "loras" / "fixtures" / "reviewed.safetensors"
+    asset.parent.mkdir(parents=True)
+    asset.write_bytes(b"synthetic reviewed LoRA")
+    lora = ModelLoraProfile(
+        lora_id="reviewed", display_name="Reviewed fixture", architecture=ModelArchitecture.SDXL,
+        lora_name="fixtures/reviewed.safetensors", lora_sha256=_sha256(asset.read_bytes()),
+        lora_source="Synthetic unit-test fixture.", lora_license="Synthetic declaration.",
+    )
+    profile = replace(fixture.profile, loras=(lora,))
+    workflow = compile_txt2img_workflow(
+        ImageGenerationSpec(
+            profile_id=profile.profile_id, size_preset_id="square", appearance="adult fictional portrait",
+            original_fictional_confirmed=True, lora=ImageLoraSelection(lora.lora_id, 0.7, 0.8),
+        ), profile, job_id=str(uuid4()),
+    )
+    return replace(fixture, profile=profile, workflow=workflow)
+
+
+def test_selected_lora_adds_fourth_native_guard_and_retains_it_through_finalize(tmp_path: Path) -> None:
+    """Pin selected LoRA bytes with the process and release only after termination."""
+
+    fixture = _lora_fixture(tmp_path)
+    lora = fixture.profile.loras[0]
+    fixture.runtime.ensure_ready(fixture.profile, lora=lora)
+    assert fixture.harness.guards == []
+    assert fixture.harness.processes == []
+    handle = fixture.runtime.prepare(fixture.workflow)
+
+    declarations = fixture.harness.guard_declarations[0]
+    assert len(declarations) == 4
+    assert cast(Any, declarations[3]).path == fixture.config.models_root / "loras" / lora.lora_name
+    assert cast(Any, declarations[3]).sha256 == lora.lora_sha256
+    assert not fixture.harness.guards[0].closed
+    assert f"lora:{lora.lora_id}" in fixture.harness.raw.calls
+    fixture.runtime.submit_prepared(handle, fixture.workflow)
+    assert not fixture.harness.guards[0].closed
+    fixture.runtime.finalize(handle)
+    assert fixture.harness.processes[0].closed
+    assert fixture.harness.guards[0].closed
+    assert not fixture.harness.runs[0].root.exists()
+
+
+@pytest.mark.parametrize("mutation", ["missing", "changed", "alias-profile"])
+def test_bad_selected_lora_does_not_disable_checkpoint_only_generation(tmp_path: Path, mutation: str) -> None:
+    """Reject only the selected optional asset and leave a subsequent off run ready."""
+
+    fixture = _lora_fixture(tmp_path)
+    lora = fixture.profile.loras[0]
+    asset = fixture.config.models_root / "loras" / lora.lora_name
+    if mutation == "missing":
+        asset.unlink()
+    elif mutation == "changed":
+        asset.write_bytes(b"changed LoRA")
+    else:
+        lora = replace(lora)
+    with pytest.raises(ImageGenerationUnavailableError):
+        fixture.runtime.ensure_ready(fixture.profile, lora=lora)
+    assert fixture.harness.processes == []
+
+    fixture.runtime.ensure_ready(fixture.profile)
+    base = compile_txt2img_workflow(
+        ImageGenerationSpec(
+            profile_id=fixture.profile.profile_id, size_preset_id="square", appearance="adult fictional portrait",
+            original_fictional_confirmed=True,
+        ), fixture.profile, job_id=str(uuid4()),
+    )
+    handle = fixture.runtime.prepare(base)
+    assert len(fixture.harness.guard_declarations[-1]) == 3
+    assert not any(call.startswith("lora:") for call in fixture.harness.raw.calls)
+    fixture.runtime.finalize(handle)
+
+
+def test_lora_graph_requires_matching_selected_preflight(tmp_path: Path) -> None:
+    """Reject a selected sealed graph when only the base files were checked."""
+
+    fixture = _lora_fixture(tmp_path)
+    fixture.runtime.ensure_ready(fixture.profile)
+    with pytest.raises(ImageGenerationProtocolError, match="profile"):
+        fixture.runtime.prepare(fixture.workflow)
+    assert fixture.harness.runs == []
+    assert fixture.harness.guards == []
+
+
+def test_selected_lora_guard_must_resolve_beneath_same_model_volume_root(tmp_path: Path) -> None:
+    """Reject a valid-looking LoRA guard that points outside the checkpoint root."""
+
+    fixture = _lora_fixture(tmp_path)
+    original = fixture.harness.guarded_paths
+
+    def foreign_lora_paths(guard: _FakeGuard) -> tuple[str, ...]:
+        """Return the selected fourth file on an unrelated model root."""
+
+        values = original(guard)
+        return (*values[:3], str(tmp_path / "foreign" / "loras" / "fixtures" / "reviewed.safetensors"))
+
+    fixture.harness.guarded_paths = foreign_lora_paths  # type: ignore[method-assign]
+    runtime = managed.ManagedComfyUiRuntime._create_for_testing(
+        fixture.config, fixture.harness.dependencies(), dependency_seal=managed._TEST_DEPENDENCY_SEAL,
+    )
+    runtime.ensure_ready(fixture.profile, lora=fixture.profile.loras[0])
+    with pytest.raises(ImageGenerationUnavailableError):
+        runtime.prepare(fixture.workflow)
+    assert fixture.harness.processes == []
+    assert fixture.harness.guards[0].closed
+    assert not fixture.harness.runs[0].root.exists()
 
 
 def test_preflight_hashes_trusted_files_without_allocating_resources(

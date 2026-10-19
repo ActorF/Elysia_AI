@@ -26,7 +26,7 @@ from .composition import (
     create_managed_image_application_service,
     create_managed_image_generation_core,
 )
-from .domain import ImageGenerationSpec, ImageIntent
+from .domain import ImageGenerationSpec, ImageIntent, ImageLoraSelection
 from .exceptions import (
     ImageGenerationCancelledError,
     ImageGenerationError,
@@ -41,6 +41,7 @@ from .exceptions import (
 from .profiles import (
     ImageSizePreset,
     ModelArchitecture,
+    ModelLoraProfile,
     ModelProfile,
     ModelProfileCatalog,
     PromptDialect,
@@ -99,8 +100,10 @@ __all__ = [
     "ImageGalleryStore",
     "ImageGalleryValidationError",
     "ImageIntent",
+    "ImageLoraSelection",
     "ImageSizePreset",
     "ModelArchitecture",
+    "ModelLoraProfile",
     "ModelProfile",
     "ModelProfileCatalog",
     "ManagedComfyUiConfig",

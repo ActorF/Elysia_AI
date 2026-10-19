@@ -27,6 +27,11 @@
 .image-settings-actions button { min-height: var(--control-height-md); padding: var(--space-2) var(--space-3); }
 .image-settings :where(button, input, select):focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-ring-offset); }
 .image-settings :where(button, input, select):disabled { cursor: not-allowed; opacity: var(--opacity-disabled); }
+.image-settings .image-settings-lora-import { margin-top: var(--space-6); padding-top: var(--space-5); border-top: 1px solid var(--color-border); }
+.image-settings-lora-import .image-settings-actions { margin-top: var(--space-4); }
+.image-settings-profiles .image-settings-loras { display: grid; gap: var(--space-2); }
+.image-settings-loras h3 { margin: var(--space-2) 0 0; color: var(--color-text-secondary); font-size: var(--font-size-xs); }
+.image-settings-loras > div { display: grid; gap: var(--space-1); padding: var(--space-2); border-radius: var(--radius-sm); background: var(--color-bg-soft); }
 
 @media (max-width: 480px) {
   .image-settings .settings-field-grid { grid-template-columns: minmax(0, 1fr); }

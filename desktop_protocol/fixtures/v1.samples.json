@@ -991,6 +991,30 @@
       }
     },
     {
+      "name": "image generation with trusted LoRA request",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "image-generate-lora-1",
+        "method": "image.generate",
+        "params": {
+          "profileId": "anime_default",
+          "sizePresetId": "portrait",
+          "appearance": "adult original fictional woman, pink hair",
+          "outfit": "white dress",
+          "pose": "standing",
+          "scene": "garden",
+          "style": "anime illustration",
+          "camera": "medium shot",
+          "lighting": "soft daylight",
+          "negativePrompt": "extra fingers",
+          "seed": 42,
+          "originalFictionalConfirmed": true,
+          "lora": { "loraId": "character_style", "strengthModel": 0.75, "strengthClip": 1 }
+        }
+      }
+    },
+    {
       "name": "image gallery list request",
       "message": {
         "type": "request",
@@ -5226,6 +5250,85 @@
           "speechStartSample": 0,
           "speechEndSample": 3200,
           "pcmBase64": "AB=="
+        }
+      }
+    },
+    {
+      "name": "image generation rejects null LoRA selection",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "image-generate-lora-invalid-1",
+        "method": "image.generate",
+        "params": {
+          "profileId": "anime_default", "sizePresetId": "portrait",
+          "appearance": "adult original fictional woman", "outfit": "", "pose": "",
+          "scene": "", "style": "", "camera": "", "lighting": "", "negativePrompt": "",
+          "seed": 42, "originalFictionalConfirmed": true, "lora": null
+        }
+      }
+    },
+    {
+      "name": "image generation rejects incomplete LoRA selection",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "image-generate-lora-invalid-2",
+        "method": "image.generate",
+        "params": {
+          "profileId": "anime_default", "sizePresetId": "portrait",
+          "appearance": "adult original fictional woman", "outfit": "", "pose": "",
+          "scene": "", "style": "", "camera": "", "lighting": "", "negativePrompt": "",
+          "seed": 42, "originalFictionalConfirmed": true,
+          "lora": { "loraId": "character_style", "strengthModel": 1 }
+        }
+      }
+    },
+    {
+      "name": "image generation rejects LoRA file paths",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "image-generate-lora-invalid-3",
+        "method": "image.generate",
+        "params": {
+          "profileId": "anime_default", "sizePresetId": "portrait",
+          "appearance": "adult original fictional woman", "outfit": "", "pose": "",
+          "scene": "", "style": "", "camera": "", "lighting": "", "negativePrompt": "",
+          "seed": 42, "originalFictionalConfirmed": true,
+          "lora": { "loraId": "../character.safetensors", "strengthModel": 1, "strengthClip": 1 }
+        }
+      }
+    },
+    {
+      "name": "image generation rejects out-of-range LoRA strength",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "image-generate-lora-invalid-4",
+        "method": "image.generate",
+        "params": {
+          "profileId": "anime_default", "sizePresetId": "portrait",
+          "appearance": "adult original fictional woman", "outfit": "", "pose": "",
+          "scene": "", "style": "", "camera": "", "lighting": "", "negativePrompt": "",
+          "seed": 42, "originalFictionalConfirmed": true,
+          "lora": { "loraId": "character_style", "strengthModel": 1, "strengthClip": 2.01 }
+        }
+      }
+    },
+    {
+      "name": "image generation rejects boolean LoRA strength",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "image-generate-lora-invalid-5",
+        "method": "image.generate",
+        "params": {
+          "profileId": "anime_default", "sizePresetId": "portrait",
+          "appearance": "adult original fictional woman", "outfit": "", "pose": "",
+          "scene": "", "style": "", "camera": "", "lighting": "", "negativePrompt": "",
+          "seed": 42, "originalFictionalConfirmed": true,
+          "lora": { "loraId": "character_style", "strengthModel": true, "strengthClip": 1 }
         }
       }
     },

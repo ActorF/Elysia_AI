@@ -592,6 +592,14 @@ class VoiceSpeechCancelParams(TypedDict):
     chatId: str
 
 
+class ImageLoraSelectionParams(TypedDict):
+    """Select one trusted LoRA by logical ID with bounded model/CLIP strengths."""
+
+    loraId: str
+    strengthModel: float
+    strengthClip: float
+
+
 class ImageGenerateParams(TypedDict):
     """Describe one new original fictional character image request.
 
@@ -612,6 +620,7 @@ class ImageGenerateParams(TypedDict):
     negativePrompt: str
     seed: int
     originalFictionalConfirmed: Literal[True]
+    lora: NotRequired[ImageLoraSelectionParams]
 
 
 class ImageGalleryListParams(TypedDict):
@@ -2021,6 +2030,30 @@ def _validate_image_public_id(
     return identifier
 
 
+def _validate_image_lora_selection(value: object) -> None:
+    """Accept one complete path-free selection without treating null as omission."""
+
+    context = "image.generate params.lora"
+    selection = _as_object(value, context)
+    _require_fields(selection, {"loraId", "strengthModel", "strengthClip"}, context)
+    _validate_image_public_id(selection, "loraId", context)
+    for key in ("strengthModel", "strengthClip"):
+        strength = selection[key]
+        if (
+            isinstance(strength, bool)
+            or not isinstance(strength, (int, float))
+            # Python integers have no JSON-sized bound. Check finiteness only
+            # for floats so a hostile huge integer produces a protocol error
+            # rather than overflowing a conversion inside math.isfinite.
+            or (isinstance(strength, float) and not math.isfinite(strength))
+            or not 0.0 <= strength <= 2.0
+        ):
+            raise ProtocolValidationError(
+                "protocol.invalid_params",
+                f"{context}.{key} must be finite and between 0 and 2.",
+            )
+
+
 def _validate_image_generate_params(params: JsonObject) -> None:
     """Validate the sole generation DTO without caller-selectable intent.
 
@@ -2047,6 +2080,7 @@ def _validate_image_generate_params(params: JsonObject) -> None:
             "originalFictionalConfirmed",
         },
         context,
+        optional={"lora"},
     )
     _validate_image_public_id(params, "profileId", context)
     _validate_image_public_id(params, "sizePresetId", context)
@@ -2097,6 +2131,8 @@ def _validate_image_generate_params(params: JsonObject) -> None:
             "protocol.invalid_params",
             f"{context}.originalFictionalConfirmed must be true.",
         )
+    if "lora" in params:
+        _validate_image_lora_selection(params["lora"])
 
 
 def _validate_image_gallery_list_params(params: JsonObject) -> None:

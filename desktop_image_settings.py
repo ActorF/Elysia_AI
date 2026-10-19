@@ -29,6 +29,7 @@ from image_generation.python_environment import PythonEnvironmentError, check_py
 from image_generation.profiles import (
     ImageSizePreset,
     ModelArchitecture,
+    ModelLoraProfile,
     ModelProfile,
     ModelProfileCatalog,
     PromptDialect,
@@ -47,6 +48,10 @@ _PROFILE_FIELDS = frozenset({
     "checkpoint_name", "checkpoint_sha256", "checkpoint_source",
     "checkpoint_license", "size_presets", "default_size_preset_id",
     "sampler_name", "scheduler", "steps", "cfg_scale",
+})
+_LORA_FIELDS = frozenset({
+    "lora_id", "display_name", "architecture", "lora_name", "lora_sha256",
+    "lora_source", "lora_license",
 })
 ImageSettingsState = Literal[
     "unconfigured", "missing_model", "hash_mismatch", "ready", "invalid", "recovery_required",
@@ -103,6 +108,7 @@ class ImageSettingsStatus:
     message: str
     revision: int = 0
     _installation: TrustedImageInstallation | None = field(default=None, repr=False)
+    _lora_statuses: dict[tuple[str, str], str] = field(default_factory=dict, repr=False)
 
     def to_public_dict(self) -> dict[str, object]:
         """Return the small renderer contract, excluding filenames and hashes."""
@@ -111,7 +117,7 @@ class ImageSettingsStatus:
         profiles: list[dict[str, object]] = []
         if installation is not None:
             for profile in installation.profiles.profiles:
-                profiles.append({
+                summary: dict[str, object] = {
                     "profileId": profile.profile_id,
                     "displayName": profile.display_name,
                     "architecture": profile.architecture.value,
@@ -121,7 +127,18 @@ class ImageSettingsStatus:
                         {"presetId": item.preset_id, "width": item.width, "height": item.height}
                         for item in profile.size_presets
                     ],
-                })
+                }
+                if profile.loras:
+                    summary["loras"] = [
+                        {
+                            "loraId": lora.lora_id, "displayName": lora.display_name,
+                            "available": self._lora_statuses.get((profile.profile_id, lora.lora_id)) == "ready",
+                            "message": self._lora_statuses.get((profile.profile_id, lora.lora_id), "unavailable"),
+                            "defaultStrengthModel": 1, "defaultStrengthClip": 1,
+                        }
+                        for lora in profile.loras
+                    ]
+                profiles.append(summary)
         return {
             "configured": installation is not None,
             "ready": self.state == "ready",
@@ -238,14 +255,27 @@ def _revision(value: object) -> int:
     return value
 
 
-def _decode(value: object) -> TrustedImageInstallation:
+def _decode(value: object, *, schema_version: int = 3, data_root: Path | None = None) -> TrustedImageInstallation:
     raw = _fields(value, _INSTALLATION_FIELDS)
     profiles = raw["profiles"]
     if type(profiles) is not list or not 1 <= len(profiles) <= 8:
         raise DesktopImageSettingsError("Saved image profiles are invalid.")
     parsed: list[ModelProfile] = []
     for item in profiles:
-        profile = _fields(item, _PROFILE_FIELDS)
+        profile = _fields(item, _PROFILE_FIELDS | ({"loras"} if schema_version >= 2 else set()))
+        loras: list[ModelLoraProfile] = []
+        if schema_version >= 2:
+            entries = profile["loras"]
+            if type(entries) is not list or len(entries) > 64:
+                raise DesktopImageSettingsError("Saved image LoRAs are invalid.")
+            for entry in entries:
+                lora = _fields(entry, _LORA_FIELDS)
+                loras.append(ModelLoraProfile(
+                    lora_id=_text(lora["lora_id"]), display_name=_text(lora["display_name"]),
+                    architecture=ModelArchitecture(_text(lora["architecture"])),
+                    lora_name=_text(lora["lora_name"]), lora_sha256=_text(lora["lora_sha256"]),
+                    lora_source=_text(lora["lora_source"]), lora_license=_text(lora["lora_license"]),
+                ))
         presets = profile["size_presets"]
         if type(presets) is not list or not 1 <= len(presets) <= 8:
             raise DesktopImageSettingsError("Saved image presets are invalid.")
@@ -268,11 +298,23 @@ def _decode(value: object) -> TrustedImageInstallation:
             default_size_preset_id=_text(profile["default_size_preset_id"]),
             sampler_name=_text(profile["sampler_name"]), scheduler=_text(profile["scheduler"]),
             steps=cast(int, profile["steps"]), cfg_scale=cast(float, profile["cfg_scale"]),
+            loras=tuple(loras),
         ))
+    model_location = raw["models_root"]
+    if type(model_location) is dict:
+        # Only the application's exact first-install root is relocatable. A
+        # byte-identical data-root move resolves it beneath the new startup
+        # root without rewriting config or guessing an external path's intent.
+        marker = _fields(model_location, frozenset({"data_root_relative"}))
+        if schema_version != 3 or data_root is None or marker["data_root_relative"] != "workspace/image-models":
+            raise DesktopImageSettingsError("Saved managed model location is invalid.")
+        models_root = data_root / "workspace" / "image-models"
+    else:
+        models_root = Path(_text(model_location))
     return TrustedImageInstallation(
         runtime_root=Path(_text(raw["runtime_root"])),
         python_executable=Path(_text(raw["python_executable"])),
-        models_root=Path(_text(raw["models_root"])),
+        models_root=models_root,
         python_sha256=_text(raw["python_sha256"]),
         comfyui_main_sha256=_text(raw["comfyui_main_sha256"]),
         profiles=ModelProfileCatalog(tuple(parsed)),
@@ -280,7 +322,7 @@ def _decode(value: object) -> TrustedImageInstallation:
     )
 
 
-def _encode(value: TrustedImageInstallation) -> dict[str, object]:
+def _encode(value: TrustedImageInstallation, *, data_root: Path) -> dict[str, object]:
     profiles: list[dict[str, object]] = []
     for profile in value.profiles.profiles:
         profiles.append({
@@ -295,26 +337,35 @@ def _encode(value: TrustedImageInstallation) -> dict[str, object]:
             "default_size_preset_id": profile.default_size_preset_id,
             "sampler_name": profile.sampler_name, "scheduler": profile.scheduler,
             "steps": profile.steps, "cfg_scale": profile.cfg_scale,
+            "loras": [
+                {"lora_id": lora.lora_id, "display_name": lora.display_name,
+                 "architecture": lora.architecture.value, "lora_name": lora.lora_name,
+                 "lora_sha256": lora.lora_sha256, "lora_source": lora.lora_source,
+                 "lora_license": lora.lora_license}
+                for lora in profile.loras
+            ],
         })
     return {
         "runtime_root": str(value.runtime_root), "python_executable": str(value.python_executable),
-        "models_root": str(value.models_root), "python_sha256": value.python_sha256,
+        "models_root": ({"data_root_relative": "workspace/image-models"}
+                        if value.models_root == data_root / "workspace" / "image-models" else str(value.models_root)),
+        "python_sha256": value.python_sha256,
         "comfyui_main_sha256": value.comfyui_main_sha256, "profiles": profiles,
         "default_profile_id": value.default_profile_id,
     }
 
 
-def _saved_document(encoded: bytes) -> tuple[int, TrustedImageInstallation]:
+def _saved_document(encoded: bytes, *, data_root: Path) -> tuple[int, TrustedImageInstallation]:
     """Decode one already bounded private document with an exact schema."""
 
     document = json.loads(encoded, object_pairs_hook=_object)
     raw = _fields(document, frozenset({"schema_version", "revision", "installation"}))
-    if type(raw["schema_version"]) is not int or raw["schema_version"] != 1:
+    if type(raw["schema_version"]) is not int or raw["schema_version"] not in (1, 2, 3):
         raise DesktopImageSettingsError("Saved image settings schema is unsupported.")
     revision = _revision(raw["revision"])
     if revision == 0:
         raise DesktopImageSettingsError("Saved image settings revision must be positive.")
-    return revision, _decode(raw["installation"])
+    return revision, _decode(raw["installation"], schema_version=raw["schema_version"], data_root=data_root)
 
 
 class DesktopImageSettingsStore:
@@ -342,7 +393,7 @@ class DesktopImageSettingsStore:
                     ancestor = ancestor.parent
             _snapshot(ancestor, directory=True)
             return 0, None
-        return _saved_document(cast(bytes, _read_regular(self._path, maximum=_MAX_DOCUMENT_BYTES)))
+        return _saved_document(cast(bytes, _read_regular(self._path, maximum=_MAX_DOCUMENT_BYTES)), data_root=self._data_root)
 
     def load(self) -> TrustedImageInstallation | None:
         """Read private trusted configuration, failing closed on corrupt data."""
@@ -350,6 +401,21 @@ class DesktopImageSettingsStore:
         with self._lock:
             try:
                 return self._load()[1]
+            except Exception:
+                pass
+        raise DesktopImageSettingsError("Saved local image settings are invalid.")
+
+    def load_snapshot(self) -> tuple[int, TrustedImageInstallation | None]:
+        """Read a private revision and catalog without expensive readiness hashes.
+
+        Installation imports use this snapshot for planning only. ``save``
+        repeats the revision comparison under its cross-process lock, so a
+        concurrent settings change cannot be overwritten by a long model copy.
+        """
+
+        with self._lock:
+            try:
+                return self._load()
             except Exception:
                 pass
         raise DesktopImageSettingsError("Saved local image settings are invalid.")
@@ -401,7 +467,7 @@ class DesktopImageSettingsStore:
                         # aliased files, and oversized input still fail closed.
                         invalid_bytes = cast(bytes, _read_regular(self._path, maximum=_MAX_DOCUMENT_BYTES))
                         try:
-                            _saved_document(invalid_bytes)
+                            _saved_document(invalid_bytes, data_root=self._data_root)
                         except Exception:
                             current_revision = 0
                         else:
@@ -414,12 +480,12 @@ class DesktopImageSettingsStore:
                     if current_revision == _MAX_REVISION:
                         raise DesktopImageSettingsError("Image settings revision limit reached.")
                     document = {
-                        "schema_version": 1, "revision": current_revision + 1,
-                        "installation": _encode(installation),
+                        "schema_version": 3, "revision": current_revision + 1,
+                        "installation": _encode(installation, data_root=self._data_root),
                     }
                     # Roundtrip through the strict reader keeps the trusted
                     # Python API and on-disk schema subject to identical rules.
-                    _decode(document["installation"])
+                    _decode(document["installation"], data_root=self._data_root)
                     encoded = (json.dumps(document, ensure_ascii=False, allow_nan=False, sort_keys=True, indent=2) + "\n").encode("utf-8")
                     if len(encoded) > _MAX_DOCUMENT_BYTES:
                         raise DesktopImageSettingsError("Image settings exceed their size limit.")
@@ -520,12 +586,38 @@ class DesktopImageSettingsStore:
                         return ImageSettingsStatus("recovery_required", "Image runtime residue requires confirmed recovery. Private files will be preserved.")
                     return ImageSettingsStatus("unconfigured", "Choose and confirm a trusted ComfyUI installation.")
                 state, message = self._preflight(installation)
-                return ImageSettingsStatus(state, message, revision, installation)
+                return ImageSettingsStatus(state, message, revision, installation, self._lora_statuses(installation, ready=state == "ready"))
             except Exception:
                 pass
         if recovery_required:
             return ImageSettingsStatus("recovery_required", "Image runtime residue requires confirmed recovery. Private files will be preserved.", revision, installation)
         return ImageSettingsStatus("invalid", "Local image settings or runtime readiness checks failed. Review the installation.", revision, installation)
+
+    def _lora_statuses(self, installation: TrustedImageInstallation, *, ready: bool) -> dict[tuple[str, str], str]:
+        """Check optional assets independently so LoRA failures never disable off.
+
+        A logical profile remains usable without its optional LoRAs. The native
+        supervisor repeats the selected LoRA's hash and acquires its guard at
+        generation time; this read-only summary is informative, not authority.
+        """
+
+        result: dict[tuple[str, str], str] = {}
+        for profile in installation.profiles.profiles:
+            for lora in profile.loras:
+                state = "unavailable"
+                if ready:
+                    try:
+                        path = installation.models_root / "loras" / Path(lora.lora_name.replace("\\", "/"))
+                        metadata = _snapshot(path, directory=False)
+                        if metadata.st_nlink != 1:
+                            raise DesktopImageSettingsError("Optional image asset is aliased.")
+                        state = "ready" if _read_regular(path) == lora.lora_sha256 else "hash_mismatch"
+                    except FileNotFoundError:
+                        state = "missing_lora"
+                    except Exception:
+                        state = "unavailable"
+                result[(profile.profile_id, lora.lora_id)] = state
+        return result
 
     def create_service(self) -> ImageGenerationApplicationService:
         """Compose the exclusive managed service only after full local readiness."""

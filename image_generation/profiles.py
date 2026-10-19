@@ -85,11 +85,11 @@ def _profile_text(value: object, field_name: str, maximum: int) -> str:
     return normalized
 
 
-def _checkpoint_name(value: object) -> str:
-    """Return one relative ComfyUI checkpoint key without traversal aliases."""
+def _checkpoint_name(value: object, field_name: str = "checkpoint_name") -> str:
+    """Return one relative safetensors asset key without traversal aliases."""
 
     if type(value) is not str:
-        raise ImageGenerationProfileError("checkpoint_name must be text.")
+        raise ImageGenerationProfileError(f"{field_name} must be text.")
     normalized = value.strip()
     if (
         not normalized
@@ -99,16 +99,18 @@ def _checkpoint_name(value: object) -> str:
         or ":" in normalized
         or any(unicodedata.category(character) in {"Cc", "Cf", "Cs"} for character in normalized)
     ):
-        raise ImageGenerationProfileError("checkpoint_name is invalid.")
+        raise ImageGenerationProfileError(f"{field_name} is invalid.")
     windows = PureWindowsPath(normalized)
     posix = PurePosixPath(normalized.replace("\\", "/"))
+    # PurePath erases dot segments and duplicate separators; inspect the raw
+    # segments as well so configuration cannot retain those filesystem aliases.
     if (
         windows.is_absolute()
         or posix.is_absolute()
-        or any(part in {"", ".", ".."} for part in posix.parts)
+        or any(part in {"", ".", ".."} for part in normalized.replace("\\", "/").split("/"))
     ):
         raise ImageGenerationProfileError(
-            "checkpoint_name must be a relative ComfyUI model key."
+            f"{field_name} must be a relative ComfyUI model key."
         )
     return normalized
 
@@ -145,6 +147,44 @@ class ImageSizePreset:
 
 
 @dataclass(frozen=True, slots=True)
+class ModelLoraProfile:
+    """Pin one reviewed SDXL LoRA below the trusted models/loras directory.
+
+    This configuration is application-owned.  Requests may select ``lora_id``
+    and bounded strengths, but cannot supply this model key, hash, or provenance.
+    Trigger words are deliberately user prompt text, never injected implicitly.
+    """
+
+    lora_id: str
+    display_name: str
+    architecture: ModelArchitecture
+    lora_name: str
+    lora_sha256: str
+    lora_source: str
+    lora_license: str
+
+    def __post_init__(self) -> None:
+        """Reject unsafe asset keys, missing provenance, and incompatible models."""
+
+        try:
+            validate_public_id(self.lora_id, "lora_id")
+        except ImageGenerationValidationError as error:
+            raise ImageGenerationProfileError(str(error)) from error
+        object.__setattr__(self, "display_name", _profile_text(
+            self.display_name, "display_name", MAX_PROFILE_DISPLAY_NAME_CODEPOINTS,
+        ))
+        if type(self.architecture) is not ModelArchitecture:
+            raise ImageGenerationProfileError("LoRA architecture is unsupported.")
+        object.__setattr__(self, "lora_name", _checkpoint_name(self.lora_name, "lora_name"))
+        if type(self.lora_sha256) is not str or _SHA256_PATTERN.fullmatch(self.lora_sha256) is None:
+            raise ImageGenerationProfileError("lora_sha256 must be a lowercase SHA-256 digest.")
+        for field_name in ("lora_source", "lora_license"):
+            object.__setattr__(self, field_name, _profile_text(
+                getattr(self, field_name), field_name, MAX_MODEL_PROVENANCE_CODEPOINTS,
+            ))
+
+
+@dataclass(frozen=True, slots=True)
 class ModelProfile:
     """Pin one reviewed SDXL-derived model and its execution defaults."""
 
@@ -162,6 +202,7 @@ class ModelProfile:
     scheduler: str = "karras"
     steps: int = 28
     cfg_scale: float = 6.0
+    loras: tuple[ModelLoraProfile, ...] = ()
 
     def __post_init__(self) -> None:
         """Validate compatibility, provenance, and deterministic defaults."""
@@ -238,6 +279,27 @@ class ModelProfile:
             raise ImageGenerationProfileError(
                 "cfg_scale must be a finite float from 1.0 through 20.0."
             )
+        if (
+            type(self.loras) is not tuple
+            or len(self.loras) > 64
+            or not all(type(lora) is ModelLoraProfile for lora in self.loras)
+            or any(lora.architecture is not self.architecture for lora in self.loras)
+            or len({lora.lora_id for lora in self.loras}) != len(self.loras)
+            or len({lora.lora_name.casefold().replace("\\", "/") for lora in self.loras}) != len(self.loras)
+        ):
+            raise ImageGenerationProfileError("loras must be unique compatible reviewed LoRA profiles.")
+
+    def lora(self, lora_id: str) -> ModelLoraProfile:
+        """Resolve one trusted logical LoRA ID without accepting an asset key."""
+
+        try:
+            validate_public_id(lora_id, "lora_id")
+        except ImageGenerationValidationError as error:
+            raise ImageGenerationProfileError(str(error)) from error
+        for lora in self.loras:
+            if lora.lora_id == lora_id:
+                return lora
+        raise ImageGenerationProfileError("The requested LoRA is not available for this profile.")
 
     def size_preset(self, preset_id: str) -> ImageSizePreset:
         """Resolve one allowlisted size or fail without falling back silently."""
@@ -276,6 +338,23 @@ class ModelProfile:
             ],
             "steps": self.steps,
         }
+        # Omit the new configuration entirely for existing profiles so their
+        # recorded provenance digests remain byte-for-byte compatible.  For
+        # configured LoRAs the digest pins the allowlist and file hashes, while
+        # the workflow digest identifies the selected key and strengths.
+        if self.loras:
+            document["loras"] = [
+                {
+                    "architecture": lora.architecture.value,
+                    "display_name": lora.display_name,
+                    "lora_id": lora.lora_id,
+                    "lora_license": lora.lora_license,
+                    "lora_name": lora.lora_name,
+                    "lora_sha256": lora.lora_sha256,
+                    "lora_source": lora.lora_source,
+                }
+                for lora in self.loras
+            ]
         encoded = json.dumps(
             document,
             ensure_ascii=False,
@@ -329,6 +408,7 @@ __all__ = [
     "MAX_IMAGE_EDGE_PIXELS",
     "MAX_IMAGE_PIXELS",
     "ModelArchitecture",
+    "ModelLoraProfile",
     "ModelProfile",
     "ModelProfileCatalog",
     "PromptDialect",

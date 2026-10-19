@@ -14,7 +14,7 @@ import pytest
 
 import image_generation.service as image_service
 from image_generation.comfyui import ComfyOutputDescriptor, ComfyPromptHandle
-from image_generation.domain import ImageGenerationSpec
+from image_generation.domain import ImageGenerationSpec, ImageLoraSelection
 from image_generation.exceptions import (
     ImageGenerationCancelledError,
     ImageGenerationProfileError,
@@ -27,6 +27,7 @@ from image_generation.png import PNG_SIGNATURE, CanonicalPng, canonicalize_png
 from image_generation.profiles import (
     ImageSizePreset,
     ModelArchitecture,
+    ModelLoraProfile,
     ModelProfile,
     ModelProfileCatalog,
     PromptDialect,
@@ -113,6 +114,142 @@ def _spec(**changes: object) -> ImageGenerationSpec:
     }
     values.update(changes)
     return ImageGenerationSpec(**values)  # type: ignore[arg-type]
+
+
+def _lora(**changes: object) -> ModelLoraProfile:
+    """Return one pinned optional asset without a real checkpoint dependency."""
+
+    values: dict[str, object] = {
+        "lora_id": "reviewed-style",
+        "display_name": "Reviewed fixture LoRA",
+        "architecture": ModelArchitecture.SDXL,
+        "lora_name": "fixtures/reviewed-style.safetensors",
+        "lora_sha256": "a" * 64,
+        "lora_source": "Unit-test fixture.",
+        "lora_license": "Synthetic declaration.",
+    }
+    values.update(changes)
+    return ModelLoraProfile(**values)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("strength", [True, "1", None, float("nan"), float("inf"), -0.01, 2.01, 10 ** 1000])
+def test_lora_selection_rejects_nonfinite_unbounded_and_non_numeric_strengths(strength: object) -> None:
+    """Keep renderer-controlled weights finite and bounded without coercing booleans."""
+
+    for field in ("strength_model", "strength_clip"):
+        with pytest.raises(ImageGenerationValidationError):
+            ImageLoraSelection("reviewed-style", **{field: strength})  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("name", ["../escape.safetensors", "C:/secret.safetensors", "/secret.safetensors", "a/./b.safetensors", "a//b.safetensors", "a.pickle"])
+def test_lora_profile_rejects_paths_and_non_safetensors_assets(name: str) -> None:
+    """Limit trusted declarations to canonical relative model keys."""
+
+    with pytest.raises(ImageGenerationProfileError):
+        _lora(lora_name=name)
+
+
+def test_lora_allowlist_requires_unique_ids_names_and_exact_types() -> None:
+    """Reject ambiguous asset lookups before any runtime operation can occur."""
+
+    lora = _lora()
+    for choices in ([lora], (lora, lora), (lora, replace(lora, lora_id="other"))):
+        with pytest.raises(ImageGenerationProfileError):
+            replace(_profile(), loras=choices)  # type: ignore[arg-type]
+    profile = replace(_profile(), loras=(lora,))
+    assert profile.lora(lora.lora_id) is lora
+    with pytest.raises(ImageGenerationProfileError):
+        profile.lora("unknown")
+    with pytest.raises(ImageGenerationValidationError):
+        _spec(lora={"lora_id": lora.lora_id})
+
+
+def test_unselected_lora_keeps_legacy_graph_and_profile_digest_compatibility() -> None:
+    """Preserve the original seven-node bytes and omit empty LoRA digest fields."""
+
+    profile = _profile()
+    legacy_document = {
+        "architecture": "sdxl", "cfg_scale": 6.0,
+        "checkpoint_license": "Synthetic test declaration.",
+        "checkpoint_name": "fixtures/anime-model.safetensors",
+        "checkpoint_sha256": "0" * 64,
+        "checkpoint_source": "Unit-test fixture; no model is distributed.",
+        "default_size_preset_id": "square", "display_name": "Synthetic SDXL fixture",
+        "profile_id": "anime-local", "prompt_dialect": "sdxl-natural",
+        "sampler_name": "dpmpp_2m", "scheduler": "karras",
+        "size_presets": [{"height": 512, "preset_id": "square", "width": 512}],
+        "steps": 28,
+    }
+    legacy_digest = hashlib.sha256(json.dumps(
+        legacy_document, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+    assert profile.profile_digest == legacy_digest
+    configured = replace(profile, loras=(_lora(),))
+    job_id = str(uuid4())
+    base = compile_txt2img_workflow(_spec(), profile, job_id=job_id)
+    off = compile_txt2img_workflow(_spec(), configured, job_id=job_id)
+    assert base.api_workflow_json == off.api_workflow_json
+    assert base.workflow_digest == off.workflow_digest
+    assert off.workflow_version == base.workflow_version == 1
+    assert off.lora_id is None
+    assert off.lora_sha256 is None
+    assert configured.profile_digest != legacy_digest
+    assert replace(configured, loras=(replace(_lora(), lora_sha256="b" * 64),)).profile_digest != configured.profile_digest
+
+
+def test_selected_lora_uses_only_fixed_loader_and_seals_selected_identity_and_weights() -> None:
+    """Bind one allowlisted file to both model and CLIP without changing VAE links."""
+
+    lora = _lora()
+    profile = replace(_profile(), loras=(lora,))
+    job_id = str(uuid4())
+    spec = _spec(lora=ImageLoraSelection(lora.lora_id, 0, 2))
+    compiled = compile_txt2img_workflow(spec, profile, job_id=job_id)
+    graph = compiled.request_graph()
+    assert compiled.workflow_version == 2
+    assert compiled.lora_id == lora.lora_id
+    assert compiled.lora_sha256 == lora.lora_sha256
+    assert set(graph) == {str(index) for index in range(1, 9)}
+    assert graph["8"] == {"class_type": "LoraLoader", "inputs": {
+        "model": ["1", 0], "clip": ["1", 1], "lora_name": lora.lora_name,
+        "strength_model": 0.0, "strength_clip": 2.0,
+    }}
+    assert graph["2"]["inputs"]["clip"] == graph["3"]["inputs"]["clip"] == ["8", 1]
+    assert graph["5"]["inputs"]["model"] == ["8", 0]
+    assert graph["6"]["inputs"]["vae"] == ["1", 2]
+    changed = compile_txt2img_workflow(
+        _spec(lora=ImageLoraSelection(lora.lora_id, 1.0, 2.0)), profile, job_id=job_id,
+    )
+    assert changed.workflow_digest != compiled.workflow_digest
+    object.__setattr__(compiled, "lora_sha256", "b" * 64)
+    with pytest.raises(RuntimeError, match="seal"):
+        compiled.request_graph()
+
+
+@pytest.mark.parametrize("mutation", ["extra-loader", "wrong-model", "wrong-clip", "bad-strength", "changed-strength", "changed-name"])
+def test_lora_graph_tampering_fails_before_submission(mutation: str) -> None:
+    """Reject arbitrary added nodes and coherent edits to a valid selected graph."""
+
+    compiled = compile_txt2img_workflow(
+        _spec(lora=ImageLoraSelection("reviewed-style")),
+        replace(_profile(), loras=(_lora(),)), job_id=str(uuid4()),
+    )
+    graph = compiled.request_graph()
+    if mutation == "extra-loader":
+        graph["9"] = graph["8"]
+    elif mutation == "wrong-model":
+        graph["8"]["inputs"]["model"] = ["5", 0]
+    elif mutation == "wrong-clip":
+        graph["3"]["inputs"]["clip"] = ["1", 1]
+    elif mutation == "bad-strength":
+        graph["8"]["inputs"]["strength_model"] = 2.1
+    elif mutation == "changed-strength":
+        graph["8"]["inputs"]["strength_model"] = 0.8
+    else:
+        graph["8"]["inputs"]["lora_name"] = "other.safetensors"
+    _replace_workflow_graph(compiled, graph)
+    with pytest.raises(RuntimeError):
+        compiled.request_graph()
 
 
 def test_spec_normalizes_components_and_preserves_order() -> None:
@@ -707,10 +844,13 @@ class _FakeClient:
 
         return image_service._MANAGED_RUNTIME_CAPABILITY
 
-    def ensure_ready(self, profile: ModelProfile) -> None:
+    def ensure_ready(self, profile: ModelProfile, *, lora: ModelLoraProfile | None = None) -> None:
         """Record the selected trusted profile."""
 
         self.calls.append(f"ready:{profile.profile_id}")
+        if lora is not None:
+            assert profile.lora(lora.lora_id) is lora
+            self.calls.append(f"lora:{lora.lora_id}")
 
     def prepare(self, workflow: CompiledWorkflow) -> ComfyPromptHandle:
         """Mint and record a correlated handle before fake submission."""
@@ -776,6 +916,29 @@ class _FakeClient:
         """Record deterministic ownership release for core lifecycle tests."""
 
         self.calls.append("close")
+
+
+def test_core_passes_only_the_catalog_lora_to_managed_preflight() -> None:
+    """Resolve the opaque request ID before any selected runtime or file access."""
+
+    client = _FakeClient()
+    lora = _lora()
+    profile = replace(_profile(), loras=(lora,))
+    core = ImageGenerationCore(ModelProfileCatalog((profile,)), client)
+
+    result = core.generate(_spec(lora=ImageLoraSelection(lora.lora_id, 0.7, 0.6)))
+
+    assert client.calls[:3] == ["ready:anime-local", "lora:reviewed-style", "prepare"]
+    assert isinstance(client.workflow, CompiledWorkflow)
+    assert client.workflow.lora_sha256 == lora.lora_sha256
+    assert result.workflow_version == 2
+    assert result.profile_digest == profile.profile_digest
+    assert client.calls[-1] == "finalize"
+
+    client.calls.clear()
+    with pytest.raises(ImageGenerationProfileError):
+        core.generate(_spec(lora=ImageLoraSelection("unknown")))
+    assert client.calls == []
 
 
 class _UnmanagedFakeClient(_FakeClient):

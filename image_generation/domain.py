@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+import math
 import re
 import unicodedata
 from typing import Final
@@ -239,6 +240,25 @@ def validate_prompt_component(
 
 
 @dataclass(frozen=True, slots=True)
+class ImageLoraSelection:
+    """Select one reviewed LoRA by logical ID and bounded model/CLIP strengths."""
+
+    lora_id: str
+    strength_model: float = 1.0
+    strength_clip: float = 1.0
+
+    def __post_init__(self) -> None:
+        """Reject paths, booleans, non-finite numbers, and strengths outside 0–2."""
+
+        validate_public_id(self.lora_id, "lora_id")
+        for field_name in ("strength_model", "strength_clip"):
+            value = getattr(self, field_name)
+            if type(value) not in {int, float} or not 0.0 <= value <= 2.0 or not math.isfinite(value):
+                raise ImageGenerationValidationError(f"{field_name} must be a finite number from 0 through 2.")
+            object.__setattr__(self, field_name, float(value))
+
+
+@dataclass(frozen=True, slots=True)
 class ImageGenerationSpec:
     """Describe one reviewed single-image request without runtime internals.
 
@@ -263,12 +283,15 @@ class ImageGenerationSpec:
     seed: int = 0
     original_fictional_confirmed: bool = False
     intent: ImageIntent = ImageIntent.NEW_CHARACTER
+    lora: ImageLoraSelection | None = None
 
     def __post_init__(self) -> None:
         """Reject ambiguous content, unsafe text, and unreviewed capabilities."""
 
         validate_public_id(self.profile_id, "profile_id")
         validate_public_id(self.size_preset_id, "size_preset_id")
+        if self.lora is not None and type(self.lora) is not ImageLoraSelection:
+            raise ImageGenerationValidationError("lora must be one reviewed LoRA selection.")
         for field_name in (
             "appearance",
             "outfit",
@@ -391,6 +414,7 @@ class ImageGenerationSpec:
 __all__ = [
     "ImageGenerationSpec",
     "ImageIntent",
+    "ImageLoraSelection",
     "MAX_COMPILED_PROMPT_CODEPOINTS",
     "MAX_JSON_SAFE_SEED",
     "MAX_PROMPT_COMPONENT_CODEPOINTS",

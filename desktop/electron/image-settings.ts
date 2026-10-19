@@ -9,7 +9,8 @@ import { createHash } from 'node:crypto'
 import { constants, type BigIntStats } from 'node:fs'
 import { lstat, open, realpath } from 'node:fs/promises'
 import path from 'node:path'
-import type { ImageProfileMetadata, ImagePromptDialect } from './image-client.js'
+import type { ImageAssetImportParams, ImageLoraMetadata, ImageLoraSummary,
+  ImageProfileMetadata, ImagePromptDialect } from './image-client.js'
 export type { ImageProfileMetadata, ImagePromptDialect } from './image-client.js'
 
 /** Describe one bounded canvas through a logical identifier. */
@@ -27,6 +28,7 @@ export interface ImageSettingsProfile {
   readonly promptDialect: ImagePromptDialect
   readonly defaultSizePresetId: string
   readonly sizePresets: readonly ImageSettingsPreset[]
+  readonly loras?: readonly ImageLoraSummary[]
 }
 
 /** Publish only validated readiness, logical profiles, and fixed Main messages. */
@@ -49,6 +51,19 @@ export interface ImageInstallationReview {
   readonly pythonSha256: string
   readonly comfyuiMainSha256: string
   readonly checkpointSha256: string
+}
+
+/** Show the selected source and its digest only inside Main's native confirmation. */
+export interface ImageAssetImportReview {
+  readonly params: ImageAssetImportParams
+  readonly sourcePath: string
+  readonly sha256: string
+  readonly installation: {
+    readonly runtimeRoot: string
+    readonly pythonExecutable: string
+    readonly pythonSha256: string
+    readonly comfyuiMainSha256: string
+  } | null
 }
 
 /** Describe bounded incomplete state without exposing prompt text or native names. */
@@ -75,6 +90,10 @@ export interface ImageSettingsOptions {
   readonly choosePythonExecutable: (signal: AbortSignal) => Promise<string | null>
   /** Choose one safetensors file directly beneath a checkpoints directory. */
   readonly chooseCheckpoint: (signal: AbortSignal) => Promise<string | null>
+  /** Pick an adapter source; persistence derives the managed destination. */
+  readonly chooseLora?: (signal: AbortSignal) => Promise<string | null>
+  /** Approve the exact selected bytes and the asset's declared provenance. */
+  readonly confirmAssetImport?: (review: ImageAssetImportReview, signal: AbortSignal) => Promise<boolean>
   /** Explicitly confirm paths, computed hashes, model source, and license. */
   readonly confirmInstallation: (review: ImageInstallationReview, signal: AbortSignal) => Promise<boolean>
   /** Ask native consent to move incomplete runs into fixed private quarantine. */
@@ -82,6 +101,7 @@ export interface ImageSettingsOptions {
   /** Inject a trusted worker runner for inert tests; private requests stay in Main. */
   readonly runWorker?: (request: Record<string, unknown>, signal: AbortSignal) => Promise<unknown>
   readonly timeoutMs?: number
+  readonly importTimeoutMs?: number
 }
 
 /** Expose stable failure categories while withholding native errors and output. */
@@ -138,6 +158,21 @@ export function parseImageProfileMetadata(value: unknown): ImageProfileMetadata 
   }
 }
 
+/** Validate a closed metadata-only import request before showing any native UI. */
+export function parseImageAssetImportParams(value: unknown): ImageAssetImportParams {
+  try {
+    const raw = fields(value, ['kind', 'metadata'])
+    if (raw.kind === 'checkpoint') return Object.freeze({ kind: 'checkpoint', metadata: parseImageProfileMetadata(raw.metadata) })
+    if (raw.kind !== 'lora') throw new Error()
+    const metadata = fields(raw.metadata, ['loraId', 'displayName', 'targetProfileId', 'source', 'license'])
+    const checked: ImageLoraMetadata = Object.freeze({
+      loraId: publicId(metadata.loraId), displayName: displayLabel(metadata.displayName),
+      targetProfileId: publicId(metadata.targetProfileId), source: text(metadata.source, 512), license: text(metadata.license, 512),
+    })
+    return Object.freeze({ kind: 'lora', metadata: checked })
+  } catch { throw new ImageSettingsError('invalid-metadata') }
+}
+
 /** Validate a path-free worker status and replace diagnostics with Main-owned text. */
 export function parseImageSettingsStatus(value: unknown): ImageSettingsStatus {
   try {
@@ -149,7 +184,7 @@ export function parseImageSettingsStatus(value: unknown): ImageSettingsStatus {
       || raw.message.length > 1024 || !Array.isArray(raw.profiles) || raw.profiles.length > 8) throw new Error()
     const profiles = raw.profiles.map((item): ImageSettingsProfile => {
       const profile = fields(item, ['profileId', 'displayName', 'architecture', 'promptDialect',
-        'defaultSizePresetId', 'sizePresets'])
+        'defaultSizePresetId', 'sizePresets'], ['loras'])
       if (profile.architecture !== 'sdxl' || !DIALECTS.includes(profile.promptDialect as ImagePromptDialect)
         || !Array.isArray(profile.sizePresets) || profile.sizePresets.length < 1
         || profile.sizePresets.length > 8) throw new Error()
@@ -164,9 +199,10 @@ export function parseImageSettingsStatus(value: unknown): ImageSettingsStatus {
       const defaultSizePresetId = publicId(profile.defaultSizePresetId)
       if (new Set(sizes.map((size) => size.presetId)).size !== sizes.length
         || !sizes.some((size) => size.presetId === defaultSizePresetId)) throw new Error()
+      const loras = Object.hasOwn(profile, 'loras') ? parseLoraSummaries(profile.loras) : undefined
       return Object.freeze({ profileId: publicId(profile.profileId), displayName: displayLabel(profile.displayName),
         architecture: 'sdxl', promptDialect: profile.promptDialect as ImagePromptDialect,
-        defaultSizePresetId, sizePresets: Object.freeze(sizes) })
+        defaultSizePresetId, sizePresets: Object.freeze(sizes), ...(loras === undefined ? {} : { loras }) })
     })
     const defaultProfileId = raw.defaultProfileId === null ? null : publicId(raw.defaultProfileId)
     if (new Set(profiles.map((profile) => profile.profileId)).size !== profiles.length
@@ -198,6 +234,7 @@ export class ImageSettingsManager {
   private active: Promise<unknown> | null = null
   private controller: AbortController | null = null
   private readonly timeoutMs: number
+  private readonly importTimeoutMs: number
   private closed = false
 
   /** Accept only trusted startup roots; construction performs no installation or GPU work. */
@@ -205,6 +242,10 @@ export class ImageSettingsManager {
     for (const value of [options.projectRoot, options.dataRoot, options.pythonExecutable]) nativePath(value)
     this.timeoutMs = options.timeoutMs ?? 120_000
     if (!Number.isSafeInteger(this.timeoutMs) || this.timeoutMs < 1 || this.timeoutMs > 120_000) {
+      throw new ImageSettingsError('unavailable')
+    }
+    this.importTimeoutMs = options.importTimeoutMs ?? 600_000
+    if (!Number.isSafeInteger(this.importTimeoutMs) || this.importTimeoutMs < 1 || this.importTimeoutMs > 600_000) {
       throw new ImageSettingsError('unavailable')
     }
   }
@@ -223,6 +264,14 @@ export class ImageSettingsManager {
     try { checked = parseImageProfileMetadata(metadata) }
     catch (error) { return Promise.reject(error) }
     return this.owned((signal) => this.configureOnce(checked, signal))
+  }
+
+  /** Review an asset, join the caller's Backend stop, then copy under the private Gallery lease. */
+  importAsset(params: unknown, beforeApply: () => Promise<void> = async () => {}): Promise<ImageSettingsStatus> {
+    let checked: ImageAssetImportParams
+    try { checked = parseImageAssetImportParams(params) }
+    catch (error) { return Promise.reject(error) }
+    return this.owned(signal => this.importOnce(checked, signal, beforeApply))
   }
 
   /** Confirm a snapshot, stop the owned Backend, then quarantine without deleting private data. */
@@ -317,20 +366,74 @@ export class ImageSettingsManager {
       expectedRevision: baseline.revision, installation: review }, signal)
   }
 
-  private async invoke(request: Record<string, unknown>, signal: AbortSignal): Promise<ImageSettingsStatus> {
-    return parseImageSettingsStatus(await this.invokeRaw(request, signal))
+  private async importOnce(params: ImageAssetImportParams, signal: AbortSignal, beforeApply: () => Promise<void>): Promise<ImageSettingsStatus> {
+    if (this.options.confirmAssetImport === undefined) throw new ImageSettingsError('unavailable')
+    const baseline = await this.invoke({ op: 'status' }, signal)
+    const target = params.kind === 'lora'
+      ? baseline.profiles.find(profile => profile.profileId === params.metadata.targetProfileId) : undefined
+    if (params.kind === 'checkpoint' && baseline.profiles.some(profile => profile.profileId === params.metadata.profileId)
+      || params.kind === 'lora' && (target === undefined || target.loras?.some(lora => lora.loraId === params.metadata.loraId))) {
+      throw new ImageSettingsError('invalid-metadata')
+    }
+    const deadline = performance.now() + this.importTimeoutMs
+    let installation: ImageAssetImportReview['installation'] = null
+    const reviewed: HashedFile[] = []
+    if (!baseline.configured) {
+      if (params.kind !== 'checkpoint') throw new ImageSettingsError('invalid-metadata')
+      const runtime = await callback(() => this.options.chooseRuntimeRoot(signal), signal)
+      if (runtime === null) return baseline
+      const interpreter = await callback(() => this.options.choosePythonExecutable(signal), signal)
+      if (interpreter === null) return baseline
+      const runtimeRoot = nativePath(runtime), pythonExecutable = nativePath(interpreter)
+      const python = await hashFile(pythonExecutable, signal, deadline)
+      const main = await hashFile(path.join(runtimeRoot, 'main.py'), signal, deadline)
+      reviewed.push(python, main)
+      installation = Object.freeze({ runtimeRoot, pythonExecutable,
+        pythonSha256: python.sha256, comfyuiMainSha256: main.sha256 })
+    }
+    const source = params.kind === 'checkpoint'
+      ? await callback(() => this.options.chooseCheckpoint(signal), signal)
+      : this.options.chooseLora === undefined ? null : await callback(() => this.options.chooseLora!(signal), signal)
+    if (source === null) return baseline
+    const sourcePath = nativePath(source)
+    if (path.extname(sourcePath).toLowerCase() !== '.safetensors') throw new ImageSettingsError('unavailable')
+    const file = await hashFile(sourcePath, signal, deadline)
+    reviewed.push(file)
+    const review: ImageAssetImportReview = Object.freeze({ params, sourcePath, sha256: file.sha256, installation })
+    if (await callback(() => this.options.confirmAssetImport!(review, signal), signal) !== true) return baseline
+    // Only native-selected paths cross this private worker boundary. Recheck
+    // every reviewed identity after consent; the worker independently copies
+    // and rehashes before its revision-checked settings publication.
+    for (const item of reviewed) {
+      await verifyParents(item.parents)
+      if (!sameSnapshot(await lstat(item.path, { bigint: true }), item.stats)) throw new ImageSettingsError('unavailable')
+      checkAbort(signal)
+    }
+    // The running Backend holds the Gallery lease. Join its physical stop
+    // before the import worker, including when quit arrives during shutdown.
+    await beforeApply()
+    checkAbort(signal)
+    return this.invoke({ op: 'assets.import', trustedConfirmation: true, expectedRevision: baseline.revision,
+      installation,
+      checkpoint: params.kind === 'checkpoint' ? { sourcePath, sha256: file.sha256, metadata: params.metadata } : null,
+      lora: params.kind === 'lora' ? { sourcePath, sha256: file.sha256, ...params.metadata } : null,
+    }, signal, this.importTimeoutMs)
   }
 
-  private async invokeRaw(request: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
+  private async invoke(request: Record<string, unknown>, signal: AbortSignal, timeoutMs = this.timeoutMs): Promise<ImageSettingsStatus> {
+    return parseImageSettingsStatus(await this.invokeRaw(request, signal, timeoutMs))
+  }
+
+  private async invokeRaw(request: Record<string, unknown>, signal: AbortSignal, timeoutMs = this.timeoutMs): Promise<unknown> {
     checkAbort(signal)
     const raw = this.options.runWorker === undefined
-      ? await this.spawnWorker(request, signal)
+      ? await this.spawnWorker(request, signal, timeoutMs)
       : await callback(() => this.options.runWorker!(request, signal), signal)
     checkAbort(signal)
     return raw
   }
 
-  private spawnWorker(request: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
+  private spawnWorker(request: Record<string, unknown>, signal: AbortSignal, timeoutMs: number): Promise<unknown> {
     const body = Buffer.from(`${JSON.stringify(request)}\n`, 'utf8')
     if (body.length > MAX_BYTES) return Promise.reject(new ImageSettingsError('unavailable'))
     return new Promise((resolve, reject) => {
@@ -348,7 +451,7 @@ export class ImageSettingsManager {
         if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
       }
       const abort = (): void => stop('cancelled')
-      const timer = setTimeout(() => stop('timeout'), this.timeoutMs)
+      const timer = setTimeout(() => stop('timeout'), timeoutMs)
       signal.addEventListener('abort', abort, { once: true })
       child.stdout.on('data', (chunk: Buffer) => {
         stdoutBytes += chunk.length
@@ -378,11 +481,27 @@ export class ImageSettingsManager {
   }
 }
 
-function fields(value: unknown, names: readonly string[]): Record<string, unknown> {
+function fields(value: unknown, names: readonly string[], optional: readonly string[] = []): Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new Error()
   const raw = value as Record<string, unknown>
-  if (Object.keys(raw).length !== names.length || names.some((name) => !Object.hasOwn(raw, name))) throw new Error()
+  const allowed = new Set([...names, ...optional])
+  if (Object.keys(raw).some(name => !allowed.has(name)) || names.some(name => !Object.hasOwn(raw, name))) throw new Error()
   return raw
+}
+
+function parseLoraSummaries(value: unknown): readonly ImageLoraSummary[] {
+  if (!Array.isArray(value) || value.length > 64) throw new Error()
+  const messages: Record<string, string> = { ready: '已就绪', missing_lora: 'LoRA 文件缺失',
+    hash_mismatch: 'LoRA 文件校验不一致', unavailable: 'LoRA 暂不可用' }
+  const result = value.map((item): ImageLoraSummary => {
+    const raw = fields(item, ['loraId', 'displayName', 'available', 'message', 'defaultStrengthModel', 'defaultStrengthClip'])
+    if (typeof raw.available !== 'boolean' || typeof raw.message !== 'string' || !Object.hasOwn(messages, raw.message)
+      || raw.available !== (raw.message === 'ready') || raw.defaultStrengthModel !== 1 || raw.defaultStrengthClip !== 1) throw new Error()
+    return Object.freeze({ loraId: publicId(raw.loraId), displayName: displayLabel(raw.displayName),
+      available: raw.available, message: messages[raw.message]!, defaultStrengthModel: 1, defaultStrengthClip: 1 })
+  })
+  if (new Set(result.map(item => item.loraId)).size !== result.length) throw new Error()
+  return Object.freeze(result)
 }
 
 function text(value: unknown, maximum: number): string {

@@ -38,7 +38,7 @@ jobs:
         run: >-
           python -m mypy --platform win32
           agent attachments chats config core desktop_protocol documents image_generation knowledge_lifecycle localization memory models project_sources projects recovery
-          scripts ui voice work_tools desktop_backend.py desktop_images.py desktop_image_recovery.py desktop_image_settings.py desktop_image_settings_worker.py desktop_knowledge.py desktop_speech.py desktop_work.py desktop_work_plans.py gpu_admission.py start.py
+          scripts ui voice work_tools desktop_backend.py desktop_images.py desktop_image_assets.py desktop_image_recovery.py desktop_image_settings.py desktop_image_settings_worker.py desktop_knowledge.py desktop_speech.py desktop_work.py desktop_work_plans.py gpu_admission.py start.py
 
   windows-native-integration:
     runs-on: windows-latest
@@ -102,6 +102,7 @@ jobs:
           tests/test_image_runtime_audit.py
           tests/test_managed_comfyui.py
           tests/test_desktop_image_settings.py
+          tests/test_desktop_image_assets.py
           tests/test_desktop_image_recovery.py
 
       - name: Set up Node.js for package audit

@@ -41,6 +41,8 @@
 .image-field-grid :where(input, select) { box-sizing: border-box; width: 100%; min-width: 0; min-height: var(--control-height-md); padding: var(--space-2) var(--space-3); border: 1px solid var(--color-border-strong); border-radius: var(--radius-md); color: var(--color-text-primary); background: var(--color-bg-surface); }
 .image-field-grid input::placeholder { color: var(--color-text-muted); opacity: .75; font-size: var(--font-size-xs); }
 .image-field-grid small { font-size: var(--font-size-xs); }
+.image-lora-status { display: grid; gap: var(--space-1); }
+.image-lora-status p { font-size: var(--font-size-xs); overflow-wrap: anywhere; }
 .image-seed-control { display: flex; gap: var(--space-2); min-width: 0; }
 .image-seed-control button { flex-shrink: 0; }
 .image-subject-confirmation { display: flex; align-items: start; gap: var(--space-2); color: var(--color-text-secondary); font-size: var(--font-size-xs); line-height: var(--line-height-relaxed); cursor: pointer; }

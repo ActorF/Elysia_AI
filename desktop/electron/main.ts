@@ -3115,7 +3115,23 @@ function requireImageSettingsManager(): ImageSettingsManager {
       : path.join(projectRoot, '.venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python'),
     chooseRuntimeRoot: () => choose('选择受信 ComfyUI 安装目录（包含 main.py）', true),
     choosePythonExecutable: () => choose('选择该 ComfyUI 安装使用的 Python 解释器', false, process.platform === 'win32' ? 'exe' : undefined),
-    chooseCheckpoint: () => choose('选择 models/checkpoints 目录下的 SDXL safetensors 模型', false, 'safetensors'),
+    chooseCheckpoint: () => choose('选择 SDXL safetensors 主模型文件', false, 'safetensors'),
+    chooseLora: () => choose('选择要导入的 SDXL LoRA safetensors 文件', false, 'safetensors'),
+    confirmAssetImport: async (review, signal) => {
+      const metadata = review.params.metadata
+      const origin = review.params.kind === 'checkpoint'
+        ? `${review.params.metadata.checkpointSource}\n${review.params.metadata.checkpointLicense}`
+        : `${review.params.metadata.source}\n${review.params.metadata.license}`
+      const installation = review.installation === null ? ''
+        : `\n\nComfyUI: ${review.installation.runtimeRoot}\nPython: ${review.installation.pythonExecutable}\nPython SHA-256: ${review.installation.pythonSha256}\nComfyUI SHA-256: ${review.installation.comfyuiMainSha256}`
+      const result = await dialog.showMessageBox(requireMainWindow(), {
+        type: 'question', title: review.params.kind === 'checkpoint' ? '导入受信主模型' : '导入受信 LoRA',
+        buttons: ['确认并导入', '取消'], cancelId: 1, defaultId: 1,
+        message: '请确认文件来源与许可。文件将复制到本机私有模型目录，原文件会保留。',
+        detail: `${metadata.displayName}\n${review.sourcePath}\nSHA-256: ${review.sha256}\n\n来源与许可：\n${origin}${installation}`,
+      })
+      return !signal.aborted && result.response === 0
+    },
     confirmInstallation: async (review, signal) => {
       const result = await dialog.showMessageBox(requireMainWindow(), {
         type: 'question', title: '确认受信图片安装', buttons: ['确认并保存', '取消'], cancelId: 1, defaultId: 1,
@@ -3171,6 +3187,33 @@ function registerIpcHandlers(): void {
       }
       return result
     } finally { imageConfigurationInFlight = false }
+  })
+  ipcMain.handle('elysia:image:import', async (event, params: unknown) => {
+    assertTrustedSender(event)
+    if (shutdownStarted || dataStorageOperation !== null || presenceVoiceSessionActive
+      || songCoverManager?.hasActiveWork() === true || requireBackend().hasActiveMaintenanceWork()) {
+      throw new Error('请先结束运行中的任务，再导入图片模型。')
+    }
+    imageConfigurationInFlight = true
+    let backendStopped = false
+    try {
+      const manager = requireImageSettingsManager()
+      return await manager.importAsset(params, async () => {
+        await requireBackend().stop()
+        backendStopped = true
+      })
+    } finally {
+      try {
+        if (backendStopped && !shutdownStarted) {
+          // A failed copy still leaves a valid previous catalog. Restart after
+          // both success and failure while retaining the maintenance reservation.
+          imageConfigurationInFlight = false
+          const restart = requireBackend().restart()
+          imageConfigurationInFlight = true
+          await restart
+        }
+      } finally { imageConfigurationInFlight = false }
+    }
   })
   ipcMain.handle('elysia:image:recover', async (event) => {
     assertTrustedSender(event)

@@ -499,6 +499,71 @@ def _image_generate_request() -> JsonObject:
     return cast(JsonObject, deepcopy(sample["message"]))
 
 
+@pytest.mark.parametrize("strength_model,strength_clip", [(0, 2), (2, 0), (0.75, 1.25)])
+def test_image_generation_accepts_one_complete_bounded_lora_selection(
+    strength_model: float,
+    strength_clip: float,
+) -> None:
+    """Keep optional LoRA values aligned between runtime and JSON Schema validators."""
+
+    request = _image_generate_request()
+    selection = {
+        "loraId": "character_style",
+        "strengthModel": strength_model,
+        "strengthClip": strength_clip,
+    }
+    cast(JsonObject, request["params"])["lora"] = selection
+    parsed = parse_client_request(deepcopy(request))
+    assert cast(JsonObject, parsed["params"])["lora"] == selection
+    schema = cast(JsonObject, json.loads(SCHEMA_PATH.read_text("utf-8")))
+    Draft202012Validator(schema).validate(request)
+
+
+def test_image_generation_omission_preserves_legacy_request_shape() -> None:
+    """Leave old requests unchanged instead of synthesizing an off/null LoRA field."""
+
+    request = _image_generate_request()
+    assert "lora" not in cast(JsonObject, request["params"])
+    assert parse_client_request(deepcopy(request)) == request
+
+
+@pytest.mark.parametrize("selection", [
+    None, [], "character_style", {},
+    {"loraId": "character_style", "strengthModel": 1},
+    {"loraId": "character_style", "strengthModel": 1, "strengthClip": 1, "path": "private"},
+    {"loraId": "../character.safetensors", "strengthModel": 1, "strengthClip": 1},
+    {"loraId": "character.safetensors", "strengthModel": 1, "strengthClip": 1},
+    {"loraId": "Character", "strengthModel": 1, "strengthClip": 1},
+    {"loraId": "character_style", "strengthModel": True, "strengthClip": 1},
+    {"loraId": "character_style", "strengthModel": "1", "strengthClip": 1},
+    {"loraId": "character_style", "strengthModel": -0.01, "strengthClip": 1},
+    {"loraId": "character_style", "strengthModel": 1, "strengthClip": 2.01},
+    {"loraId": "character_style", "strengthModel": 10**1000, "strengthClip": 1},
+])
+def test_image_generation_rejects_invalid_lora_in_runtime_and_schema(selection: object) -> None:
+    """Reject ambiguous selections and paths before they reach trusted model lookup."""
+
+    request = _image_generate_request()
+    cast(JsonObject, request["params"])["lora"] = selection
+    with pytest.raises(ProtocolValidationError):
+        parse_client_request(deepcopy(request))
+    schema = cast(JsonObject, json.loads(SCHEMA_PATH.read_text("utf-8")))
+    assert not Draft202012Validator(schema).is_valid(request)
+
+
+@pytest.mark.parametrize("field", ["strengthModel", "strengthClip"])
+@pytest.mark.parametrize("strength", [float("nan"), float("inf"), -float("inf")])
+def test_image_generation_rejects_nonfinite_lora_strength(field: str, strength: float) -> None:
+    """Reject non-JSON numeric sentinels from direct in-process parser callers."""
+
+    request = _image_generate_request()
+    selection: JsonObject = {"loraId": "character_style", "strengthModel": 1, "strengthClip": 1}
+    selection[field] = strength
+    cast(JsonObject, request["params"])["lora"] = selection
+    with pytest.raises(ProtocolValidationError):
+        parse_client_request(request)
+
+
 @pytest.mark.parametrize(
     "field_name",
     ["contentMode", "adultMode", "nsfw", "protection"],

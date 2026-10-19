@@ -390,6 +390,13 @@ export interface VoiceSpeechStartParams {
   assistantMessageId: string
 }
 
+/** Select one trusted LoRA by logical ID with explicit bounded strengths. */
+export interface ImageLoraSelectionParams {
+  loraId: string
+  strengthModel: number
+  strengthClip: number
+}
+
 /** Describe one Backend-fixed new-character image generation request. */
 export interface ImageGenerateParams {
   profileId: string
@@ -404,6 +411,7 @@ export interface ImageGenerateParams {
   negativePrompt: string
   seed: number
   originalFictionalConfirmed: true
+  lora?: ImageLoraSelectionParams
 }
 
 /** Select one bounded newest-first Gallery page. */
@@ -1871,6 +1879,28 @@ function readImagePublicId(
   return identifier
 }
 
+/** Validate one complete path-free LoRA selection; only omission disables it. */
+export function parseImageLoraSelectionParams(value: unknown): ImageLoraSelectionParams {
+  const context = 'image.generate params.lora'
+  const selection = asRecord(value, context)
+  requireFields(selection, ['loraId', 'strengthModel', 'strengthClip'], context)
+  const readStrength = (key: string): number => {
+    const strength = selection[key]
+    if (
+      typeof strength !== 'number' || !Number.isFinite(strength)
+      || strength < 0 || strength > 2
+    ) {
+      return fail('protocol.invalid_params', `${context}.${key} must be finite and between 0 and 2.`)
+    }
+    return strength
+  }
+  return {
+    loraId: readImagePublicId(selection, 'loraId', context),
+    strengthModel: readStrength('strengthModel'),
+    strengthClip: readStrength('strengthClip'),
+  }
+}
+
 /** Validate the sole image request without policy, mode, path, or intent fields. */
 export function parseImageGenerateParams(value: unknown): ImageGenerateParams {
   const context = 'image.generate params'
@@ -1892,6 +1922,7 @@ export function parseImageGenerateParams(value: unknown): ImageGenerateParams {
       'originalFictionalConfirmed',
     ],
     context,
+    ['lora'],
   )
   const readComponent = (key: string, required: boolean): string => {
     const component = readString(params, key, context, {
@@ -1938,6 +1969,7 @@ export function parseImageGenerateParams(value: unknown): ImageGenerateParams {
     negativePrompt: readComponent('negativePrompt', false),
     seed,
     originalFictionalConfirmed: true,
+    ...(Object.hasOwn(params, 'lora') ? { lora: parseImageLoraSelectionParams(params.lora) } : {}),
   }
 }
 

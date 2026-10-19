@@ -23,7 +23,7 @@ from .exceptions import (
     ImageGenerationUnavailableError,
 )
 from .png import CanonicalPng, canonicalize_png
-from .profiles import ModelProfile, ModelProfileCatalog
+from .profiles import ModelLoraProfile, ModelProfile, ModelProfileCatalog
 from .workflow import CompiledWorkflow, compile_txt2img_workflow
 
 
@@ -87,8 +87,8 @@ class ComfyUiClient(Protocol):
     def managed_runtime_capability(self) -> object:
         """Return the supervisor-issued in-process admission capability."""
 
-    def ensure_ready(self, profile: ModelProfile) -> None:
-        """Verify node and checkpoint compatibility before submission."""
+    def ensure_ready(self, profile: ModelProfile, *, lora: ModelLoraProfile | None = None) -> None:
+        """Verify the checkpoint and optional exact reviewed LoRA before submission."""
 
     def prepare(self, workflow: CompiledWorkflow) -> ComfyPromptHandle:
         """Mint the correlated handle before submission can create native work."""
@@ -243,7 +243,10 @@ class ImageGenerationCore:
             )
 
         self._notify(on_progress, ImageGenerationStage.PROBING, 15)
-        self._client.ensure_ready(profile)
+        if spec.lora is None:
+            self._client.ensure_ready(profile)
+        else:
+            self._client.ensure_ready(profile, lora=profile.lora(spec.lora.lora_id))
         if self._cancelled(cancel_requested):
             raise ImageGenerationCancelledError(
                 "Local image generation was cancelled."

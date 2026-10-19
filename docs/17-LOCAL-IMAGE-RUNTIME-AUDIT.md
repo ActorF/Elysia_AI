@@ -68,3 +68,16 @@ ComfyUI 随附 [GPL v3 文本](https://github.com/Comfy-Org/ComfyUI/blob/98cc0bf
 漏洞查询使用 [OSV 官方 Batch API](https://google.github.io/osv.dev/post-v1-querybatch/)，提交包名和精确版本，处理分页；带 CUDA 本地版本标签的包同时查询其公开版本。服务不可用、形状错误、超时或分页超过预算都明确记为 `incomplete`。命中 ID 保留到报告并链接原始记录；查询结果只是生成时点的 PyPI 数据库视图，不能覆盖未知漏洞、驱动、CPython 与所有 bundled CUDA/FFmpeg/OpenSSL 等原生组件。
 
 `pip check` 通过只证明已声明的 Python 版本约束当前可满足。实际 ComfyUI 启动、生成、取消、失败、关闭、显存峰值、残留和持续运行由独立真实验收报告记录。
+
+## 2026-10-18 用户指定的本地资产
+
+本次根据用户明确指定的两个本机文件导入，不从仓库分发或重新发布模型。完整 SHA-256 与发布者版本 API 的文件摘要逐项匹配；安全格式检查确认第一个是 SDXL Checkpoint，第二个是 SDXL LoRA。原文件保留，私有副本以摘要命名；既有 SDXL Profile 和默认模型不变。
+
+| 资产 | 发布者版本与 SHA-256 |
+| --- | --- |
+| WAI Illustrious SDXL v8.0，6,938,040,682 字节 | [WAI0731，版本 1183765](https://civitai.com/models/827184?modelVersionId=1183765)；`63e5c28bf8ae348136c9f9cdbfde14d8a4a5daa13306e09a7752104b2fae2006` |
+| Hikari Elysia IL v1，28,947,460 字节 | [hi_ka_ri，版本 1318587](https://civitai.com/models/774891?modelVersionId=1318587)；`06ba4cd1cfb9b2e9ce181299f2546fc1db4cb64bab8a3c8ceb0aa108075a9e18` |
+
+发布页在复核时声明：WAI 允许 Image 与 RentCivit 范围的商业使用，允许衍生；Hikari 要求署名，商业许可仅列 RentCivit、不允许衍生，说明禁止转载。两个来源声明分别保存在其受信 Profile/LoRA 中，没有套用 SDXL Base 的统一许可。上述为发布者当时的条款记录，使用与分发仍应核对对应版本页面；摘要关联文件，不证明发布者拥有全部底层权利。原始 API 快照只保留在本机忽略目录。
+
+该 LoRA 使用 ComfyUI 内置 [LoraLoader](https://github.com/Comfy-Org/docs/blob/main/built-in-nodes/LoraLoader.mdx)，未增加 Custom Node、依赖包或元数据触发词。导入与选择不改变现有原创、虚构、明确成年、单人生成合同；没有新增内容模式。

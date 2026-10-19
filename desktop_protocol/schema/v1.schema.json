@@ -1229,6 +1229,16 @@
       "maxLength": 1024,
       "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]*$"
     },
+    "imageLoraSelection": {
+      "type": "object",
+      "properties": {
+        "loraId": { "$ref": "#/$defs/imagePublicId" },
+        "strengthModel": { "type": "number", "minimum": 0, "maximum": 2 },
+        "strengthClip": { "type": "number", "minimum": 0, "maximum": 2 }
+      },
+      "required": ["loraId", "strengthModel", "strengthClip"],
+      "additionalProperties": false
+    },
     "imageGenerateParams": {
       "type": "object",
       "properties": {
@@ -1259,7 +1269,8 @@
           "minimum": 0,
           "maximum": 9007199254740991
         },
-        "originalFictionalConfirmed": { "const": true }
+        "originalFictionalConfirmed": { "const": true },
+        "lora": { "$ref": "#/$defs/imageLoraSelection" }
       },
       "required": [
         "profileId", "sizePresetId", "appearance", "outfit", "pose",

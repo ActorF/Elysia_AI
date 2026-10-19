@@ -16,9 +16,10 @@ import sys
 from typing import NoReturn, Sequence, cast
 
 from desktop_image_settings import DesktopImageSettingsStore, TrustedImageInstallation
+from desktop_image_assets import ImageCheckpointImport, ImageLoraImport, import_image_assets
 from desktop_image_recovery import preview_image_recovery, quarantine_image_recovery
 from image_generation.profiles import (
-    ImageSizePreset, ModelArchitecture, ModelProfile, ModelProfileCatalog, PromptDialect,
+    ImageSizePreset, ModelArchitecture, ModelLoraProfile, ModelProfile, ModelProfileCatalog, PromptDialect,
 )
 
 
@@ -109,6 +110,53 @@ def _installation(value: object) -> TrustedImageInstallation:
     )
 
 
+def _asset_import(raw: dict[str, object], data_root: Path) -> dict[str, object]:
+    """Decode native-only asset sources without extending generation requests."""
+
+    _fields(raw, frozenset({"op", "expectedRevision", "trustedConfirmation", "checkpoint", "lora", "installation"}))
+    if raw["trustedConfirmation"] is not True:
+        raise ValueError("Confirm the image asset import in the native dialog.")
+    revision = raw["expectedRevision"]
+    if type(revision) is not int or not 0 <= revision <= 9_007_199_254_740_991:
+        raise ValueError("Image settings revision is invalid.")
+    checkpoint: ImageCheckpointImport | None = None
+    lora: ImageLoraImport | None = None
+    installation: TrustedImageInstallation | None = None
+    if raw["checkpoint"] is not None:
+        source = _fields(raw["checkpoint"], frozenset({"sourcePath", "sha256", "metadata"}))
+        metadata = _fields(source["metadata"], _METADATA_FIELDS)
+        digest = _digest(source["sha256"])
+        checkpoint = ImageCheckpointImport(_path(source["sourcePath"]), ModelProfile(
+            profile_id=_text(metadata["profileId"]), display_name=_text(metadata["displayName"]),
+            architecture=ModelArchitecture.SDXL, prompt_dialect=PromptDialect(_text(metadata["promptDialect"])),
+            checkpoint_name=f"{digest}.safetensors", checkpoint_sha256=digest,
+            checkpoint_source=_text(metadata["checkpointSource"]), checkpoint_license=_text(metadata["checkpointLicense"]),
+            size_presets=_PRESETS, default_size_preset_id=_text(metadata["defaultSizePresetId"]),
+        ))
+    if raw["lora"] is not None:
+        source = _fields(raw["lora"], frozenset({"sourcePath", "sha256", "targetProfileId", "loraId", "displayName", "source", "license"}))
+        digest = _digest(source["sha256"])
+        lora = ImageLoraImport(_path(source["sourcePath"]), _text(source["targetProfileId"]), ModelLoraProfile(
+            lora_id=_text(source["loraId"]), display_name=_text(source["displayName"]),
+            architecture=ModelArchitecture.SDXL, lora_name=f"{digest}.safetensors", lora_sha256=digest,
+            lora_source=_text(source["source"]), lora_license=_text(source["license"]),
+        ))
+    if raw["installation"] is not None:
+        runtime = _fields(raw["installation"], frozenset({"runtimeRoot", "pythonExecutable", "pythonSha256", "comfyuiMainSha256"}))
+        if checkpoint is None:
+            raise ValueError("First installation requires a reviewed checkpoint.")
+        installation = TrustedImageInstallation(
+            runtime_root=_path(runtime["runtimeRoot"]), python_executable=_path(runtime["pythonExecutable"]),
+            models_root=data_root / "workspace" / "image-models", python_sha256=_digest(runtime["pythonSha256"]),
+            comfyui_main_sha256=_digest(runtime["comfyuiMainSha256"]),
+            profiles=ModelProfileCatalog((checkpoint.profile,)), default_profile_id=checkpoint.profile.profile_id,
+        )
+    return import_image_assets(
+        data_root, checkpoint=checkpoint, lora=lora, installation=installation,
+        expected_revision=revision, trusted_confirmation=True,
+    ).to_public_dict()
+
+
 def handle_request(request: object, data_root: Path) -> dict[str, object]:
     """Apply one closed private request and return the store's path-free status.
 
@@ -135,6 +183,8 @@ def handle_request(request: object, data_root: Path) -> dict[str, object]:
             raise ValueError("Confirm private image recovery in the native dialog.")
         count = quarantine_image_recovery(data_root, snapshot=_digest(raw["snapshot"]), trusted_confirmation=True)
         return {"kind": "image.recovery.result", "quarantinedCount": count, "status": store.status().to_public_dict()}
+    if raw.get("op") == "assets.import":
+        return _asset_import(raw, data_root)
     if raw.get("op") != "configure":
         raise ValueError("Image settings operation is unsupported.")
     expected_fields = frozenset({"op", "installation", "expectedRevision", "trustedConfirmation"})

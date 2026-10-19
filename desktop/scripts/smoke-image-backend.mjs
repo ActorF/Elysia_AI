@@ -19,8 +19,8 @@ const arguments_ = process.argv.slice(2)
 const flags = new Map()
 for (let index = 0; index < arguments_.length; index += 2) {
   const key = arguments_[index], value = arguments_[index + 1]
-  if (!['--data-root', '--profile', '--preset'].includes(key) || !value || flags.has(key)) {
-    throw new Error('Use --data-root <isolated-root> --profile <logical-id> --preset <logical-id>.')
+  if (!['--data-root', '--profile', '--preset', '--lora'].includes(key) || !value || flags.has(key)) {
+    throw new Error('Use --data-root <isolated-root> --profile <logical-id> --preset <logical-id> [--lora <logical-id>].')
   }
   flags.set(key, value)
 }
@@ -75,6 +75,7 @@ const request = {
   style: 'Detailed storybook illustration', camera: 'Full-body composition',
   lighting: 'Soft warm morning light', negativePrompt: 'blur, extra fingers, text, watermark',
   seed: 420042, originalFictionalConfirmed: true,
+  ...(flags.has('--lora') ? { lora: { loraId: flags.get('--lora'), strengthModel: 1, strengthClip: 1 } } : {}),
 }
 let exporter = null
 const started = Date.now()
@@ -122,7 +123,7 @@ try {
   assert.equal(coordinator.getSnapshot().active, null)
   await coordinator.close()
   const report = {
-    passed: true, elapsedSeconds: (Date.now() - started) / 1000,
+    passed: true, profileId, lora: request.lora ?? null, elapsedSeconds: (Date.now() - started) / 1000,
     checks: ['real-backend-startup', 'main-gpu-admission', 'generate-commit', 'fd4-preview-digest',
       'single-use-url', 'atomic-native-export', 'cancel-no-commit', 'gallery-delete', 'backend-shutdown'],
     artifact: { sha256: digest, width: preview.width, height: preview.height, byteSize: verified.bytes.length },

@@ -61,6 +61,9 @@ export function ImageGenerator({ active = true, onOpenSettings, onToggleSidebar,
   )
   const [profileId, setProfileId] = useState('')
   const [sizePresetId, setSizePresetId] = useState('')
+  const [loraId, setLoraId] = useState('')
+  const [strengthModel, setStrengthModel] = useState('1')
+  const [strengthClip, setStrengthClip] = useState('1')
   const [prompts, setPrompts] = useState<Record<PromptField, string>>({
     appearance: '', outfit: '', pose: '', scene: '', style: '', camera: '', lighting: '', negativePrompt: '',
   })
@@ -85,13 +88,17 @@ export function ImageGenerator({ active = true, onOpenSettings, onToggleSidebar,
   const galleryRevision = useRef(0)
   const previewRevision = useRef(0)
   const activeView = useRef(active)
-  const selection = useRef({ profileId: '', sizePresetId: '' })
+  const selection = useRef({ profileId: '', sizePresetId: '', loraId: '' })
   const selectedProfile = settings?.profiles.find((profile) => profile.profileId === profileId)
+  const selectedLora = selectedProfile?.loras?.find((lora) => lora.loraId === loraId && lora.available)
+  const strengthValid = (value: string): boolean => value.trim() !== '' && Number.isFinite(Number(value))
+    && Number(value) >= 0 && Number(value) <= 2
+  const loraValid = loraId === '' || (selectedLora !== undefined && strengthValid(strengthModel) && strengthValid(strengthClip))
   const seedValid = /^\d+$/.test(seed) && Number.isSafeInteger(Number(seed)) && Number(seed) >= 0
   const canGenerate = settings?.ready === true && selectedProfile !== undefined
     && selectedProfile.sizePresets.some((preset) => preset.presetId === sizePresetId)
     && prompts.appearance.trim().length > 0 && confirmed && seedValid && !generating
-    && !settingsLoading && settingsError === null
+    && !settingsLoading && settingsError === null && loraValid
 
   useEffect(() => {
     mounted.current = true
@@ -113,7 +120,9 @@ export function ImageGenerator({ active = true, onOpenSettings, onToggleSidebar,
 
   useEffect(() => {
     activeView.current = active
-    if (!active) return
+    // A running request owns a frozen model/adapter selection. Navigation must
+    // not replace that draft with a fresh catalog before the task settles.
+    if (!active || running.current) return
     let disposed = false
     const api = window.elysiaDesktop
     if (!api) return
@@ -137,9 +146,12 @@ export function ImageGenerator({ active = true, onOpenSettings, onToggleSidebar,
           ?? setup.value.profiles[0]
         const size = chosen?.sizePresets.some((preset) => preset.presetId === selection.current.sizePresetId)
           ? selection.current.sizePresetId : chosen?.defaultSizePresetId ?? ''
-        selection.current = { profileId: chosen?.profileId ?? '', sizePresetId: size }
+        const adapterId = chosen?.loras?.some((lora) => lora.loraId === selection.current.loraId && lora.available)
+          ? selection.current.loraId : ''
+        selection.current = { profileId: chosen?.profileId ?? '', sizePresetId: size, loraId: adapterId }
         setProfileId(selection.current.profileId)
         setSizePresetId(size)
+        setLoraId(adapterId)
       } else setSettingsError(errorText(setup.reason, '无法读取本地图片设置。'))
       if (imageRevision === galleryRevision.current) {
         if (images.status === 'fulfilled') setGallery(images.value)
@@ -167,8 +179,11 @@ export function ImageGenerator({ active = true, onOpenSettings, onToggleSidebar,
       setProfileId(chosen?.profileId ?? '')
       const size = chosen?.sizePresets.some((preset) => preset.presetId === sizePresetId)
         ? sizePresetId : chosen?.defaultSizePresetId ?? ''
-      selection.current = { profileId: chosen?.profileId ?? '', sizePresetId: size }
+      const adapterId = chosen?.loras?.some((lora) => lora.loraId === selection.current.loraId && lora.available)
+        ? selection.current.loraId : ''
+      selection.current = { profileId: chosen?.profileId ?? '', sizePresetId: size, loraId: adapterId }
       setSizePresetId(size)
+      setLoraId(adapterId)
     } catch (error) {
       if (mounted.current) setSettingsError(errorText(error, '无法检查本地模型。'))
     } finally {
@@ -222,6 +237,7 @@ export function ImageGenerator({ active = true, onOpenSettings, onToggleSidebar,
     setProgress({ completed: 0, stage: '' })
     const params: ImageGenerateParams = {
       profileId, sizePresetId, ...prompts, seed: Number(seed), originalFictionalConfirmed: true,
+      ...(loraId === '' ? {} : { lora: { loraId, strengthModel: Number(strengthModel), strengthClip: Number(strengthClip) } }),
     }
     try {
       const result = await api.generateImage(params)
@@ -298,10 +314,21 @@ export function ImageGenerator({ active = true, onOpenSettings, onToggleSidebar,
   }
 
   function chooseProfile(value: string): void {
-    const size = settings?.profiles.find((profile) => profile.profileId === value)?.defaultSizePresetId ?? ''
-    selection.current = { profileId: value, sizePresetId: size }
+    const profile = settings?.profiles.find((profile) => profile.profileId === value)
+    const size = profile?.defaultSizePresetId ?? ''
+    const adapterId = profile?.loras?.some((lora) => lora.loraId === loraId && lora.available) ? loraId : ''
+    selection.current = { profileId: value, sizePresetId: size, loraId: adapterId }
     setProfileId(value)
     setSizePresetId(size)
+    setLoraId(adapterId)
+  }
+
+  function chooseLora(value: string): void {
+    const adapter = selectedProfile?.loras?.find((lora) => lora.loraId === value && lora.available)
+    selection.current.loraId = adapter?.loraId ?? ''
+    setLoraId(selection.current.loraId)
+    setStrengthModel(String(adapter?.defaultStrengthModel ?? 1))
+    setStrengthClip(String(adapter?.defaultStrengthClip ?? 1))
   }
 
   function randomizeSeed(): void {
@@ -335,6 +362,26 @@ export function ImageGenerator({ active = true, onOpenSettings, onToggleSidebar,
               {!selectedProfile && <option value="">请先选择模型</option>}
               {selectedProfile?.sizePresets.map((preset) => <option key={preset.presetId} value={preset.presetId}>{preset.presetId} · {preset.width} × {preset.height}</option>)}
             </select></label>
+            <label className="image-field-wide">LoRA<select aria-label="图片 LoRA" value={loraId}
+              onChange={(event) => { chooseLora(event.currentTarget.value) }}>
+              <option value="">不使用 LoRA</option>
+              {selectedProfile?.loras?.map((lora) => <option key={lora.loraId} value={lora.loraId} disabled={!lora.available}>
+                {lora.displayName}{lora.available ? '' : ' · 不可用'}
+              </option>)}
+            </select><small>仅显示适用于当前模型的已导入 LoRA。</small></label>
+            {loraId !== '' && <>
+              <label>模型强度<input type="number" aria-label="LoRA 模型强度" min="0" max="2" step="any"
+                value={strengthModel} aria-invalid={!strengthValid(strengthModel)}
+                onChange={(event) => { setStrengthModel(event.currentTarget.value) }} />
+                {!strengthValid(strengthModel) && <span className="image-field-error">请输入 0 至 2 的数值。</span>}</label>
+              <label>CLIP 强度<input type="number" aria-label="LoRA CLIP 强度" min="0" max="2" step="any"
+                value={strengthClip} aria-invalid={!strengthValid(strengthClip)}
+                onChange={(event) => { setStrengthClip(event.currentTarget.value) }} />
+                {!strengthValid(strengthClip) && <span className="image-field-error">请输入 0 至 2 的数值。</span>}</label>
+            </>}
+            {selectedProfile?.loras?.some((lora) => !lora.available) && <div className="image-field-wide image-lora-status" aria-label="LoRA 可用状态">
+              {selectedProfile.loras.filter((lora) => !lora.available).map((lora) => <p key={lora.loraId}>{lora.displayName}：{lora.message}</p>)}
+            </div>}
             {promptFields.map((field) => <label className={field.key === 'appearance' || field.key === 'negativePrompt' ? 'image-field-wide' : ''} key={field.key}>
               <span>{field.label}{field.key === 'appearance' && <span aria-hidden="true"> *</span>}</span>
               <input aria-label={field.label} value={prompts[field.key]} placeholder={field.placeholder}

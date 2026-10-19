@@ -75,6 +75,13 @@ async function editMetadata(section: Locator): Promise<void> {
   await section.getByLabel('模型许可证', { exact: true }).fill('Fixture test license')
 }
 
+async function editLoraMetadata(section: Locator): Promise<void> {
+  await section.getByLabel('LoRA 名称', { exact: true }).fill('角色 LoRA')
+  await section.getByLabel('LoRA ID', { exact: true }).fill('character-style')
+  await section.getByLabel('LoRA 来源', { exact: true }).fill('https://example.test/reviewed-lora')
+  await section.getByLabel('LoRA 许可证', { exact: true }).fill('Fixture LoRA license')
+}
+
 test.beforeEach(async () => {
   application = await electron.launch({
     args: [path.join(directory, 'electron-main.cjs')], executablePath: require('electron') as string, cwd: desktopDirectory,
@@ -105,6 +112,113 @@ test('requires actual model provenance and passes metadata only to native instal
   }])
   await expect(section.getByLabel('已配置图片模型', { exact: true })).toContainText('测试 SDXL')
   await expect(section.getByLabel('已配置图片模型', { exact: true })).toContainText('竖图 · 832 × 1216 · 默认尺寸')
+})
+
+test('first checkpoint import sends metadata only and enables the LoRA form after native setup', async () => {
+  const section = await openSettings()
+  const importing = section.getByRole('button', { name: '导入 Checkpoint', exact: true })
+  await expect(importing).toBeDisabled()
+  await expect(section.getByLabel('LoRA 名称', { exact: true })).toBeDisabled()
+  await expect(section.getByRole('button', { name: '导入 LoRA', exact: true })).toBeDisabled()
+  await editMetadata(section)
+  await importing.click()
+  await expect(section.getByRole('status').filter({ hasText: 'Checkpoint 已导入，本地图片模型已配置。' })).toBeVisible()
+  await expect(section.getByLabel('LoRA 名称', { exact: true })).toBeEnabled()
+  await expect(section.getByLabel('LoRA 适用模型', { exact: true })).toHaveValue('fixture-sdxl')
+  expect(await page.evaluate(() => (window as TestWindow).elysiaDesktopTest.getCalls()
+    .filter((call) => call.method === 'importImageAsset').map((call) => call.args))).toEqual([[
+    { kind: 'checkpoint', metadata: {
+      displayName: '测试 SDXL', profileId: 'fixture-sdxl', promptDialect: 'pony-tags',
+      checkpointSource: 'https://example.test/reviewed-model', checkpointLicense: 'Fixture test license', defaultSizePresetId: 'portrait',
+    } },
+  ]])
+  expect(await page.evaluate(() => (window as TestWindow).elysiaDesktopTest.getCalls()
+    .filter((call) => ['configureImageInstallation', 'updateSettings'].includes(call.method)))).toHaveLength(0)
+  await expect(section.getByRole('heading', { level: 2 })).toHaveCount(1)
+})
+
+test('checkpoint import appends a profile while preserving the previous default model', async () => {
+  const section = await openSettings(configured())
+  await editMetadata(section)
+  await section.getByLabel('图片模型名称', { exact: true }).fill('新增 SDXL')
+  await section.getByLabel('图片模型 ID', { exact: true }).fill('additional-sdxl')
+  await section.getByRole('button', { name: '导入 Checkpoint', exact: true }).click()
+  await expect(section.getByRole('status').filter({ hasText: '已有模型与默认选择已保留' })).toBeVisible()
+  const profiles = section.getByLabel('已配置图片模型', { exact: true })
+  await expect(profiles.getByRole('article')).toHaveCount(2)
+  await expect(profiles.getByRole('article').filter({ hasText: '测试 SDXL' })).toContainText('默认模型')
+  await expect(profiles.getByRole('article').filter({ hasText: '新增 SDXL' })).not.toContainText('默认模型')
+})
+
+test('LoRA import binds metadata to the selected model and preserves configured adapters', async () => {
+  const summary = configured()
+  summary.profiles = [...summary.profiles, { ...summary.profiles[0]!, profileId: 'other-sdxl', displayName: '另一模型' }]
+  const section = await openSettings(summary)
+  await editLoraMetadata(section)
+  await section.getByLabel('LoRA 适用模型', { exact: true }).selectOption('other-sdxl')
+  await section.getByRole('button', { name: '导入 LoRA', exact: true }).click()
+  await expect(section.getByRole('status').filter({ hasText: 'LoRA 已导入，可在对应模型下选择。' })).toBeVisible()
+  await expect(section.getByLabel('另一模型 已配置 LoRA', { exact: true })).toContainText('角色 LoRA')
+  await expect(section.getByLabel('另一模型 已配置 LoRA', { exact: true })).toContainText('character-style · 可用')
+  await expect(section.getByLabel('测试 SDXL 已配置 LoRA', { exact: true })).toHaveCount(0)
+  expect(await page.evaluate(() => (window as TestWindow).elysiaDesktopTest.getCalls()
+    .filter((call) => call.method === 'importImageAsset').map((call) => call.args))).toEqual([[
+    { kind: 'lora', metadata: { loraId: 'character-style', displayName: '角色 LoRA', targetProfileId: 'other-sdxl',
+      source: 'https://example.test/reviewed-lora', license: 'Fixture LoRA license' } },
+  ]])
+  await expect(section.getByRole('heading', { level: 2 })).toHaveCount(1)
+})
+
+test('LoRA import rejects unsafe metadata locally and retains a busy draft until native completion', async () => {
+  const section = await openSettings(configured())
+  await editLoraMetadata(section)
+  const importing = section.getByRole('button', { name: '导入 LoRA', exact: true })
+  await section.getByLabel('LoRA ID', { exact: true }).fill('private/adapter')
+  await expect(importing).toBeDisabled()
+  await expect(section.getByLabel('LoRA ID', { exact: true })).toHaveAttribute('aria-invalid', 'true')
+  await section.getByLabel('LoRA ID', { exact: true }).fill('character-style')
+  await section.getByLabel('LoRA 来源', { exact: true }).press('Enter')
+  expect(await page.evaluate(() => (window as TestWindow).elysiaDesktopTest.getCalls()
+    .filter((call) => ['importImageAsset', 'updateSettings'].includes(call.method)))).toHaveLength(0)
+  await page.evaluate(() => { (window as TestWindow).elysiaDesktopTest.setImageConfigurationDelay(true) })
+  await importing.click()
+  await expect(section.getByRole('button', { name: '正在导入 LoRA…', exact: true })).toBeDisabled()
+  await expect(section.getByLabel('LoRA ID', { exact: true })).toBeDisabled()
+  await expect(section.getByRole('button', { name: '导入 Checkpoint', exact: true })).toBeDisabled()
+  await expect(section.getByRole('button', { name: '检查模型与运行环境', exact: true })).toBeDisabled()
+  await page.evaluate(() => { (window as TestWindow).elysiaDesktopTest.releaseImageConfiguration() })
+  await expect(section.getByRole('status').filter({ hasText: 'LoRA 已导入' })).toBeVisible()
+  await expect(section.getByLabel('LoRA ID', { exact: true })).toHaveValue('character-style')
+})
+
+test('cancelled and failed LoRA imports keep readiness and editable metadata without retrying', async () => {
+  const section = await openSettings(configured())
+  await editLoraMetadata(section)
+  await page.evaluate(() => { (window as TestWindow).elysiaDesktopTest.setNextImageConfigurationResult(null) })
+  await section.getByRole('button', { name: '导入 LoRA', exact: true }).click()
+  await expect(section.getByRole('status').filter({ hasText: '导入已取消，图片配置未更改。' })).toBeVisible()
+  await expect(section.getByLabel('本地图片模型状态', { exact: true })).toContainText('本地图片生成已就绪')
+  await expect(section.getByLabel('测试 SDXL 已配置 LoRA', { exact: true })).toHaveCount(0)
+  await page.evaluate(() => { (window as TestWindow).elysiaDesktopTest.failNextImageConfiguration('<script>importFailure()</script>') })
+  await section.getByRole('button', { name: '导入 LoRA', exact: true }).click()
+  await expect(section.getByRole('alert')).toHaveText('<script>importFailure()</script>')
+  await expect(section.locator('script')).toHaveCount(0)
+  await expect(section.getByLabel('LoRA 许可证', { exact: true })).toHaveValue('Fixture LoRA license')
+  await expect(section.getByRole('button', { name: '导入 LoRA', exact: true })).toBeEnabled()
+  expect(await page.evaluate(() => (window as TestWindow).elysiaDesktopTest.getCalls()
+    .filter((call) => call.method === 'importImageAsset'))).toHaveLength(2)
+})
+
+test('unavailable configured adapters display repair guidance without hiding the ready base model', async () => {
+  const summary = configured()
+  summary.profiles = summary.profiles.map((profile) => ({ ...profile, loras: [{
+    loraId: 'missing-style', displayName: '待修复 LoRA', available: false,
+    message: 'LoRA 文件缺失，请重新导入。', defaultStrengthModel: 1, defaultStrengthClip: 1,
+  }] }))
+  const section = await openSettings(summary)
+  await expect(section.getByLabel('本地图片模型状态', { exact: true })).toContainText('本地图片生成已就绪')
+  await expect(section.getByLabel('测试 SDXL 已配置 LoRA', { exact: true })).toContainText('missing-style · 不可用')
+  await expect(section.getByLabel('测试 SDXL 已配置 LoRA', { exact: true })).toContainText('LoRA 文件缺失，请重新导入。')
 })
 
 test('native selection cancellation keeps the prior readiness and grants no saved installation', async () => {

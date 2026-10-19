@@ -13,11 +13,11 @@ import { ImageSettingsManager } from '../dist-electron/image-settings.js'
 const source = ts.createSourceFile('main.ts', await readFile(new URL('../electron/main.ts', import.meta.url), 'utf8'),
   ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
 const registration = source.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'registerIpcHandlers')
-const channels = ['elysia:image:settings', 'elysia:image:configure', 'elysia:image:generate', 'elysia:image:recover']
+const channels = ['elysia:image:settings', 'elysia:image:configure', 'elysia:image:generate', 'elysia:image:recover', 'elysia:image:import']
 const handlers = registration.body.statements.filter(node => ts.isExpressionStatement(node)
   && ts.isCallExpression(node.expression) && channels.includes(node.expression.arguments[0]?.text))
 const busy = source.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'hasActiveDesktopWork')
-assert.equal(handlers.length, 4)
+assert.equal(handlers.length, 5)
 const compiled = ts.transpileModule([busy, ...handlers].map(node => node.getText(source)).join('\n')
   + '\nmodule.exports = {hasActiveDesktopWork};', {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
@@ -40,6 +40,7 @@ function fixture() {
     assertTrustedSender: () => {}, ipcMain: { handle: (channel, handler) => handlers.set(channel, handler) },
     requireImageSettingsManager: () => ({ status: async () => { statusCount += 1; return { configured: true, revision: 7 } },
       configure: () => installed.promise,
+      importAsset: async (_params, beforeApply) => { await beforeApply(); return installed.promise },
       recover: async beforeApply => { await beforeApply(); return recovered.promise } }),
     requireBackend: () => ({
       hasActiveMaintenanceWork: () => host.backendWorkActive || host.module.exports.hasActiveDesktopWork(),
@@ -128,6 +129,39 @@ test('saved revision retains maintenance capacity through the entire backend res
   assert.equal(f.host.imageConfigurationInFlight, false)
 })
 
+test('asset import excludes generation and retains capacity until the revised Backend restarts', async () => {
+  const f = fixture()
+  const importing = f.handlers.get('elysia:image:import')({}, { kind: 'lora' })
+  assert.equal(f.host.imageConfigurationInFlight, true)
+  assert.throws(() => f.handlers.get('elysia:image:generate')({}, {}))
+  f.installed.resolve({ configured: true, revision: 8 })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(f.restarts(), 1)
+  assert.equal(f.host.imageConfigurationInFlight, true)
+  await assert.rejects(f.handlers.get('elysia:image:import')({}, {}))
+  f.restarted.resolve()
+  await importing
+  assert.equal(f.host.imageConfigurationInFlight, false)
+})
+
+test('cancelled imports retain the running Backend; failed copies restart the joined Backend', async () => {
+  const cancelled = fixture()
+  cancelled.host.requireImageSettingsManager = () => ({ importAsset: async () => ({ revision: 7 }) })
+  await cancelled.handlers.get('elysia:image:import')({}, {})
+  assert.equal(cancelled.restarts(), 0)
+  assert.equal(cancelled.stops(), 0)
+  const failed = fixture()
+  const importing = failed.handlers.get('elysia:image:import')({}, {})
+  const checked = assert.rejects(importing, /copy failed/u)
+  failed.installed.reject(new Error('copy failed'))
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(failed.stops(), 1)
+  assert.equal(failed.restarts(), 1)
+  failed.restarted.resolve()
+  await checked
+  assert.equal(failed.host.imageConfigurationInFlight, false)
+})
+
 test('quarantine recovery retains Main reservation through stop, apply, and restart', async () => {
   const f = fixture()
   const operation = f.handlers.get('elysia:image:recover')({})
@@ -174,6 +208,7 @@ test('storage, quit, cover, and live microphone activity exclude image readiness
     if (busy === 'voice') f.host.presenceVoiceSessionActive = true
     assert.throws(() => f.handlers.get('elysia:image:settings')({}))
     await assert.rejects(f.handlers.get('elysia:image:configure')({}, {}))
+    await assert.rejects(f.handlers.get('elysia:image:import')({}, {}))
     await assert.rejects(f.handlers.get('elysia:image:recover')({}))
     assert.equal(f.statuses(), 0)
     assert.equal(f.host.imageConfigurationInFlight, false)

@@ -31,6 +31,7 @@ from .prompting import CompiledPrompts, compile_prompts
 
 TXT2IMG_WORKFLOW_ID: Final = "core-sdxl-txt2img"
 TXT2IMG_WORKFLOW_VERSION: Final = 1
+TXT2IMG_LORA_WORKFLOW_VERSION: Final = 2
 TXT2IMG_OUTPUT_NODE_ID: Final = "7"
 MAX_WORKFLOW_JSON_BYTES: Final = 256 * 1024
 _JOB_ID_PATTERN: Final = re.compile(
@@ -50,6 +51,7 @@ _FIXED_NODE_CLASSES: Final = {
     "5": "KSampler",
     "6": "VAEDecode",
     "7": "SaveImage",
+    "8": "LoraLoader",
 }
 _FIXED_INPUT_KEYS: Final = {
     "1": frozenset({"ckpt_name"}),
@@ -70,6 +72,7 @@ _FIXED_INPUT_KEYS: Final = {
     }),
     "6": frozenset({"samples", "vae"}),
     "7": frozenset({"filename_prefix", "images"}),
+    "8": frozenset({"model", "clip", "lora_name", "strength_model", "strength_clip"}),
 }
 _SAMPLERS: Final = frozenset({
     "dpmpp_2m",
@@ -209,7 +212,7 @@ def _is_safe_checkpoint_name(value: object) -> bool:
     return (
         not windows.is_absolute()
         and not posix.is_absolute()
-        and not any(part in {"", ".", ".."} for part in posix.parts)
+        and not any(part in {"", ".", ".."} for part in value.replace("\\", "/").split("/"))
     )
 
 
@@ -219,20 +222,37 @@ def _validate_fixed_graph(
     output_filename_prefix: str,
     expected_width: int,
     expected_height: int,
+    has_lora: bool = False,
 ) -> None:
     """Verify every executable class, field, link, and dynamic value boundary."""
 
-    if set(graph) != set(_FIXED_NODE_CLASSES):
-        raise _invariant_failure("the graph does not contain exactly nodes 1 through 7")
-    inputs = {node_id: _require_node(graph, node_id) for node_id in _FIXED_NODE_CLASSES}
+    expected_nodes = set(_FIXED_NODE_CLASSES) if has_lora else set(_FIXED_NODE_CLASSES) - {"8"}
+    if set(graph) != expected_nodes:
+        raise _invariant_failure("the graph does not contain exactly the reviewed nodes")
+    inputs = {node_id: _require_node(graph, node_id) for node_id in expected_nodes}
+    model_node = "8" if has_lora else "1"
+    if has_lora:
+        lora = inputs["8"]
+        if (
+            not _is_link(lora["model"], "1", 0)
+            or not _is_link(lora["clip"], "1", 1)
+            or not _is_safe_checkpoint_name(lora["lora_name"])
+            or any(
+                type(lora[key]) is not float
+                or not math.isfinite(lora[key])
+                or not 0.0 <= lora[key] <= 2.0
+                for key in ("strength_model", "strength_clip")
+            )
+        ):
+            raise _invariant_failure("the LoRA loader is outside the reviewed contract")
 
     if not _is_safe_checkpoint_name(inputs["1"]["ckpt_name"]):
         raise _invariant_failure("the checkpoint key is invalid")
-    if not _is_link(inputs["2"]["clip"], "1", 1) or not _is_safe_prompt(
+    if not _is_link(inputs["2"]["clip"], model_node, 1) or not _is_safe_prompt(
         inputs["2"]["text"]
     ):
         raise _invariant_failure("the positive encoder inputs are invalid")
-    if not _is_link(inputs["3"]["clip"], "1", 1) or not _is_safe_prompt(
+    if not _is_link(inputs["3"]["clip"], model_node, 1) or not _is_safe_prompt(
         inputs["3"]["text"]
     ):
         raise _invariant_failure("the negative encoder inputs are invalid")
@@ -255,7 +275,7 @@ def _validate_fixed_graph(
         or type(sampler["denoise"]) is not float
         or sampler["denoise"] != 1.0
         or not _is_link(sampler["latent_image"], "4", 0)
-        or not _is_link(sampler["model"], "1", 0)
+        or not _is_link(sampler["model"], model_node, 0)
         or not _is_link(sampler["negative"], "3", 0)
         or not _is_link(sampler["positive"], "2", 0)
         or type(sampler["sampler_name"]) is not str
@@ -291,6 +311,8 @@ def _compute_compiler_seal(
     workflow_digest: str,
     expected_width: int,
     expected_height: int,
+    lora_id: str | None = None,
+    lora_sha256: str | None = None,
 ) -> bytes:
     """Bind one in-memory compiler result so field replacement fails closed."""
 
@@ -306,6 +328,8 @@ def _compute_compiler_seal(
         "workflow_id": workflow_id,
         "workflow_version": workflow_version,
     }
+    if lora_id is not None:
+        document["lora"] = {"lora_id": lora_id, "lora_sha256": lora_sha256}
     encoded = json.dumps(
         document,
         ensure_ascii=False,
@@ -337,6 +361,8 @@ class CompiledWorkflow:
     workflow_digest: str
     expected_width: int
     expected_height: int
+    lora_id: str | None = None
+    lora_sha256: str | None = None
     _compiler_seal: bytes = field(default=b"", repr=False, compare=False)
     _compiler_capability: InitVar[object | None] = None
 
@@ -353,7 +379,21 @@ class CompiledWorkflow:
         if (
             self.workflow_id != TXT2IMG_WORKFLOW_ID
             or type(self.workflow_version) is not int
-            or self.workflow_version != TXT2IMG_WORKFLOW_VERSION
+            or self.workflow_version != (
+                TXT2IMG_WORKFLOW_VERSION if self.lora_id is None else TXT2IMG_LORA_WORKFLOW_VERSION
+            )
+            or (
+                self.lora_id is None and self.lora_sha256 is not None
+            )
+            or (
+                self.lora_id is not None
+                and (
+                    type(self.lora_id) is not str
+                    or _PROFILE_ID_PATTERN.fullmatch(self.lora_id) is None
+                    or type(self.lora_sha256) is not str
+                    or _SHA256_PATTERN.fullmatch(self.lora_sha256) is None
+                )
+            )
             or type(self.profile_id) is not str
             or _PROFILE_ID_PATTERN.fullmatch(self.profile_id) is None
             or type(self.profile_digest) is not str
@@ -383,6 +423,7 @@ class CompiledWorkflow:
             output_filename_prefix=self.output_filename_prefix,
             expected_width=self.expected_width,
             expected_height=self.expected_height,
+            has_lora=self.lora_id is not None,
         )
         expected_seal = _compute_compiler_seal(
             workflow_id=self.workflow_id,
@@ -395,6 +436,8 @@ class CompiledWorkflow:
             workflow_digest=self.workflow_digest,
             expected_width=self.expected_width,
             expected_height=self.expected_height,
+            lora_id=self.lora_id,
+            lora_sha256=self.lora_sha256,
         )
         if not hmac.compare_digest(self._compiler_seal, expected_seal):
             raise _invariant_failure("the compiler seal does not match")
@@ -415,7 +458,7 @@ def compile_txt2img_workflow(
     *,
     job_id: str,
 ) -> CompiledWorkflow:
-    """Compile the first-version single-image SDXL txt2img graph.
+    """Compile one fixed SDXL graph, optionally with exactly one reviewed LoRA.
 
     Node classes and links are source-controlled here.  Only values admitted by
     ``ImageGenerationSpec`` and ``ModelProfile`` enter node inputs, so neither a
@@ -489,6 +532,25 @@ def compile_txt2img_workflow(
             },
         },
     }
+    selected_lora = profile.lora(spec.lora.lora_id) if spec.lora is not None else None
+    if selected_lora is not None:
+        assert spec.lora is not None
+        # The optional source-controlled node changes only model/CLIP links.
+        # It cannot replace the checkpoint VAE or introduce arbitrary graph
+        # nodes.  Strength zero still selects and verifies the pinned file.
+        graph["8"] = {
+            "class_type": "LoraLoader",
+            "inputs": {
+                "model": ["1", 0],
+                "clip": ["1", 1],
+                "lora_name": selected_lora.lora_name,
+                "strength_model": spec.lora.strength_model,
+                "strength_clip": spec.lora.strength_clip,
+            },
+        }
+        graph["2"]["inputs"]["clip"] = ["8", 1]
+        graph["3"]["inputs"]["clip"] = ["8", 1]
+        graph["5"]["inputs"]["model"] = ["8", 0]
     encoded = json.dumps(
         graph,
         ensure_ascii=False,
@@ -501,7 +563,7 @@ def compile_txt2img_workflow(
     workflow_digest = hashlib.sha256(encoded).hexdigest()
     fields: dict[str, Any] = {
         "workflow_id": TXT2IMG_WORKFLOW_ID,
-        "workflow_version": TXT2IMG_WORKFLOW_VERSION,
+        "workflow_version": TXT2IMG_WORKFLOW_VERSION if selected_lora is None else TXT2IMG_LORA_WORKFLOW_VERSION,
         "profile_id": profile.profile_id,
         "profile_digest": profile.profile_digest,
         "expected_output_node_id": TXT2IMG_OUTPUT_NODE_ID,
@@ -510,6 +572,8 @@ def compile_txt2img_workflow(
         "workflow_digest": workflow_digest,
         "expected_width": size.width,
         "expected_height": size.height,
+        "lora_id": selected_lora.lora_id if selected_lora is not None else None,
+        "lora_sha256": selected_lora.lora_sha256 if selected_lora is not None else None,
     }
     compiler_seal = _compute_compiler_seal(**fields)
     return CompiledWorkflow(
@@ -523,6 +587,7 @@ __all__ = [
     "CompiledWorkflow",
     "MAX_WORKFLOW_JSON_BYTES",
     "TXT2IMG_OUTPUT_NODE_ID",
+    "TXT2IMG_LORA_WORKFLOW_VERSION",
     "TXT2IMG_WORKFLOW_ID",
     "TXT2IMG_WORKFLOW_VERSION",
     "compile_txt2img_workflow",
