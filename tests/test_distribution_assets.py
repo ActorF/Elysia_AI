@@ -352,6 +352,16 @@ def _copy_reviewed_brand_assets(destination_root: Path) -> tuple[Path, Path]:
     return copied[0], copied[1]
 
 
+def _copy_reviewed_documentation_assets(destination_root: Path) -> None:
+    """Copy the two repository-only screenshots without adding application assets."""
+
+    for name in ("desktop-dark.png", "desktop-light.png"):
+        relative = Path("docs/assets") / name
+        destination = destination_root / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(_REPOSITORY_ROOT / relative, destination)
+
+
 def _copy_reviewed_character_assets(
     destination_root: Path,
 ) -> tuple[Path, ...]:
@@ -377,6 +387,7 @@ def _copy_reviewed_character_assets(
         background,
     )
     _copy_reviewed_brand_assets(destination_root)
+    _copy_reviewed_documentation_assets(destination_root)
     return assets
 
 
@@ -421,6 +432,95 @@ def test_reviewed_character_portrait_matches_exact_contract(tmp_path: Path) -> N
     _copy_reviewed_character_assets(tmp_path)
 
     assert check_distribution_assets.audit_reviewed_assets(tmp_path) == ()
+
+
+def test_git_index_accepts_exact_documentation_screenshot_paths(tmp_path: Path) -> None:
+    """Admit the reviewed documentation screenshots when they enter the Git index."""
+
+    subprocess.run(["git", "init", "--quiet"], cwd=tmp_path, check=True, capture_output=True)
+    _copy_reviewed_documentation_assets(tmp_path)
+    subprocess.run(["git", "add", "--", "docs/assets"], cwd=tmp_path, check=True, capture_output=True)
+
+    assert check_distribution_assets.audit_git_index(tmp_path) == ()
+
+
+def test_git_index_checks_new_visual_assets_after_staging(tmp_path: Path) -> None:
+    """Keep local untracked captures outside Git policy but reject unreviewed additions."""
+
+    subprocess.run(["git", "init", "--quiet"], cwd=tmp_path, check=True, capture_output=True)
+    screenshot = tmp_path / "docs/assets/unreviewed.png"
+    screenshot.parent.mkdir(parents=True)
+    screenshot.write_bytes(b"Unreviewed local capture")
+    assert check_distribution_assets.audit_git_index(tmp_path) == ()
+
+    subprocess.run(["git", "add", "--", "docs/assets"], cwd=tmp_path, check=True, capture_output=True)
+
+    problems = check_distribution_assets.audit_git_index(tmp_path)
+    assert len(problems) == 1
+    assert problems[0].path == "docs/assets/unreviewed.png"
+
+
+@pytest.mark.parametrize("name", ["desktop-dark.png", "desktop-light.png"])
+@pytest.mark.parametrize("mutation", ["content", "length", "missing"])
+def test_documentation_screenshots_require_exact_reviewed_bytes(
+    tmp_path: Path,
+    name: str,
+    mutation: str,
+) -> None:
+    """Reject same-length replacements, truncated screenshots and missing review evidence."""
+
+    _copy_reviewed_character_assets(tmp_path)
+    screenshot = tmp_path / "docs/assets" / name
+    if mutation == "content":
+        data = bytearray(screenshot.read_bytes())
+        data[100] ^= 0xFF
+        screenshot.write_bytes(data)
+    elif mutation == "length":
+        screenshot.write_bytes(screenshot.read_bytes()[:-1])
+    else:
+        screenshot.unlink()
+
+    problems = check_distribution_assets.audit_reviewed_assets(tmp_path)
+
+    assert len(problems) == 1
+    assert problems[0].path == f"docs/assets/{name}"
+
+
+@pytest.mark.parametrize("name", ["desktop-dark.png", "desktop-light.png"])
+@pytest.mark.parametrize("directory", ["docs/assets", "dist/docs/assets"])
+def test_repository_only_screenshots_remain_forbidden_in_asar(
+    tmp_path: Path,
+    name: str,
+    directory: str,
+) -> None:
+    """Repository review must not authorize shipping documentation screenshots in the app."""
+
+    screenshot = f"{directory}/{name}"
+    listing = tmp_path / "asar-listing.txt"
+    listing.write_text("\n".join([*_required_asar_entries(), screenshot]) + "\n", encoding="utf-8")
+
+    problems = check_distribution_assets.audit_asar_listing(listing)
+
+    assert len(problems) == 1
+    assert problems[0].path == screenshot
+    assert "unreviewed visual asset" in problems[0].message
+
+
+@pytest.mark.parametrize("name", ["desktop-dark.png", "desktop-light.png"])
+def test_repository_only_screenshots_remain_forbidden_in_unpacked_resources(
+    tmp_path: Path,
+    name: str,
+) -> None:
+    """Copying an approved screenshot beside the ASAR must still fail package policy."""
+
+    screenshot = tmp_path / "resources/docs/assets" / name
+    screenshot.parent.mkdir(parents=True)
+    shutil.copyfile(_REPOSITORY_ROOT / "docs/assets" / name, screenshot)
+
+    problems = check_distribution_assets.audit_unpacked_tree(tmp_path)
+
+    assert any(problem.path == f"resources/docs/assets/{name}"
+               and "unreviewed visual asset" in problem.message for problem in problems)
 
 
 def test_extracted_asar_tree_authenticates_reviewed_static_assets(

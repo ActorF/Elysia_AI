@@ -192,8 +192,21 @@ _BACKEND_RUNTIME_RESOURCE_HASHES: Final = {
     "python/lib/site-packages/faster_whisper/assets/silero_vad_v6.onnx":
         "4cbf549b8326f60f80f2536d9eefeb450a9abe83365a098031c89719f1be17d2",
 }
+# Release screenshots illustrate documentation only. Pin their reviewed bytes
+# without admitting them to either the application ASAR or unpacked resources.
+_REVIEWED_REPOSITORY_ONLY_ASSETS: Final[dict[str, tuple[int, str]]] = {
+    "docs/assets/desktop-dark.png": (
+        128_106,
+        "ca88219f4b18da6d4f8178cca4346182973070fc80fd2a9516ff7d9a29c542c2",
+    ),
+    "docs/assets/desktop-light.png": (
+        131_080,
+        "02ba43a54db93d82718bf803c225b784e321cc29d80e0830024c60de766935e5",
+    ),
+}
 _ALLOWED_GIT_VISUAL_ASSET_PATHS: Final = frozenset(
     {
+        *_REVIEWED_REPOSITORY_ONLY_ASSETS,
         "data/characters/elysia-2dart/01-character-turnaround.png",
         "data/characters/elysia-2dart/02-activity-states.png",
         "data/characters/elysia-2dart/03-expression-atlas.png",
@@ -548,7 +561,12 @@ def audit_distribution_paths(
 
 
 def audit_git_index(repository_root: Path) -> tuple[DistributionProblem, ...]:
-    """Audit every path in the repository's current Git index."""
+    """Audit tracked paths; rerun after staging every proposed release addition.
+
+    Untracked local models, captures and user data are intentionally outside
+    the source distribution boundary. Reviewed assets receive an independent
+    byte audit, while archive and unpacked scans cover actual packaged files.
+    """
 
     try:
         completed = subprocess.run(
@@ -679,7 +697,8 @@ def audit_reviewed_assets(repository_root: Path) -> tuple[DistributionProblem, .
     root = repository_root.resolve()
     problems: list[DistributionProblem] = []
     for relative_path, (expected_size, expected_digest) in (
-        _REVIEWED_DISTRIBUTION_ASSETS.items()
+        *_REVIEWED_DISTRIBUTION_ASSETS.items(),
+        *_REVIEWED_REPOSITORY_ONLY_ASSETS.items(),
     ):
         asset_path = root.joinpath(*PurePosixPath(relative_path).parts)
         problems.extend(
