@@ -1,16 +1,5 @@
-# Runtime and quality dependencies pinned for repeatable local and CI installs.
-certifi==2026.6.17
-charset-normalizer==3.4.9
-idna==3.18
-python-dotenv==1.2.2
-requests==2.34.2
-urllib3==2.7.0
+# Shared runtime plus development checks; packaging excludes these tools.
+-r requirements-runtime.txt
 mypy==2.3.0
 pytest==9.1.1
-jsonschema==4.26.0
 types-jsonschema==4.26.0.20260518
-langchain-ollama==1.1.0
-langgraph==1.2.15
-numpy==2.5.3
-pypdf==6.19.0
-opencc==1.4.2

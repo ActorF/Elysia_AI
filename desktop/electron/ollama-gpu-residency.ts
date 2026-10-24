@@ -7,6 +7,7 @@
  */
 
 import { request, type ClientRequest, type IncomingMessage } from 'node:http'
+import { localOllamaTarget } from './local-ollama-origin.js'
 
 /** Absolute deadline shared by discovery, unload requests, and confirmation. */
 export const OLLAMA_GPU_MAX_TIMEOUT_MS = 20_000
@@ -116,16 +117,8 @@ export async function quiesceOllama(
 }
 
 function localTarget(value: string): LocalTarget {
-  // Match the original authority before URL normalization can turn shorthand
-  // IPv4 or alternate numeric spellings into an apparently allowed host.
-  const matched = typeof value === 'string'
-    ? /^http:\/\/(127\.0\.0\.1|localhost|\[::1\])(?::([1-9][0-9]{0,4}))?\/?$/u.exec(value)
-    : null
-  if (matched === null) throw new OllamaGpuResidencyError('invalid-origin')
-  const port = matched[2] === undefined ? 80 : Number(matched[2])
-  if (port < 1 || port > 65_535) throw new OllamaGpuResidencyError('invalid-origin')
-  // Mapping localhost to a literal bypasses DNS and ambient proxy routing.
-  return { hostname: matched[1] === '[::1]' ? '::1' : '127.0.0.1', port }
+  try { return localOllamaTarget(value) }
+  catch { throw new OllamaGpuResidencyError('invalid-origin') }
 }
 
 function record(value: unknown): Record<string, unknown> {

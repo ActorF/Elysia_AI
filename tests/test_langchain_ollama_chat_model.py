@@ -9,6 +9,7 @@ from langchain_core.messages import (
     AIMessageChunk,
     HumanMessage,
     SystemMessage,
+    BaseMessage,
 )
 from langchain_ollama import ChatOllama
 
@@ -74,7 +75,7 @@ def test_generate_reply_uses_ordered_chat_messages(
         assert messages[3].content == "Current question"
 
         return AIMessage(
-            content="  Hello, Ying!  "
+            content="  Hello, Ying!  ", response_metadata={"done": True, "done_reason": "stop"},
         )
 
     monkeypatch.setattr(
@@ -215,6 +216,7 @@ def test_stream_reply_yields_ordered_text_chunks(
         yield AIMessageChunk(content="Hello")
         yield AIMessageChunk(content=" ")
         yield AIMessageChunk(content="Ying!")
+        yield AIMessageChunk(content="", response_metadata={"done": True, "done_reason": "stop"})
 
     monkeypatch.setattr(
         ChatOllama,
@@ -257,6 +259,7 @@ def test_stream_reply_rejects_empty_reply(
         """Yield only blank chunks so the adapter must reject an empty reply."""
         yield AIMessageChunk(content="")
         yield AIMessageChunk(content="   ")
+        yield AIMessageChunk(content="", response_metadata={"done": True, "done_reason": "stop"})
 
     monkeypatch.setattr(
         ChatOllama,
@@ -362,3 +365,69 @@ def test_stream_reply_translates_midstream_connection_error(
         match=r"Could not connect to Ollama",
     ):
         next(chunks)
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("terminal, expected_error", [
+    ({"done": True, "done_reason": "stop"}, None),
+    ({"done": True}, None),
+    ({"done": True, "done_reason": "length"}, "output limit"),
+    ({"done": True, "done_reason": "load"}, "complete response"),
+    ({"done": True, "done_reason": "cancelled"}, "did not finish"),
+    ({"done": False}, "complete response"),
+    (None, "complete response"),
+])
+def test_installed_langchain_preserves_native_completion_contract(
+    monkeypatch: pytest.MonkeyPatch, streaming: bool,
+    terminal: dict[str, object] | None, expected_error: str | None,
+) -> None:
+    """Exercise real SDK metadata conversion and synthetic-last handling without inference.
+
+    Only the native response iterator is replaced. Actual ChatOllama and
+    LangChain aggregation must expose native done metadata for both invoke and
+    stream; LangChain's own trailing empty chunk is not evidence of completion.
+    """
+
+    closed: list[bool] = []
+
+    def _native_stream(self: ChatOllama, messages: list[BaseMessage], stop: list[str] | None = None,
+                       **kwargs: object) -> Iterator[dict[str, object]]:
+        try:
+            yield {"message": {"role": "assistant", "content": "Partial answer"}, "done": False}
+            if terminal is not None:
+                yield {"message": {"role": "assistant", "content": ""}, **terminal}
+        finally:
+            closed.append(True)
+
+    monkeypatch.setattr(ChatOllama, "_create_chat_stream", _native_stream)
+    model = LangChainOllamaChatModel("fixture:latest", "http://127.0.0.1:11434")
+    messages = [{"role": "user", "content": "Question"}]
+
+    def _reply() -> str:
+        return "".join(model.stream_reply(messages)) if streaming else model.generate_reply(messages)
+
+    if expected_error is None:
+        assert _reply() == "Partial answer"
+    else:
+        with pytest.raises(ChatModelResponseError, match=expected_error):
+            _reply()
+    assert closed == [True]
+
+
+@pytest.mark.parametrize("after_terminal", [
+    AIMessageChunk(content="late text"),
+    AIMessageChunk(content="", response_metadata={"done": True, "done_reason": "stop"}),
+])
+def test_stream_rejects_content_or_another_terminal_after_completion(
+    monkeypatch: pytest.MonkeyPatch, after_terminal: AIMessageChunk,
+) -> None:
+    """Prevent malformed provider streams from extending an already completed answer."""
+
+    def _stream(self: ChatOllama, messages: object, **kwargs: object) -> Iterator[AIMessageChunk]:
+        yield AIMessageChunk(content="Answer", response_metadata={"done": True, "done_reason": "stop"})
+        yield after_terminal
+
+    monkeypatch.setattr(ChatOllama, "stream", _stream)
+    model = LangChainOllamaChatModel("fixture:latest", "http://127.0.0.1:11434")
+    with pytest.raises(ChatModelResponseError):
+        list(model.stream_reply([{"role": "user", "content": "Question"}]))

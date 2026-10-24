@@ -1,5 +1,8 @@
 /** Review separate image provenance and explicitly resolve it into a Chat draft or advisory Work context. */
 
+import { t, useTranslation } from '../i18n/LocaleProvider.tsx'
+import { formatUiError } from '../i18n/ui-error.ts'
+import { HelpHint } from '../design-system/HelpHint.tsx'
 import { useEffect, useRef, useState } from 'react'
 import type { VisionImage } from '../../electron/vision-protocol.ts'
 import type { VisionContext, VisionContextClient } from '../../electron/vision-context-protocol.ts'
@@ -22,6 +25,7 @@ interface VisionContextPanelProps {
 
 /** Obtain a short-lived native review without trusting renderer-supplied analysis or granting an action. */
 export function VisionContextPanel({ api, chatId, projectId, image, ready, disabled, onBusyChange, onChatDraft, onWorkContext }: VisionContextPanelProps) {
+  useTranslation()
   const [description, setDescription] = useState('')
   const [context, setContext] = useState<VisionContext | null>(null)
   const [pending, setPending] = useState(false)
@@ -65,7 +69,7 @@ export function VisionContextPanel({ api, chatId, projectId, image, ready, disab
       const next = await api.prepareVisionContext({ chatId, imageId, userDescription: description })
       if (token !== generation.current) return
       if (next.owner.chatId !== chatId || next.owner.projectId !== projectId
-        || next.image.imageId !== imageId || next.image.sha256 !== digest) throw new Error('Review owner changed.')
+        || next.image.imageId !== imageId || next.image.sha256 !== digest) throw new Error(t("Review owner changed."))
       setContext(next)
     } catch {
       if (token === generation.current) setError('The review is unavailable. Select the image and review its current analysis again.')
@@ -86,7 +90,7 @@ export function VisionContextPanel({ api, chatId, projectId, image, ready, disab
       if (token !== generation.current) return
       if (next.context.contextId !== selected.contextId || next.context.owner.chatId !== chatId
         || next.context.owner.projectId !== projectId || next.context.image.imageId !== imageId
-        || next.context.image.sha256 !== digest || Date.parse(next.context.expiresAt) <= Date.now()) throw new Error('Review expired.')
+        || next.context.image.sha256 !== digest || Date.parse(next.context.expiresAt) <= Date.now()) throw new Error(t("Review expired."))
       if (destination === 'draft') onChatDraft?.(next.text)
       else onWorkContext?.(next.context)
     } catch {
@@ -94,39 +98,36 @@ export function VisionContextPanel({ api, chatId, projectId, image, ready, disab
     } finally { physical.current = false; setPending(false); onBusyChange(false) }
   }
 
-  return <section className="vision-context" aria-label="Vision context review" aria-busy={pending}>
-    <h3>Continue with this image</h3>
-    <p>Add reviewed text to your conversation. Nothing is sent automatically.</p>
-    <label>Your description<textarea value={description} disabled={locked} rows={3} maxLength={4096} placeholder="Add a note or explain what matters…"
+  return <section className="vision-context" aria-label={t("Vision context review")} aria-busy={pending}>
+    <h3>{t("Continue with this image")}</h3>
+    <HelpHint label={t("Continue with this image")}>{t("Add reviewed text to your conversation. Nothing is sent automatically.")}</HelpHint>
+    <label>{t("Your description")}<textarea value={description} disabled={locked} rows={3} maxLength={4096} placeholder={t("Add a note or explain what matters…")}
       onChange={(event) => { setDescription(event.currentTarget.value); setContext(null); setExpired(false) }} /></label>
-    {tooLong && <p role="alert">Shorten your description to at most 4 KiB of text.</p>}
+    {tooLong && <p role="alert">{t("Shorten your description to at most 4 KiB of text.")}</p>}
     <button type="button" className="tool-primary" disabled={locked || tooLong} onClick={() => { void review() }}>
-      {pending ? 'Working…' : 'Review context'}
+      {pending ? t("Working…") : t("Review context")}
     </button>
-    <details><summary>What this review includes</summary>
-      <p>Review the source, extracted text, model interpretation, and your description separately. This does not send a message or approve a task.</p>
-    </details>
-    {visible !== null && <div className="vision-context-evidence" role="region" aria-label="Reviewed image context">
-      <div><strong>Image source</strong><p>{visible.image.source.label} · {visible.image.width} × {visible.image.height}</p>
-        <p>The source identifies selected pixels; it does not verify a scene interpretation.</p></div>
-      <div><strong>OCR extraction</strong><pre>{visible.ocr?.text || 'No OCR text is included.'}</pre>
-        {visible.ocr?.truncated && <p>OCR text was shortened for this review.</p>}</div>
-      <div><strong>Model inference — may be wrong</strong>
+    <HelpHint label={t("What this review includes")}>{t("Review the source, extracted text, model interpretation, and your description separately. This does not send a message or approve a task.")}</HelpHint>
+    {visible !== null && <div className="vision-context-evidence" role="region" aria-label={t("Reviewed image context")}>
+      <div><strong>{t("Image source")}</strong><p>{visible.image.source.label} · {visible.image.width} × {visible.image.height}</p>
+        <HelpHint label={t("Image source")}>{t("The source identifies selected pixels; it does not verify a scene interpretation.")}</HelpHint></div>
+      <div><strong>{t("OCR extraction")}</strong><pre>{visible.ocr?.text || t("No OCR text is included.")}</pre>
+        {visible.ocr?.truncated && <p>{t("OCR text was shortened for this review.")}</p>}</div>
+      <div><strong>{t("Model inference — may be wrong")}</strong>
         {visible.inference !== null && <p>{visible.inference.model} · {visible.inference.question}</p>}
-        <pre>{visible.inference?.text || 'No model inference is included.'}</pre>
-        {visible.inference?.truncated && <p>The model answer is incomplete or was shortened for this review.</p>}</div>
-      <div><strong>Your description</strong><pre>{visible.userDescription || 'No description was entered.'}</pre></div>
-      <p className="vision-context-note">This review expires after five minutes. Image text and model answers cannot authorize actions.</p>
+        <pre>{visible.inference?.text || t("No model inference is included.")}</pre>
+        {visible.inference?.truncated && <p>{t("The model answer is incomplete or was shortened for this review.")}</p>}</div>
+      <div><strong>{t("Your description")}</strong><pre>{visible.userDescription || t("No description was entered.")}</pre></div>
+      <HelpHint label={t("Reviewed image context")}>{t("This review expires after five minutes. Image text and model answers cannot authorize actions.")}</HelpHint>
       <div className="vision-context-actions">
         {onChatDraft !== undefined && <button type="button" className={onWorkContext === undefined ? 'tool-primary' : undefined} disabled={locked}
-          onClick={() => { void applyReviewed('draft') }}>Add to Chat draft</button>}
+          onClick={() => { void applyReviewed('draft') }}>{t("Add to Chat draft")}</button>}
         {onWorkContext !== undefined && <button type="button" className="tool-primary" disabled={locked}
-          onClick={() => { void applyReviewed('work') }}>Use in Work plan</button>}
+          onClick={() => { void applyReviewed('work') }}>{t("Use in Work plan")}</button>}
       </div>
-      <details><summary>How this context is used</summary><p>Only text is added; image pixels are not attached. Text follows your configured Chat or Work model connection.
-        Chat drafts and sent messages use normal Chat storage. Work evidence stays in memory, and each planned action still needs its own review.</p></details>
+      <HelpHint label={t("How this context is used")}>{t("Only text is added; image pixels are not attached. Text follows your configured Chat or Work model connection. Chat drafts and sent messages use normal Chat storage. Work evidence stays in memory, and each planned action still needs its own review.")}</HelpHint>
     </div>}
-    {expired && <p role="status">This review expired. Review the current image again before using it.</p>}
-    {error !== null && <p role="alert">{error}</p>}
+    {expired && <p role="status">{t("This review expired. Review the current image again before using it.")}</p>}
+    {error !== null && <p role="alert">{formatUiError(error)}</p>}
   </section>
 }

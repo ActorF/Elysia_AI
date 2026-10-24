@@ -1,8 +1,9 @@
-"""Test Git and Electron distribution boundaries for reviewed local assets."""
+"""Test Git, backend manifests, and Electron boundaries for release assets."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
+import hashlib
 import json
 from pathlib import Path
 import shutil
@@ -54,6 +55,11 @@ def _valid_build() -> dict[str, object]:
             "buildResources": "assets",
         },
         "files": ["dist/**/*", "dist-electron/**/*", "package.json"],
+        "extraResources": [
+            {"from": "build/backend", "to": "backend", "filter": ["**/*"]},
+            {"from": "../LICENSE", "to": "LICENSE.txt"},
+            {"from": "../MODEL_LICENSE.md", "to": "MODEL_LICENSE.md"},
+        ],
         "win": {
             "target": "nsis",
             "icon": "elysia-icon.ico",
@@ -730,6 +736,36 @@ def test_builder_accepts_only_the_frozen_allowlist(tmp_path: Path) -> None:
     assert check_distribution_assets.audit_desktop_builder(package) == ()
 
 
+@pytest.mark.parametrize("resource_index", [1, 2])
+@pytest.mark.parametrize("mutation", ["parent", "wildcard", "destination", "omitted"])
+def test_builder_license_resources_cannot_expand_or_redirect_the_allowlist(
+    tmp_path: Path,
+    resource_index: int,
+    mutation: str,
+) -> None:
+    """Require both exact notice files without enabling broader copies or backend replacement."""
+
+    package = tmp_path / "package.json"
+    build = _valid_build()
+    resources = build["extraResources"]
+    assert isinstance(resources, list)
+    resource = resources[resource_index]
+    assert isinstance(resource, dict)
+    if mutation == "parent":
+        resource["from"] = "../"
+    elif mutation == "wildcard":
+        resource["from"] = str(resource["from"]) + "*"
+    elif mutation == "destination":
+        resource["to"] = "backend/core/brain.py"
+    else:
+        resources.pop(resource_index)
+    _write_package(package, build)
+
+    problems = check_distribution_assets.audit_desktop_builder(package)
+
+    assert any(problem.path == "build.extraResources" for problem in problems)
+
+
 @pytest.mark.parametrize("key", ["extraResources", "extraFiles", "asarUnpack"])
 def test_builder_copy_escape_keys_are_rejected_at_any_depth(
     tmp_path: Path,
@@ -834,8 +870,167 @@ def test_unpacked_tree_rejects_assets_but_allows_electron_snapshot_bins(
 
     problems = check_distribution_assets.audit_unpacked_tree(tmp_path)
 
-    assert len(problems) == 1
-    assert problems[0].path.endswith("reference.flac")
+    assert {problem.path for problem in problems} == {
+        "resources/copied/reference.flac", "resources/backend",
+    }
+
+
+def _packaged_backend_fixture(
+    root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[Path, dict[str, str]]:
+    """Create a complete synthetic backend without copying an executable runtime."""
+    backend = root / "resources" / "backend"
+    files = {
+        "desktop_backend.py": b'"""Synthetic bridge fixture."""\n',
+        "python/python.exe": b"synthetic interpreter",
+        "python/python314.zip": b"synthetic standard library",
+        "python/python314._pth": b"python314.zip\n.\nLib/site-packages\n..\n",
+        "python/msvcp140.dll": b"synthetic C++ runtime",
+        "python/msvcp140_1.dll": b"synthetic C++ runtime supplement",
+        "python/vcruntime140.dll": b"synthetic C runtime",
+        "python/vcruntime140_1.dll": b"synthetic C runtime supplement",
+        "python/MICROSOFT-VC-RUNTIME-LICENSE.txt": b"Synthetic fixture license",
+        "python/MICROSOFT-VC-RUNTIME-NOTICE.txt": b"Synthetic fixture provenance",
+        "requirements-runtime.txt": b"synthetic==1.0\n",
+        "core/elysia_system_prompt_zh.md": b"Synthetic persona",
+    }
+    inventory: dict[str, str] = {}
+    for relative, content in files.items():
+        target = backend / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
+        inventory[relative] = hashlib.sha256(content).hexdigest()
+    # Fixture digests substitute for reviewed runtime binaries; tests below
+    # still prove these independent pins cannot be changed by merely rewriting
+    # the generated manifest alongside a changed runtime file.
+    for relative in files:
+        if relative in check_distribution_assets._BACKEND_RUNTIME_RESOURCE_HASHES:
+            monkeypatch.setitem(
+                check_distribution_assets._BACKEND_RUNTIME_RESOURCE_HASHES,
+                relative,
+                inventory[relative],
+            )
+    _write_backend_manifest(backend, inventory)
+    return backend, inventory
+
+
+def _write_backend_manifest(backend: Path, inventory: dict[str, str]) -> None:
+    """Persist the fixture inventory independently of its source bytes."""
+    (backend / "distribution-manifest.json").write_text(
+        json.dumps({"files": inventory}), encoding="utf-8",
+    )
+
+
+def test_unpacked_tree_accepts_complete_backend_inventory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A complete, unmodified backend must satisfy the release audit."""
+    _packaged_backend_fixture(tmp_path, monkeypatch)
+
+    assert check_distribution_assets.audit_unpacked_tree(tmp_path) == ()
+
+
+def test_unpacked_tree_rejects_missing_backend(tmp_path: Path) -> None:
+    """An Electron-only package cannot pass without its Python application."""
+    problems = check_distribution_assets.audit_unpacked_tree(tmp_path)
+
+    assert any(problem.path == "resources/backend" for problem in problems)
+
+
+def test_unpacked_tree_rejects_missing_backend_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An installed interpreter without its inventory must fail closed."""
+    backend, _ = _packaged_backend_fixture(tmp_path, monkeypatch)
+    (backend / "distribution-manifest.json").unlink()
+
+    assert check_distribution_assets.audit_unpacked_tree(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "desktop_backend.py", "python/python.exe", "python/python314.zip",
+        "python/python314._pth", "requirements-runtime.txt",
+        "core/elysia_system_prompt_zh.md",
+        "python/msvcp140.dll", "python/msvcp140_1.dll",
+        "python/vcruntime140.dll", "python/vcruntime140_1.dll",
+        "python/MICROSOFT-VC-RUNTIME-LICENSE.txt",
+        "python/MICROSOFT-VC-RUNTIME-NOTICE.txt",
+    ],
+)
+def test_unpacked_tree_requires_backend_entries_even_when_manifest_omits_them(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    relative: str,
+) -> None:
+    """Matching inventories cannot make a broken interpreter or persona optional."""
+    backend, inventory = _packaged_backend_fixture(tmp_path, monkeypatch)
+    (backend / relative).unlink()
+    del inventory[relative]
+    _write_backend_manifest(backend, inventory)
+
+    problems = check_distribution_assets.audit_unpacked_tree(tmp_path)
+
+    assert any("missing a required runtime entry" in problem.message for problem in problems)
+
+
+@pytest.mark.parametrize("change", ["missing", "extra"])
+def test_unpacked_tree_requires_exact_backend_inventory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    change: str,
+) -> None:
+    """Detect incomplete copies and unreviewed additions after staging."""
+    backend, _ = _packaged_backend_fixture(tmp_path, monkeypatch)
+    if change == "missing":
+        (backend / "desktop_backend.py").unlink()
+    else:
+        (backend / "unexpected.py").write_text('"""Unexpected source."""', encoding="utf-8")
+
+    problems = check_distribution_assets.audit_unpacked_tree(tmp_path)
+
+    assert any("inventory differs" in problem.message for problem in problems)
+
+
+def test_unpacked_tree_detects_backend_digest_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reject changed application bytes even when all expected filenames remain."""
+    backend, _ = _packaged_backend_fixture(tmp_path, monkeypatch)
+    (backend / "desktop_backend.py").write_bytes(b"changed after staging")
+
+    problems = check_distribution_assets.audit_unpacked_tree(tmp_path)
+
+    assert any("file digest mismatch: desktop_backend.py" in problem.message for problem in problems)
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "python/python314.zip", "python/msvcp140.dll", "python/msvcp140_1.dll",
+        "python/vcruntime140.dll", "python/vcruntime140_1.dll",
+    ],
+)
+def test_unpacked_tree_retains_independent_runtime_pin(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    relative: str,
+) -> None:
+    """A rewritten inventory must not authorize an unreviewed runtime binary."""
+    backend, inventory = _packaged_backend_fixture(tmp_path, monkeypatch)
+    modified = b"unreviewed runtime bytes"
+    (backend / relative).write_bytes(modified)
+    inventory[relative] = hashlib.sha256(modified).hexdigest()
+    _write_backend_manifest(backend, inventory)
+
+    problems = check_distribution_assets.audit_unpacked_tree(tmp_path)
+
+    assert any("unreviewed backend runtime resource" in problem.message for problem in problems)
 
 
 def test_unpacked_tree_rejects_renamed_paid_live2d_copy(
@@ -853,9 +1048,10 @@ def test_unpacked_tree_rejects_renamed_paid_live2d_copy(
     assert {problem.path for problem in problems} == {
         "resources/themes/rose-companion/avatar.moc3",
         "resources/themes/rose-companion/avatar.model3.json",
+        "resources/backend",
     }
     assert all(
-        "external Live2D model" in problem.message for problem in problems
+        "external Live2D model" in problem.message for problem in problems if problem.path != "resources/backend"
     )
 
 
@@ -870,9 +1066,8 @@ def test_unpacked_tree_rejects_paid_texture_without_model_files(
 
     problems = check_distribution_assets.audit_unpacked_tree(tmp_path)
 
-    assert len(problems) == 1
-    assert problems[0].path == "resources/themes/texture_00.png"
-    assert "unreviewed visual asset" in problems[0].message
+    texture_problem = next(problem for problem in problems if problem.path == "resources/themes/texture_00.png")
+    assert "unreviewed visual asset" in texture_problem.message
 
 
 @pytest.mark.parametrize(

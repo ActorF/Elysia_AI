@@ -1,5 +1,7 @@
 /** Present a focused image canvas and persistent tool inspector while preserving owner-scoped native action leases. */
 
+import { t, useTranslation } from '../i18n/LocaleProvider.tsx'
+import { formatUiError } from '../i18n/ui-error.ts'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { VisionClient, VisionState, VisionAttachmentSelectionResult } from '../../electron/vision-protocol.ts'
 import type { VisionAnalysisClient } from '../../electron/vision-analysis-protocol.ts'
@@ -35,12 +37,13 @@ interface VisionPanelProps {
 }
 
 function formatBytes(bytes: number): string {
-  return bytes < 1024 * 1024 ? `${Math.ceil(bytes / 1024)} KiB` : `${(bytes / (1024 * 1024)).toFixed(1)} MiB`
+  return bytes < 1024 * 1024 ? t("{value1} KiB", { value1: Math.ceil(bytes / 1024) }) : t("{value1} MiB", { value1: (bytes / (1024 * 1024)).toFixed(1) })
 }
 
 /** Display exact selected images shared by Chat and Work without automatically analyzing or sending them. */
 export function VisionPanel({ api, chatId, projectId, ready, disabled, open, initialView, attachmentId, onClose,
   onBusyChange, onChatDraft, onWorkContext }: VisionPanelProps) {
+  useTranslation()
   const [state, setState] = useState<VisionState | null>(null)
   const [pending, setPending] = useState(false)
   const [loading, setLoading] = useState(false)
@@ -137,7 +140,7 @@ export function VisionPanel({ api, chatId, projectId, ready, disabled, open, ini
       const result = await operation(api)
       const next = 'state' in result ? result.state : result
       if (token !== version.current) return
-      if (next.owner.chatId !== chatId || next.owner.projectId !== projectId) throw new Error('Vision owner changed.')
+      if (next.owner.chatId !== chatId || next.owner.projectId !== projectId) throw new Error(t("Vision owner changed."))
       setState(next); setPreviewErrors([])
       setSelectedImageId((current) => 'state' in result ? result.imageId
         : next.items.some((image) => image.imageId === current) ? current : next.items.at(-1)?.imageId ?? '')
@@ -175,71 +178,71 @@ export function VisionPanel({ api, chatId, projectId, ready, disabled, open, ini
   const busy = pending || loading || analysisBusy || captureBusy || contextBusy || historyBusy
 
   return <VisionDialog open={open} onClose={onClose} busy={busy}>
-    <section className="tool-panel vision-panel" aria-label="Vision images" aria-busy={busy}>
+    <section className="tool-panel vision-panel" aria-label={t("Vision images")} aria-busy={busy}>
     <div className="tool-panel-body vision-workspace">
     <div className="vision-workspace-toolbar">
-      <span className="vision-workspace-label">{images.length > 0 ? `${images.length} image${images.length === 1 ? '' : 's'}` : 'Image workspace'}</span>
+      <span className="vision-workspace-label">{images.length > 0 ? images.length === 1 ? t("1 image") : t("{count} images", { count: images.length }) : t("Image workspace")}</span>
       <div className="vision-actions">
         {busy && <button type="button" className="vision-activity" onClick={() => {
           if (captureBusy) setCaptureOpen(true)
           else { setCaptureOpen(false); setTab(contextBusy ? 'context' : historyBusy ? 'history' : 'analyze') }
-        }}>View active task</button>}
+        }}>{t("View active task")}</button>}
         {typeof api?.listVisionCaptureSources === 'function' && <button type="button" aria-expanded={captureOpen}
           className="vision-screenshot-toggle" aria-controls="vision-capture-workspace" onClick={() => { setCaptureOpen((current) => !current) }}>
-          <Icon name="monitor" />Screenshot</button>}
-        <details ref={imageOptions} className="vision-image-options"><summary>Image options</summary>
-          <div className="vision-options-menu"><p className="vision-session-note">Images stay in this session and clear when the Chat or Project changes.</p>
-          <button type="button" disabled={locked} onClick={() => { void act((client) => client.getVisionState(chatId)) }}>Reload images</button>
+          <Icon name="monitor" />{t("Screenshot")}</button>}
+        <details ref={imageOptions} className="vision-image-options"><summary>{t("Image options")}</summary>
+          <div className="vision-options-menu"><p className="vision-session-note">{t("Images stay in this session and clear when the Chat or Project changes.")}</p>
+          <button type="button" disabled={locked} onClick={() => { void act((client) => client.getVisionState(chatId)) }}>{t("Reload images")}</button>
           <button type="button" disabled={locked || images.length === 0} onClick={() => {
             void act((client) => client.clearVisionState(chatId))
-          }}>Clear selected images</button>
+          }}>{t("Clear selected images")}</button>
         </div></details>
       </div>
     </div>
     <div className="vision-workspace-columns">
     <div className="vision-image-review">
       <div className="vision-canvas-heading" hidden={images.length === 0}>
-        <label className="vision-image-target"><span>Vision image</span><select value={selectedImage?.imageId ?? ''} disabled={locked}
+        <label className="vision-image-target"><span>{t("Vision image")}</span><select value={selectedImage?.imageId ?? ''} disabled={locked}
           onChange={(event) => { setSelectedImageId(event.currentTarget.value) }}>
-          <option value="">Select an image</option>
+          <option value="">{t("Select an image")}</option>
           {images.map((image) => <option key={image.imageId} value={image.imageId}>{image.fileName}</option>)}
         </select></label>
         {selectedImage !== null && <span className="vision-image-dimensions">{selectedImage.width} × {selectedImage.height} · {formatBytes(selectedImage.sizeBytes)}</span>}
       </div>
       <div className="vision-canvas" data-empty={selectedImage === null}>
         {selectedImage === null ? <div className="vision-empty"><span className="vision-empty-symbol"><Icon name="image" /></span>
-          <strong>{loading ? 'Loading selected images…' : images.length === 0 ? 'A closer look starts here' : 'Choose an image to explore'}</strong>
-          <p>{images.length === 0 ? 'Take a screenshot, or review a PNG or JPEG from your message attachments.' : 'Select a thumbnail below to preview and analyze it.'}</p>
+          <strong>{loading ? t("Loading selected images…") : images.length === 0 ? t("A closer look starts here") : t("Choose an image to explore")}</strong>
+          <p>{images.length === 0 ? t("Take a screenshot, or review a PNG or JPEG from your message attachments.") : t("Select a thumbnail below to preview and analyze it.")}</p>
           {images.length === 0 && typeof api?.listVisionCaptureSources === 'function' && !captureOpen && <button type="button" className="tool-primary"
-            onClick={() => { setCaptureOpen(true) }}><Icon name="monitor" />Take a screenshot</button>}
-        </div> : previewErrors.includes(selectedImage.imageId) ? <div className="vision-empty" role="alert"><Icon name="image" /><p>This image preview could not be displayed.</p></div>
-          : <img className="vision-main-preview" src={selectedImage.previewDataUrl} alt={`Full preview of ${selectedImage.fileName}`} onError={() => {
+            onClick={() => { setCaptureOpen(true) }}><Icon name="monitor" />{t("Take a screenshot")}</button>}
+        </div> : previewErrors.includes(selectedImage.imageId) ? <div className="vision-empty" role="alert"><Icon name="image" /><p>{t("This image preview could not be displayed.")}</p></div>
+          : <img className="vision-main-preview" src={selectedImage.previewDataUrl} alt={t("Full preview of {fileName}", { fileName: selectedImage.fileName })} onError={() => {
             setPreviewErrors((current) => current.includes(selectedImage.imageId) ? current : [...current, selectedImage.imageId])
           }} />}
       </div>
-      <div className="vision-images" aria-label="Selected image thumbnails">
-        {images.map((image) => <article className="vision-image" key={image.imageId} aria-label={`Selected image ${image.fileName}`}>
+      <div className="vision-images" aria-label={t("Selected image thumbnails")}>
+        {images.map((image) => <article className="vision-image" key={image.imageId} aria-label={t("Selected image {fileName}", { fileName: image.fileName })}>
           <button type="button" className="vision-image-select" disabled={locked} aria-pressed={image.imageId === selectedImageId}
-            aria-label={`Review selected image ${image.fileName}`} onClick={() => { setSelectedImageId(image.imageId) }}>
-            {previewErrors.includes(image.imageId) ? <span role="alert">This image preview could not be displayed.</span>
-              : <img src={image.previewDataUrl} alt={`Preview of ${image.fileName}`} onError={() => {
+            aria-label={t("Review selected image {fileName}", { fileName: image.fileName })} onClick={() => { setSelectedImageId(image.imageId) }}>
+            {previewErrors.includes(image.imageId) ? <span role="alert">{t("This image preview could not be displayed.")}</span>
+              : <img src={image.previewDataUrl} alt={t("Preview of {fileName}", { fileName: image.fileName })} onError={() => {
                 setPreviewErrors((current) => current.includes(image.imageId) ? current : [...current, image.imageId])
               }} />}
             <span className="vision-image-caption"><strong>{image.fileName}</strong></span>
           </button>
-          <button type="button" className="vision-image-remove" disabled={locked} aria-label={`Remove selected image ${image.fileName}`} onClick={() => {
+          <button type="button" className="vision-image-remove" disabled={locked} aria-label={t("Remove selected image {fileName}", { fileName: image.fileName })} onClick={() => {
             void act((client) => client.removeVisionImage({ chatId, imageId: image.imageId }))
           }}><Icon name="close" /></button>
         </article>)}
       </div>
-      {images.length >= 8 && <p className="vision-session-note">Remove an image before reviewing another. Up to eight images can be selected.</p>}
-      {error !== null && <p role="alert">{error}</p>}
+      {images.length >= 8 && <p className="vision-session-note">{t("Remove an image before reviewing another. Up to eight images can be selected.")}</p>}
+      {error !== null && <p role="alert">{formatUiError(error)}</p>}
     </div>
-    <aside className="vision-inspector" aria-label="Image tools">
+    <aside className="vision-inspector" aria-label={t("Image tools")}>
     {/* Presentation never unmounts a native request owner. A collapsed workspace
         or inactive tab must keep cancellation, polling and physical leases alive. */}
     {typeof api?.listVisionCaptureSources === 'function' && <div id="vision-capture-workspace" className="vision-capture-slot" hidden={!captureOpen}>
-      <button type="button" className="vision-back-button tool-quiet" onClick={() => { setCaptureOpen(false) }}><Icon name="arrow-left" />Image tools</button>
+      <button type="button" className="vision-back-button tool-quiet" onClick={() => { setCaptureOpen(false) }}><Icon name="arrow-left" />{t("Image tools")}</button>
       <VisionCapturePanel api={api} chatId={chatId} projectId={projectId} ready={ready}
         disabled={disabled || pending || loading || analysisBusy || contextBusy || historyBusy} imageLimitReached={images.length >= 8}
         onBusyChange={updateCaptureBusy} onStateChange={(next) => {
@@ -247,9 +250,9 @@ export function VisionPanel({ api, chatId, projectId, ready, disabled, open, ini
         }} />
     </div>}
     <div className="vision-tools" hidden={captureOpen}>
-    <ToolTabs<'analyze' | 'context' | 'history'> idPrefix="vision-workspace" label="Vision tools" value={tab} onValueChange={setTab}
-      items={[{ value: 'analyze', label: 'Analyze' }, { value: 'context', label: onWorkContext === undefined ? 'Use in Chat' : 'Use in Work' },
-        { value: 'history', label: 'Saved images' }]} />
+    <ToolTabs<'analyze' | 'context' | 'history'> idPrefix="vision-workspace" label={t("Vision tools")} value={tab} onValueChange={setTab}
+      items={[{ value: 'analyze', label: t("Analyze") }, { value: 'context', label: onWorkContext === undefined ? t("Use in Chat") : t("Use in Work") },
+        { value: 'history', label: t("Saved images") }]} />
     <ToolTabPanel idPrefix="vision-workspace" value="analyze" activeValue={tab}>
     {typeof api?.getVisionAnalysis === 'function' && <div className="vision-analysis-slot">
       <VisionAnalysisPanel api={api} chatId={chatId} projectId={projectId} images={images} ready={ready}

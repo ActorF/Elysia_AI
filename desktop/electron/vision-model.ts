@@ -8,6 +8,7 @@
  */
 
 import { request, type ClientRequest, type IncomingMessage, type RequestOptions } from 'node:http'
+import { localOllamaTarget } from './local-ollama-origin.js'
 
 /** Fixed public failure categories never include server bodies, paths, prompts, or credentials. */
 export type VisionModelErrorCode = 'unavailable' | 'busy' | 'cancelled' | 'timeout' | 'invalid_image'
@@ -82,16 +83,8 @@ function supportsVision(value: unknown): boolean {
   return Array.isArray(thinking.values) && thinking.values.length <= 8 && thinking.values.includes(false)
 }
 function endpoint(value: string): { hostname: string; port: number } {
-  let parsed: URL
-  try { parsed = new URL(value) } catch { throw new TypeError('Local vision endpoint is invalid.') }
-  if (parsed.protocol !== 'http:' || !['127.0.0.1', 'localhost', '[::1]'].includes(parsed.hostname)
-    || parsed.username !== '' || parsed.password !== '' || parsed.pathname !== '/'
-    || parsed.search !== '' || parsed.hash !== '') throw new TypeError('Local vision endpoint is invalid.')
-  const port = parsed.port === '' ? 80 : Number(parsed.port)
-  if (!Number.isSafeInteger(port) || port < 1 || port > 65535) throw new TypeError('Local vision endpoint is invalid.')
-  // Resolve localhost ourselves to a literal loopback address. Environment
-  // proxies and DNS changes cannot redirect the PNG to another host.
-  return { hostname: parsed.hostname === '[::1]' ? '::1' : '127.0.0.1', port }
+  try { return localOllamaTarget(value) }
+  catch { throw new TypeError('Local vision endpoint is invalid.') }
 }
 function canonicalPng(value: Uint8Array, width: number, height: number): Buffer {
   if (!(value instanceof Uint8Array) || value.byteLength < 33 || value.byteLength > MAX_IMAGE_BYTES

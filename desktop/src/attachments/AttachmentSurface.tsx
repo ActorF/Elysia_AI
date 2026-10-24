@@ -5,6 +5,9 @@
  * and focus restoration around mutations delegated through callback props.
  */
 
+import { t, useLocale } from '../i18n/LocaleProvider.tsx'
+import { formatUiError } from '../i18n/ui-error.ts'
+
 import {
   useLayoutEffect,
   useRef,
@@ -20,6 +23,7 @@ import type {
   AttachmentState,
 } from '../../electron/contracts.ts'
 import { Icon } from '../design-system/Icon.tsx'
+import { HelpHint } from '../design-system/HelpHint.tsx'
 
 export interface AttachmentSurfaceProps {
   adding: boolean
@@ -81,6 +85,7 @@ export function AttachmentSurface({
   onRemove,
   onReviewImage,
 }: AttachmentSurfaceProps) {
+  useLocale()
   const [dragState, setDragState] = useState({
     depth: 0,
     scopeId: scope.id,
@@ -232,49 +237,42 @@ export function AttachmentSurface({
         <div className="attachment-surface-heading">
           <div>
             <strong>{label}</strong>
-            <span>
-              {readOnly
-                ? 'This scope is read-only.'
-                : disabled
-                  ? 'Waiting for the active conversation.'
-                : 'Stored locally only · Contents are not read or indexed yet.'}
-            </span>
+            {readOnly || disabled ? <span>{readOnly ? t("This scope is read-only.") : t("Waiting for the active conversation.")}</span>
+              : <HelpHint label={label}>{t("Stored locally only · Contents are not read or indexed yet.")}</HelpHint>}
           </div>
           <button
             ref={addButtonRef}
             type="button"
             className="attachment-add-button"
             disabled={interactionDisabled}
-            aria-label="Choose files"
+            aria-label={t("Choose files")}
             onClick={onChoose}
           >
             <Icon name="plus" />
-            <span>{adding ? 'Adding…' : 'Add files'}</span>
+            <span>{adding ? t("Adding…") : t("Add files")}</span>
           </button>
         </div>
       )}
       <p className="visually-hidden" role="status" aria-live="polite" aria-atomic="true">
-        {attachments.length} {attachments.length === 1 ? 'file' : 'files'} ready in {label}.
-      </p>
+        {t('{count} files ready in {label}.', { count: attachments.length, label })}</p>
 
       {dragActive && (
         <div className="attachment-drop-overlay" role="status" aria-live="polite">
           <Icon name="file" />
-          <strong>{interactionDisabled ? 'Wait for the current file action' : `Drop files into ${label}`}</strong>
+          <strong>{interactionDisabled ? t("Wait for the current file action") : t("Drop files into {v0}", { v0: label })}</strong>
         </div>
       )}
 
       {error !== null && (
         <div className="attachment-operation-error" role="alert">
           <Icon name="info" />
-          <span>{error}</span>
+          <span>{formatUiError(error)}</span>
           <button type="button" onClick={onChoose} disabled={interactionDisabled}>
-            Try again
-          </button>
+            {t("Try again")}</button>
           <button
             type="button"
             className="attachment-error-dismiss"
-            aria-label="Dismiss attachment error"
+            aria-label={t("Dismiss attachment error")}
             onClick={onDismissError}
           >
             <Icon name="close" />
@@ -284,8 +282,7 @@ export function AttachmentSurface({
 
       {adding && (
         <p className="attachment-operation-status" role="status" aria-live="polite">
-          Adding files to local storage…
-        </p>
+          {t("Adding files to local storage…")}</p>
       )}
 
       {attachments.length === 0 && !adding && !compact ? (
@@ -293,14 +290,14 @@ export function AttachmentSurface({
           type="button"
           className="attachment-empty-dropzone"
           disabled={interactionDisabled}
-          aria-label="Attachment drop zone"
+          aria-label={t("Attachment drop zone")}
           onClick={onChoose}
         >
           <Icon name="file" />
-          <span>{readOnly ? 'No stored files' : 'Choose files or drop them here'}</span>
+          <span>{readOnly ? t("No stored files") : t("Choose files or drop them here")}</span>
         </button>
       ) : attachments.length > 0 ? (
-        <ul className="attachment-list" aria-label={`Files in ${label}`}>
+        <ul className="attachment-list" aria-label={t("Files in {v0}", { v0: label })}>
           {attachments.map((item, index) => {
             const removing = removingIds.includes(item.attachmentId)
             return (
@@ -309,15 +306,15 @@ export function AttachmentSurface({
                 <span className="attachment-item-copy">
                   <strong title={item.fileName}>{item.fileName}</strong>
                   <small>
-                    {item.mediaType} · {formatBytes(item.sizeBytes)} ·{' '}
+                    {item.mediaType} {t("·")} {formatBytes(item.sizeBytes)} {t("·")}{' '}
                     <span className={removing ? 'pending' : 'ready'}>
-                      {removing ? 'Removing…' : 'Ready'}
+                      {removing ? t("Removing…") : t("Ready")}
                     </span>
                   </small>
                 </span>
                 {!readOnly && onReviewImage !== undefined && ['image/png', 'image/jpeg'].includes(item.mediaType) && (
                   <button type="button" className="attachment-review-button" disabled={interactionDisabled}
-                    aria-label={`Review image ${item.fileName}`} title={`Review ${item.fileName} in Vision`}
+                    aria-label={t("Review image {v0}", { v0: item.fileName })} title={t("Review {v0} in Vision", { v0: item.fileName })}
                     onClick={() => { onReviewImage(item.attachmentId) }}>
                     <Icon name="image" />
                   </button>
@@ -334,8 +331,8 @@ export function AttachmentSurface({
                     type="button"
                     className="attachment-remove-button"
                     disabled={interactionDisabled}
-                    aria-label={`${removing ? 'Removing' : 'Remove'} ${item.fileName}`}
-                    title={removing ? 'Removing…' : `Remove ${item.fileName}`}
+                    aria-label={t(removing ? 'Removing {file}' : 'Remove {file}', { file: item.fileName })}
+                    title={removing ? t("Removing…") : t("Remove {v0}", { v0: item.fileName })}
                     onClick={() => { void removeItem(item, index) }}
                   >
                     <Icon name={removing ? 'refresh' : 'close'} />
@@ -348,9 +345,8 @@ export function AttachmentSurface({
       ) : null}
 
       {maxFileBytes !== undefined && maxFileCount !== undefined && !compact && (
-        <p className="attachment-limits">
-          New files: up to {maxFileCount} · {formatBytes(maxFileBytes)} each
-        </p>
+        <HelpHint label={t('Add files')}>
+          {t('New files: up to {count} files · {size} each', { count: maxFileCount, size: formatBytes(maxFileBytes) })}</HelpHint>
       )}
       {children}
     </section>

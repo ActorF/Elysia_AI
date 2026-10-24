@@ -180,7 +180,7 @@ test('a Work plan can pause and cancel its own active read while Vision cannot s
   await expect(plan.getByRole('button', { name: 'Pause plan', exact: true })).toBeEnabled()
   await expect(plan.getByRole('button', { name: 'Cancel plan', exact: true })).toBeEnabled()
   await plan.getByRole('button', { name: 'Pause plan', exact: true }).click()
-  await expect(plan.getByRole('status')).toContainText('paused')
+  await expect(plan.getByRole('status')).toContainText('Paused')
   await plan.getByRole('button', { name: 'Cancel plan', exact: true }).click()
   await expect(mode).toBeDisabled()
   await page.evaluate(() => { (window as VisionTestWindow).elysiaDesktopTest.releaseNextWorkPlanRead() })

@@ -42,6 +42,60 @@ test.beforeEach(async () => {
 
 test.afterEach(async () => { await application?.close(); application = undefined })
 
+test('Chat shows canonical Internet permission and opens its settings without granting access', async () => {
+  await page.getByRole('button', { name: 'Back to chat', exact: true }).click()
+  const off = page.getByRole('button', { name: 'Internet off. Open Internet settings.', exact: true })
+  await expect(off).toBeVisible()
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expect(off).toBeInViewport()
+  await off.click()
+  await expect(page.getByRole('checkbox', { name: 'Allow Internet access' })).toBeVisible()
+  expect(await page.evaluate(() => (window as PolicyWindow).elysiaDesktopTest.getCalls()
+    .filter(call => call.method === 'updateInternetPolicy'))).toHaveLength(0)
+  await page.getByRole('checkbox', { name: 'Allow Internet access' }).check()
+  await page.getByRole('button', { name: 'Back to chat', exact: true }).click()
+  await expect(page.getByRole('button', { name: 'Internet on. Open Internet settings.', exact: true })).toBeVisible()
+  await page.evaluate(next => { (window as PolicyWindow).elysiaDesktopTest.emitInternetPolicy(next) }, policy())
+  await expect(page.getByRole('button', { name: 'Internet on. Open Internet settings.', exact: true })).toBeVisible()
+  await page.evaluate(next => { (window as PolicyWindow).elysiaDesktopTest.emitInternetPolicy(next) }, policy({ revision: 1, enabled: false }))
+  await expect(off).toBeVisible()
+})
+
+test('Automatic research progress remains visible and clears when stopping or leaving its conversation', async () => {
+  await page.getByRole('button', { name: 'Back to chat', exact: true }).click()
+  const stages = [
+    ['planning', 'Deciding whether to look online…'], ['searching', 'Searching the web…'],
+    ['weather', 'Checking the weather…'], ['reading', 'Reading allowed web pages…'],
+    ['answering', 'Preparing your answer…'], ['failed', 'Live information could not be verified.'],
+  ] as const
+  let revision = 10
+  for (const [stage, label] of stages) {
+    await page.evaluate(({ stage, revision }) => {
+      (window as PolicyWindow).elysiaDesktopTest.emitBackendEvent({ type: 'snapshot', snapshot: {
+        revision, status: 'ready', capabilities: ['chat.stream', 'chat.mode'], models: ['qwen3.5:9b'], modelName: 'qwen3.5:9b',
+        chatId: 'chat_internet_policy', chatTitle: 'Internet policy fixture', activeGeneration: {
+          requestId: 'research_generation', chatId: 'chat_internet_policy', kind: 'send', userText: 'What is the weather in Chicago?',
+          reply: '', speakReply: false, stopping: false, researchStage: stage,
+        },
+      } })
+    }, { stage, revision: revision++ })
+    await expect(page.locator('.chat-research-status')).toHaveText(label)
+    await expect(page.locator('[data-generation-announcement]')).toHaveAttribute('aria-live', 'off')
+  }
+  for (const stopping of [true, false]) {
+    await page.evaluate(({ stopping, revision }) => {
+      (window as PolicyWindow).elysiaDesktopTest.emitBackendEvent({ type: 'snapshot', snapshot: {
+        revision, status: 'ready', capabilities: ['chat.stream', 'chat.mode'], models: ['qwen3.5:9b'], modelName: 'qwen3.5:9b',
+        chatId: stopping ? 'chat_internet_policy' : 'chat_other', activeGeneration: {
+          requestId: 'research_generation', chatId: 'chat_internet_policy', kind: 'send', reply: '',
+          speakReply: false, stopping, researchStage: 'reading',
+        },
+      } })
+    }, { stopping, revision: revision++ })
+    await expect(page.locator('.chat-research-status')).toHaveCount(0)
+  }
+})
+
 test('one immediate switch enables built-in providers without an API key or domain setup', async () => {
   const region = page.getByRole('region', { name: 'Internet access', exact: true })
   const toggle = page.getByRole('checkbox', { name: 'Allow Internet access' })
@@ -80,7 +134,8 @@ test('advanced domain and proxy choices require their own explicit normalized sa
     { expectedRevision: 0, enabled: false, allowedDomains: ['docs.python.org', 'www.python.org'], proxy: { mode: 'local-http', port: 7891 }, timeoutMs: 8000 },
   ]])
   await expect(page.getByRole('checkbox', { name: 'Allow Internet access' })).not.toBeChecked()
-  await expect(page.getByRole('region', { name: 'Internet access', exact: true })).toContainText('Elysia ignores system and environment proxy settings')
+  await page.getByRole('button', { name: 'Help: Local HTTP proxy', exact: true }).click()
+  await expect(page.getByRole('tooltip')).toContainText('Elysia ignores system and environment proxy settings')
   await page.screenshot({ path: path.resolve(directory, '..', '..', 'test-results', 'internet-policy-review.png'), fullPage: true })
 })
 
@@ -144,8 +199,30 @@ test('emergency off overtakes pending enablement without saving unsaved domain a
   await expect(page.getByRole('region', { name: 'Internet access', exact: true }).getByRole('status')).toContainText('Internet is off.')
   await page.evaluate(() => { (window as PolicyWindow).elysiaDesktopTest.releaseNextInternetPolicyUpdate() })
   await expect(page.getByRole('checkbox', { name: 'Allow Internet access' })).not.toBeChecked()
-  await expect(page.getByLabel('Allowed domains')).toHaveValue('')
+  await expect(page.getByLabel('Allowed domains')).toHaveValue('docs.python.org')
   const calls = await page.evaluate(() => (window as PolicyWindow).elysiaDesktopTest.getCalls().filter(call => call.method === 'updateInternetPolicy'))
   expect(calls[0].args).toEqual([{ expectedRevision: 0, enabled: true, allowedDomains: [...BUILTIN_INTERNET_DOMAINS], proxy: { mode: 'direct' }, timeoutMs: 15000 }])
   expect(calls[1].args).toEqual([{ expectedRevision: 0, enabled: false, allowedDomains: [...BUILTIN_INTERNET_DOMAINS], proxy: { mode: 'direct' }, timeoutMs: 15000 }])
+})
+
+test('turning Internet off preserves the unsaved connection draft until an explicit save or reload', async () => {
+  await page.getByRole('checkbox', { name: 'Allow Internet access' }).check()
+  await page.getByText('Advanced connection settings', { exact: true }).click()
+  await page.getByLabel('Allowed domains').fill('docs.python.org')
+  await page.getByRole('combobox', { name: 'Connection', exact: true }).selectOption('local-http')
+  await page.getByLabel('Proxy port at 127.0.0.1').fill('7891')
+  await page.getByLabel('Request timeout (seconds)').fill('8')
+  await page.getByRole('checkbox', { name: 'Allow Internet access' }).uncheck()
+  await expect(page.getByRole('region', { name: 'Internet access', exact: true }).getByRole('status')).toContainText('Internet is off.')
+  await expect(page.getByLabel('Allowed domains')).toHaveValue('docs.python.org')
+  await expect(page.getByLabel('Proxy port at 127.0.0.1')).toHaveValue('7891')
+  await expect(page.getByLabel('Request timeout (seconds)')).toHaveValue('8')
+  const save = page.getByRole('button', { name: 'Save Internet preferences', exact: true })
+  await expect(save).toBeEnabled()
+  const updates = await page.evaluate(() => (window as PolicyWindow).elysiaDesktopTest.getCalls().filter(call => call.method === 'updateInternetPolicy'))
+  expect(updates.at(-1)?.args[0]).toMatchObject({ enabled: false, allowedDomains: [...BUILTIN_INTERNET_DOMAINS], proxy: { mode: 'direct' }, timeoutMs: 15000 })
+  await save.click()
+  const saved = await page.evaluate(() => (window as PolicyWindow).elysiaDesktopTest.getCalls().filter(call => call.method === 'updateInternetPolicy').at(-1)?.args[0])
+  expect(saved).toMatchObject({ enabled: false, allowedDomains: ['docs.python.org'], proxy: { mode: 'local-http', port: 7891 }, timeoutMs: 8000 })
+  await expect(save).toBeDisabled()
 })

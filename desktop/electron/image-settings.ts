@@ -477,7 +477,7 @@ export class ImageSettingsManager {
     return new Promise((resolve, reject) => {
       const environment: NodeJS.ProcessEnv = { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' }
       for (const key of ['PYTHONPATH', 'PYTHONHOME', 'PYTHONSTARTUP', 'PYTHONINSPECT']) delete environment[key]
-      const child = spawn(this.options.pythonExecutable, ['-u', '-s',
+      const child = spawn(this.options.pythonExecutable, ['-B', '-u', '-s',
         path.join(this.options.projectRoot, 'desktop_image_settings_worker.py'), '--data-root', this.options.dataRoot],
       { cwd: this.options.projectRoot, windowsHide: true, shell: false, detached: false, env: environment, stdio: 'pipe' })
       const chunks: Buffer[] = []

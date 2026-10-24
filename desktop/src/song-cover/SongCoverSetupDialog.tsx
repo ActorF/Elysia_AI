@@ -6,6 +6,7 @@
  * after explicit user confirmation and discloses the LRCLIB metadata boundary.
  */
 
+import { t, useTranslation } from '../i18n/LocaleProvider.tsx'
 import { useId, useState } from 'react'
 
 import {
@@ -17,6 +18,7 @@ import {
   type SongCoverSourceMode,
 } from '../../electron/song-cover-contracts.ts'
 import { Icon } from '../design-system/Icon.tsx'
+import { HelpHint } from '../design-system/HelpHint.tsx'
 import { ChatActionDialog } from '../shell/ChatActionDialog.tsx'
 
 import './SongCover.css'
@@ -41,6 +43,7 @@ export function SongCoverSetupDialog({
   onCancel,
   onConfirm,
 }: SongCoverSetupDialogProps) {
+  useTranslation()
   const [sourceMode, setSourceMode] = useState<SongCoverSourceMode>(
     DEFAULT_SOURCE_MODE,
   )
@@ -55,6 +58,7 @@ export function SongCoverSetupDialog({
   const [metadataError, setMetadataError] = useState<string | null>(null)
   const pitchDescriptionId = useId()
   const metadataDescriptionId = useId()
+  const optionDescriptionId = useId()
   const leadOnly = engine !== 'lyrics-svs' && vocalArrangement === 'lead'
 
   function changeKey(value: number): void {
@@ -87,7 +91,7 @@ export function SongCoverSetupDialog({
       && ((title.length === 0) !== (artist.length === 0))
     ) {
       setMetadataError(
-        'Enter both song title and artist, or leave both fields blank.',
+        t("Enter both song title and artist, or leave both fields blank."),
       )
       return
     }
@@ -112,33 +116,28 @@ export function SongCoverSetupDialog({
 
   return (
     <ChatActionDialog
-      confirmLabel="Choose audio"
-      description={(
-        <div className="song-studio-intro">
-          <span className="song-studio-intro-mark" aria-hidden="true">
-            <Icon name="music" />
-          </span>
-          <p>A song you love, in Elysia’s voice.</p>
-        </div>
-      )}
-      error={metadataError}
+      confirmLabel={t("Choose audio")}
+      description={null}
+      error={metadataError === null ? null : t(metadataError)}
       open={open}
       pending={false}
-      title="Create Song Cover"
+      title={t("Create Song Cover")}
       onCancel={cancel}
       onConfirm={confirm}
     >
       <div className="song-studio-options">
         <fieldset className="song-studio-group">
-          <legend>Singing method</legend>
+          <legend>{t("Singing method")}</legend>
           <div className="song-studio-methods">
             <label className={
               'song-studio-choice' + (engine === 'source-svc' ? ' selected' : '')
-            }>
+            } title={t("Follow the original words, melody and timing.")}>
               <input
                 type="radio"
                 name="song-cover-engine"
                 value="source-svc"
+                aria-label={t("Voice conversion")}
+                aria-describedby={`${optionDescriptionId}-source-svc`}
                 checked={engine === 'source-svc'}
                 onChange={() => {
                   setEngine('source-svc')
@@ -150,17 +149,19 @@ export function SongCoverSetupDialog({
                 <span className="song-studio-choice-check"><Icon name="check" /></span>
               </span>
               <span className="song-studio-choice-copy">
-                <strong>Voice conversion</strong>
-                <small>Follow the original words, melody and timing.</small>
+                <strong>{t("Voice conversion")}</strong>
+                <span id={`${optionDescriptionId}-source-svc`} className="sr-only">{t("Follow the original words, melody and timing.")}</span>
               </span>
             </label>
             <label className={
               'song-studio-choice' + (engine === 'lyrics-svs' ? ' selected' : '')
-            }>
+            } title={t("Sing from synced Mandarin lyrics.")}>
               <input
                 type="radio"
                 name="song-cover-engine"
                 value="lyrics-svs"
+                aria-label={t("Lyrics-driven singing")}
+                aria-describedby={`${optionDescriptionId}-lyrics-svs`}
                 checked={engine === 'lyrics-svs'}
                 onChange={() => {
                   setEngine('lyrics-svs')
@@ -173,17 +174,19 @@ export function SongCoverSetupDialog({
                 <span className="song-studio-choice-check"><Icon name="check" /></span>
               </span>
               <span className="song-studio-choice-copy">
-                <strong>Lyrics-driven singing</strong>
-                <small>Sing from synced Mandarin lyrics.</small>
+                <strong>{t("Lyrics-driven singing")}</strong>
+                <span id={`${optionDescriptionId}-lyrics-svs`} className="sr-only">{t("Sing from synced Mandarin lyrics.")}</span>
               </span>
             </label>
             <label className={
               'song-studio-choice' + (engine === 'legacy-svc' ? ' selected' : '')
-            }>
+            } title={t("Use the previous local voice model.")}>
               <input
                 type="radio"
                 name="song-cover-engine"
                 value="legacy-svc"
+                aria-label={t("Legacy RVC")}
+                aria-describedby={`${optionDescriptionId}-legacy-svc`}
                 checked={engine === 'legacy-svc'}
                 onChange={() => {
                   setEngine('legacy-svc')
@@ -195,29 +198,22 @@ export function SongCoverSetupDialog({
                 <span className="song-studio-choice-check"><Icon name="check" /></span>
               </span>
               <span className="song-studio-choice-copy">
-                <strong>Legacy RVC</strong>
-                <small>Use the previous local voice model.</small>
+                <strong>{t("Legacy RVC")}</strong>
+                <span id={`${optionDescriptionId}-legacy-svc`} className="sr-only">{t("Use the previous local voice model.")}</span>
               </span>
             </label>
           </div>
           {engine === 'legacy-svc' && (
-            <details className="song-studio-details">
-              <summary>About voice quality</summary>
-              <p>
-                Offline conversion using the source vocal as a pronunciation
-                and timing guide. Quality depends on the local private model;
-                sustained low or high notes may sound hoarse or electronic.
-              </p>
-            </details>
+            <HelpHint label={t("About voice quality")}>{t("Offline conversion using the source vocal as a pronunciation and timing guide. Quality depends on the local private model; sustained low or high notes may sound hoarse or electronic.")}</HelpHint>
           )}
         </fieldset>
 
         {engine === 'source-svc' && (
           <fieldset className="song-studio-group">
-            <legend>Singing reference</legend>
+            <legend>{t("Singing reference")}</legend>
             <div className="song-studio-arrangements song-studio-references">
               {([
-                ['fairy', '妖精小姐的魔法邀约'],
+                ['fairy', t("妖精小姐的魔法邀约")],
                 ['elysia', 'Elysia'],
               ] as const).map(([reference, label]) => (
                 <label
@@ -240,30 +236,34 @@ export function SongCoverSetupDialog({
 
         {engine !== 'lyrics-svs' && (
           <fieldset className="song-studio-group">
-            <legend>Vocal arrangement</legend>
+            <legend>{t("Vocal arrangement")}</legend>
             <div className="song-studio-arrangements">
               <label className={
                 'song-studio-arrangement' + (vocalArrangement === 'entire' ? ' selected' : '')
-              }>
+              } title={t("Convert the full vocal track. Overlapping singers can blend.")}>
                 <input
                   type="radio"
                   name="song-cover-arrangement"
                   value="entire"
+                  aria-label={t("Entire vocal track")}
+                  aria-describedby={`${optionDescriptionId}-entire`}
                   checked={vocalArrangement === 'entire'}
                   onChange={() => { setVocalArrangement('entire') }}
                 />
                 <span>
-                  <strong>Entire vocal track</strong>
-                  <small>Convert the full vocal track. Overlapping singers can blend.</small>
+                  <strong>{t("Entire vocal track")}</strong>
+                  <span id={`${optionDescriptionId}-entire`} className="sr-only">{t("Convert the full vocal track. Overlapping singers can blend.")}</span>
                 </span>
               </label>
               <label className={
                 'song-studio-arrangement' + (vocalArrangement === 'lead' ? ' selected' : '')
-              }>
+              } title={t("Use prepared stems to keep the original voices in your backing mix.")}>
                 <input
                   type="radio"
                   name="song-cover-arrangement"
                   value="lead"
+                  aria-label={t("Lead only, keep other singers")}
+                  aria-describedby={`${optionDescriptionId}-lead`}
                   checked={vocalArrangement === 'lead'}
                   onChange={() => {
                     setVocalArrangement('lead')
@@ -271,8 +271,8 @@ export function SongCoverSetupDialog({
                   }}
                 />
                 <span>
-                  <strong>Lead only, keep other singers</strong>
-                  <small>Use prepared stems to keep the original voices in your backing mix.</small>
+                  <strong>{t("Lead only, keep other singers")}</strong>
+                  <span id={`${optionDescriptionId}-lead`} className="sr-only">{t("Use prepared stems to keep the original voices in your backing mix.")}</span>
                 </span>
               </label>
             </div>
@@ -280,7 +280,7 @@ export function SongCoverSetupDialog({
         )}
 
         <fieldset className="song-studio-group">
-          <legend>Audio source</legend>
+          <legend>{t("Audio source")}</legend>
           <div className={'song-studio-sources' + (leadOnly ? ' song-studio-sources-prepared' : '')}>
             {!leadOnly && (
               <label className={
@@ -294,7 +294,7 @@ export function SongCoverSetupDialog({
                   onChange={() => { setSourceMode('song') }}
                 />
                 <Icon name="music" />
-                <strong>Complete song</strong>
+                <strong>{t("Complete song")}</strong>
               </label>
             )}
             <label className={
@@ -308,15 +308,15 @@ export function SongCoverSetupDialog({
                 onChange={() => { setSourceMode('stems') }}
               />
               <Icon name="speaker" />
-              <strong>{leadOnly ? 'Isolated lead + backing mix' : 'Vocals + accompaniment'}</strong>
+              <strong>{leadOnly ? t("Isolated lead + backing mix") : t("Vocals + accompaniment")}</strong>
             </label>
           </div>
           <p className="song-studio-hint">
             {leadOnly
-              ? 'Choose an isolated lead vocal first, then a time-aligned backing mix containing the instruments, original harmonies and other singers, with the lead removed.'
+              ? t("Choose an isolated lead vocal first, then a time-aligned backing mix containing the instruments, original harmonies and other singers, with the lead removed.")
               : sourceMode === 'song'
-              ? 'Choose one audio file. Elysia separates its vocal and music.'
-              : 'Choose isolated vocals first, then the accompaniment file.'}
+              ? t("Choose one audio file. Elysia separates its vocal and music.")
+              : t("Choose isolated vocals first, then the accompaniment file.")}
           </p>
         </fieldset>
 
@@ -324,12 +324,12 @@ export function SongCoverSetupDialog({
           className="song-studio-group song-studio-key-group"
           aria-describedby={pitchDescriptionId}
         >
-          <legend>Song key</legend>
+          <legend>{t("Song key")}</legend>
           <div className="song-studio-key-controls">
             <button
               type="button"
               className="song-studio-key-step"
-              aria-label="Lower song key one semitone"
+              aria-label={t("Lower song key one semitone")}
               disabled={keyShiftSemitones === -12}
               onClick={() => { changeKey(keyShiftSemitones - 1) }}
             >
@@ -337,14 +337,13 @@ export function SongCoverSetupDialog({
             </button>
             <div className="song-studio-key-value" aria-live="polite">
               <strong>{keyShiftSemitones === 0
-                ? 'Original key'
-                : `${keyShiftSemitones > 0 ? '+' : '−'}${Math.abs(keyShiftSemitones)} semitone${Math.abs(keyShiftSemitones) === 1 ? '' : 's'}`}</strong>
-              <span>{keyShiftSemitones === 0 ? 'Follow the source melody' : 'Whole-song key adjustment'}</span>
+                ? t("Original key")
+                : t(Math.abs(keyShiftSemitones) === 1 ? "{direction}{count} semitone" : "{direction}{count} semitones", { direction: keyShiftSemitones > 0 ? '+' : '−', count: Math.abs(keyShiftSemitones) })}</strong>
             </div>
             <button
               type="button"
               className="song-studio-key-step"
-              aria-label="Raise song key one semitone"
+              aria-label={t("Raise song key one semitone")}
               disabled={keyShiftSemitones === 12}
               onClick={() => { changeKey(keyShiftSemitones + 1) }}
             >
@@ -355,11 +354,13 @@ export function SongCoverSetupDialog({
             type="range"
             className="song-studio-key-slider"
             name="song-cover-key"
-            aria-label="Song key adjustment"
+            aria-label={t("Song key adjustment")}
             aria-describedby={pitchDescriptionId}
             aria-valuetext={keyShiftSemitones === 0
-              ? 'Original key'
-              : `${keyShiftSemitones < 0 ? 'Lower' : 'Raise'} ${Math.abs(keyShiftSemitones)} semitones`}
+              ? t("Original key")
+              : keyShiftSemitones < 0
+                ? t(Math.abs(keyShiftSemitones) === 1 ? "Lowered {count} semitone" : "Lowered {count} semitones", { count: Math.abs(keyShiftSemitones) })
+                : t(Math.abs(keyShiftSemitones) === 1 ? "Raised {count} semitone" : "Raised {count} semitones", { count: Math.abs(keyShiftSemitones) })}
             min={-12}
             max={12}
             step={1}
@@ -372,7 +373,7 @@ export function SongCoverSetupDialog({
               type="button"
               disabled={keyShiftSemitones === 0}
               onClick={() => { changeKey(0) }}
-            >Reset to original</button>
+            >{t("Reset to original")}</button>
             <span>+12</span>
           </div>
           <label className="song-studio-accompaniment">
@@ -385,29 +386,14 @@ export function SongCoverSetupDialog({
               }}
             />
             <span>
-              <strong>Shift accompaniment with vocal</strong>
-              <small>Keep the vocal and music in the same key.</small>
+              <strong>{t("Shift accompaniment with vocal")}</strong>
             </span>
           </label>
           {leadOnly && (
             <p className="song-studio-hint">
-              Use Original key to keep the other singers at their original pitch.
-              Shifting the accompaniment also shifts the voices in the backing mix.
-            </p>
+              {t("Use Original key to keep the other singers at their original pitch. Shifting the accompaniment also shifts the voices in the backing mix.")}</p>
           )}
-          <details className="song-studio-details">
-            <summary>About key changes</summary>
-            <p id={pitchDescriptionId}>
-              Original key follows the source melody most closely. A key shift
-              always moves the lead; the option above decides whether the
-              accompaniment follows it. Use the smallest shift that fits; larger
-              shifts, especially the 12-semitone octave, can increase vocal
-              artifacts. It is a range tradeoff, not an artifact repair
-              {engine === 'legacy-svc' && ', and may soften transients'}.
-              {' '}Turn off accompaniment shifting to keep the music at its
-              original key. Non-octave vocal shifts may then sound out of key.
-            </p>
-          </details>
+          <HelpHint id={pitchDescriptionId} label={t("About key changes")}>{t("Original key follows the source melody most closely. A key shift always moves the lead; the option above decides whether the accompaniment follows it. Use the smallest shift that fits; larger shifts, especially the 12-semitone octave, can increase vocal artifacts. It is a range tradeoff, not an artifact repair") + (engine === 'legacy-svc' ? t(", and may soften transients") : '') + '. ' + t("Turn off accompaniment shifting to keep the music at its original key. Non-octave vocal shifts may then sound out of key.")}</HelpHint>
         </fieldset>
 
         {engine === 'lyrics-svs' && (
@@ -415,16 +401,16 @@ export function SongCoverSetupDialog({
             className="song-studio-group song-studio-lyrics"
             aria-describedby={metadataDescriptionId}
           >
-            <legend>Lyrics lookup <span>Optional</span></legend>
+            <legend>{t("Lyrics lookup ")}<span>{t("Optional")}</span></legend>
             <div className="song-studio-metadata-fields">
               <label>
-                <span>Song title</span>
+                <span>{t("Song title")}</span>
                 <input
                   type="text"
                   value={songTitle}
                   maxLength={256}
                   autoComplete="off"
-                  placeholder="From the audio file"
+                  placeholder={t("From the audio file")}
                   onChange={(event) => {
                     setSongTitle(event.currentTarget.value)
                     setMetadataError(null)
@@ -432,13 +418,13 @@ export function SongCoverSetupDialog({
                 />
               </label>
               <label>
-                <span>Artist</span>
+                <span>{t("Artist")}</span>
                 <input
                   type="text"
                   value={songArtist}
                   maxLength={256}
                   autoComplete="off"
-                  placeholder="From the audio file"
+                  placeholder={t("From the audio file")}
                   onChange={(event) => {
                     setSongArtist(event.currentTarget.value)
                     setMetadataError(null)
@@ -447,17 +433,8 @@ export function SongCoverSetupDialog({
               </label>
             </div>
             <p className="song-studio-hint" id={metadataDescriptionId}>
-              Mandarin lyrics only. Leave both blank to use audio tags.
-              {' '}LRCLIB receives the title, artist, and rounded duration to
-              find lyrics; your audio is never uploaded.
-            </p>
-            <details className="song-studio-details">
-              <summary>When to add a title and artist</summary>
-              <p>
-                A recognized Artist/Title filename can also identify a song.
-                Generic or ambiguous names need both fields.
-              </p>
-            </details>
+              {t("Mandarin lyrics only. Leave both blank to use audio tags.")}{' '}{t("LRCLIB receives the title, artist, and rounded duration to find lyrics; your audio is never uploaded.")}</p>
+            <HelpHint label={t("When to add a title and artist")}>{t("A recognized Artist/Title filename can also identify a song. Generic or ambiguous names need both fields.")}</HelpHint>
           </fieldset>
         )}
       </div>

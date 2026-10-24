@@ -1,7 +1,7 @@
 /**
  * Render categorized settings while preserving independently persisted drafts.
  * Backend defaults share one save action; Internet, appearance, storage, and audio-device
- * controls keep their existing renderer-local or Main-owned persistence rules.
+ * controls and the personal name keep their independent persistence rules.
  */
 
 import {
@@ -35,8 +35,10 @@ import type {
   PresenceReminderFrequency,
 } from '../../electron/presence-notification-contracts.ts'
 import { codePointLength } from '../../electron/protocol-text.js'
+import { isCloudOllamaModel, localOllamaTarget, LOCAL_OLLAMA_MODEL_ERROR, LOCAL_OLLAMA_ORIGIN_ERROR } from '../../electron/local-ollama-origin.js'
 import { InlineAlert, LoadingState } from '../design-system/Feedback'
 import { Icon, type IconName } from '../design-system/Icon'
+import { HelpHint } from '../design-system/HelpHint.tsx'
 import type { AudioDeviceSnapshot } from '../voice/audio-devices.ts'
 import {
   VoiceSettingsSection,
@@ -45,6 +47,10 @@ import {
 import { describeTranscriptionReadiness } from '../voice/transcription-readiness.ts'
 import type { InternetPolicyClient } from '../../electron/internet-policy-protocol.ts'
 import { InternetSettingsSection } from '../internet/InternetSettingsSection.tsx'
+import { getDateLocale, t, useLocale } from '../i18n/LocaleProvider.tsx'
+import { formatStorageWarning } from '../i18n/settings-copy.ts'
+import { formatUiError } from '../i18n/ui-error.ts'
+import { ProfileSettingsSection } from './ProfileSettingsSection.tsx'
 
 export type ThemePreference = 'system' | 'light' | 'dark'
 export type ResolvedTheme = Exclude<ThemePreference, 'system'>
@@ -57,6 +63,8 @@ export type DataStorageAction =
   | 'opening'
 
 export interface SettingsViewProps {
+  /** Open the relevant category when the Chat Internet status requests settings. */
+  initialCategory?: 'general' | 'internet'
   internetApi?: InternetPolicyClient
   internetTools?: ReactNode
   /** Render the private image configuration surface only while its category is active. */
@@ -133,7 +141,7 @@ export interface SettingsViewProps {
   onStopSpeakerTest(): void
   /** Open native microphone privacy settings when supported. */
   onOpenMicrophonePrivacySettings(): Promise<void>
-  /** Report whether either settings form has unsaved changes. */
+  /** Report whether any independently saved Settings feature has unsaved changes. */
   onDirtyChange(dirty: boolean): void
   /** Leave Settings after any navigation guard has been satisfied. */
   onBack(): void
@@ -179,44 +187,37 @@ type SettingsCategory = 'general' | 'appearance' | 'voice' | 'data' | 'images' |
 const settingsCategories: readonly {
   id: SettingsCategory
   label: string
-  description: string
   icon: IconName
 }[] = [
   {
     id: 'general',
     label: 'General',
-    description: 'Choose the defaults for your conversations.',
     icon: 'settings',
   },
   {
     id: 'appearance',
     label: 'Appearance',
-    description: 'Make Elysia feel at home on your desktop.',
     icon: 'sun',
   },
   {
     id: 'voice',
     label: 'Voice',
-    description: 'Adjust recognition, playback, and your audio devices.',
     icon: 'microphone',
   },
   {
     id: 'data',
     label: 'Data & storage',
-    description: 'Manage local storage and file imports.',
     icon: 'folder',
   },
   {
     id: 'internet',
     label: 'Internet',
-    description: 'Control explicit access to public online services.',
     icon: 'settings',
   },
-  { id: 'images', label: '图片生成', description: '配置受信本地图片安装、模型和默认尺寸。', icon: 'image' },
+  { id: 'images', label: '图片生成', icon: 'image' },
   {
     id: 'advanced',
     label: 'Advanced',
-    description: 'Review memory limits, workspace access, and privacy.',
     icon: 'memory',
   },
 ]
@@ -251,6 +252,7 @@ function SettingsCategoryPanel({
   navigationId: string
   children: ReactNode
 }) {
+  useLocale()
   const details = settingsCategories.find((entry) => entry.id === category)!
   const headingId = `${navigationId}-heading-${category}`
   return (
@@ -262,9 +264,8 @@ function SettingsCategoryPanel({
     >
       <div className="settings-category-intro">
         <h2 id={headingId} className="settings-category-heading" tabIndex={-1}>
-          {details.label}
+          {t(details.label)}
         </h2>
-        <p className="settings-category-description">{details.description}</p>
       </div>
       {children}
     </section>
@@ -352,6 +353,19 @@ function isVoiceEmotion(
   value: string,
 ): value is SettingsDraft['voiceEmotion'] {
   return voiceEmotionOptions.some((option) => option.value === value)
+}
+
+/** Localize closed presentation states without changing their protocol identifiers. */
+function settingsStateLabel(value: string): string {
+  const labels: Readonly<Record<string, string>> = {
+    ready: 'Ready', starting: 'Starting', disabled: 'Disabled', hidden: 'Hidden',
+    visible: 'Visible', failed: 'Failed', stopped: 'Stopped', unsupported: 'Unsupported',
+    unavailable: 'Unavailable', idle: 'Idle', scanning: 'Scanning', copying: 'Copying',
+    verifying: 'Verifying', cleaning: 'Cleaning', moving: 'Moving', opening: 'Opening',
+    auto: 'Automatic', cuda: 'CUDA', cpu: 'CPU', absent: 'Not running',
+    loading: 'Loading', available: 'Available', initializing: 'Initializing',
+  }
+  return t(labels[value] ?? value)
 }
 
 const restartLabels: Record<keyof DesktopSettingsValues, string> = {
@@ -455,24 +469,13 @@ function validateDraft(draft: SettingsDraft): SettingsValidationErrors {
     || /[\0\r\n]/u.test(draft.modelName)
   ) {
     errors.modelName = 'Choose a valid installed model.'
+  } else if (isCloudOllamaModel(draft.modelName)) {
+    errors.modelName = LOCAL_OLLAMA_MODEL_ERROR
   }
   try {
-    const origin = new URL(draft.ollamaHost)
-    if (
-      (origin.protocol !== 'http:' && origin.protocol !== 'https:')
-      || origin.hostname.length === 0
-      || origin.username.length > 0
-      || origin.password.length > 0
-      || origin.port === '0'
-      || (origin.pathname !== '/' && origin.pathname !== '')
-      || origin.search.length > 0
-      || origin.hash.length > 0
-      || draft.ollamaHost !== draft.ollamaHost.trim()
-    ) {
-      errors.ollamaHost = 'Enter an HTTP or HTTPS Ollama origin without credentials or a path.'
-    }
+    localOllamaTarget(draft.ollamaHost)
   } catch {
-    errors.ollamaHost = 'Enter a valid HTTP or HTTPS Ollama origin.'
+    errors.ollamaHost = LOCAL_OLLAMA_ORIGIN_ERROR
   }
   if (positiveInteger(draft.shortTermMemoryTokenBudget, 10_000_000) === null) {
     errors.shortTermMemoryTokenBudget = 'Short-term memory budget must be a positive whole number.'
@@ -510,6 +513,35 @@ function validateDraft(draft: SettingsDraft): SettingsValidationErrors {
   return errors
 }
 
+/** Apply renderer language immediately, independently of unsaved Backend settings. */
+function InterfaceLanguageSettings() {
+  const { locale, setLocale, t } = useLocale()
+  const languageId = useId()
+  return (
+    <section className="settings-section" aria-labelledby={`${languageId}-heading`}>
+      <div className="settings-section-heading">
+        <h2 id={`${languageId}-heading`}>{t('Interface language')}</h2>
+        <HelpHint label={t("Interface language")}>
+          {t('Applies immediately on this device. Your conversations and files stay as written.')}</HelpHint>
+      </div>
+      <div className="settings-field-grid">
+        <label className="settings-field" htmlFor={languageId}>
+          <span>{t('Language')}</span>
+          <select
+            aria-label={t('Language')}
+            id={languageId}
+            value={locale}
+            onChange={(event) => { setLocale(event.target.value === 'zh-CN' ? 'zh-CN' : 'en') }}
+          >
+            <option value="zh-CN">{t('Simplified Chinese')}</option>
+            <option value="en">{t('English')}</option>
+          </select>
+        </label>
+      </div>
+    </section>
+  )
+}
+
 function AppearanceSettings({
   themePreference,
   resolvedTheme,
@@ -536,6 +568,7 @@ function AppearanceSettings({
   | 'onRefreshDesktopPetModels'
   | 'onOpenDesktopPetDownload'
 >) {
+  useLocale()
   const themeGroupId = useId()
   const desktopPetMode = desktopPetState?.mode ?? 'disabled'
   const desktopPetReady = desktopPetState?.libraryStatus === 'ready'
@@ -545,11 +578,12 @@ function AppearanceSettings({
   return (
     <section className="settings-section" aria-labelledby={`${themeGroupId}-heading`}>
       <div className="settings-section-heading">
-        <h2 id={`${themeGroupId}-heading`}>Theme</h2>
-        <p>Theme changes apply immediately on this device.</p>
+        <h2 id={`${themeGroupId}-heading`}>{t("Theme")}</h2>
+        <HelpHint label={t("Theme")}>
+          {t("Theme changes apply immediately on this device.")}</HelpHint>
       </div>
       <fieldset className="theme-options">
-        <legend className="visually-hidden">Color theme</legend>
+        <legend className="visually-hidden">{t("Color theme")}</legend>
         {themeOptions.map((option) => {
           const optionId = `${themeGroupId}-${option.value}`
           const descriptionId = `${optionId}-description`
@@ -558,10 +592,12 @@ function AppearanceSettings({
               key={option.value}
               className={`theme-option${themePreference === option.value ? ' selected' : ''}`}
               htmlFor={optionId}
+              title={t(option.description)}
             >
               <input
                 id={optionId}
                 type="radio"
+                aria-label={t(option.label)}
                 name={`${themeGroupId}-theme`}
                 value={option.value}
                 checked={themePreference === option.value}
@@ -570,32 +606,23 @@ function AppearanceSettings({
               />
               <Icon name={option.icon} className="theme-option-icon" />
               <span className="theme-option-copy">
-                <strong>{option.label}</strong>
-                <span id={descriptionId}>{option.description}</span>
+                <strong>{t(option.label)}</strong>
+                <span id={descriptionId} className="visually-hidden">{t(option.description)}</span>
               </span>
               <span className="theme-option-indicator" aria-hidden="true" />
             </label>
           )
         })}
       </fieldset>
-      <p className="settings-readonly-status">
-        The character state panel always uses static half-body artwork. Dynamic
-        motion is available only through an optional local Desktop Pet program.
-      </p>
+
       <div className="appearance-subheading">
-        <h3>Desktop Pet</h3>
-        <p>
-          Opens small beside Elysia&apos;s lower-right corner. You can move and
-          resize the companion afterward.
-        </p>
+        <h3>{t("Desktop Pet")}</h3>
+        <HelpHint label={t("Desktop Pet")}>
+          {t("Opens small beside Elysia's lower-right corner. You can move and resize the companion afterward.")}</HelpHint>
       </div>
-      <div className="desktop-pet-library" aria-label="Desktop Pet program library">
-        <p className="desktop-pet-note">
-          Programs by @书呆儿 are not included. Download the free pack or use a
-          purchased pack already on this computer, then choose a folder containing
-          desktop-pet programs. Elysia never copies or modifies the programs,
-          model files, or each program&apos;s local configuration.
-        </p>
+      <div className="desktop-pet-library" aria-label={t("Desktop Pet program library")}>
+        <HelpHint label={t("Desktop Pet program library")}>
+          {t("Programs by @书呆儿 are not included. Download the free pack or use a purchased pack already on this computer, then choose a folder containing desktop-pet programs. Elysia never copies or modifies the programs, model files, or each program's local configuration.")}</HelpHint>
         <div className="desktop-pet-actions">
           <button
             type="button"
@@ -603,15 +630,14 @@ function AppearanceSettings({
             disabled={desktopPetBusy}
             onClick={() => { void onChooseDesktopPetModelDirectory() }}
           >
-            {desktopPetBusy ? 'Scanning…' : 'Choose desktop-pet program folder…'}
+            {desktopPetBusy ? t("Scanning…") : t("Choose desktop-pet program folder…")}
           </button>
           <button
             type="button"
             className="secondary-button"
             onClick={() => { void onOpenDesktopPetDownload() }}
           >
-            Download free pack
-          </button>
+            {t("Download free pack")}</button>
           <button
             type="button"
             className="secondary-button"
@@ -622,12 +648,12 @@ function AppearanceSettings({
             }
             onClick={() => { void onRefreshDesktopPetModels() }}
           >
-            Rescan
-          </button>
+            {t("Rescan")}</button>
         </div>
         <label className="settings-field" htmlFor={`${themeGroupId}-desktop-pet-model`}>
-          <span>Companion program</span>
+          <span>{t("Companion program")}</span>
           <select
+            aria-label={t("Companion program")}
             id={`${themeGroupId}-desktop-pet-model`}
             value={desktopPetState?.selectedModelId ?? ''}
             disabled={
@@ -641,7 +667,7 @@ function AppearanceSettings({
               }
             }}
           >
-            <option value="">Choose a detected program</option>
+            <option value="">{t("Choose a detected program")}</option>
             {desktopPetState?.models.map((model) => (
               <option key={model.id} value={model.id}>
                 {model.displayName}
@@ -651,13 +677,17 @@ function AppearanceSettings({
         </label>
         <p className="desktop-pet-note" role="status" aria-live="polite">
           {desktopPetState === null
-            ? 'Loading the companion program library…'
+            ? t("Loading the companion program library…")
             : desktopPetState.folderName === null
-              ? 'No desktop-pet program folder selected.'
-              : `${desktopPetState.models.length} compatible program${desktopPetState.models.length === 1 ? '' : 's'} detected in ${desktopPetState.folderName}.`}
+              ? t("No desktop-pet program folder selected.")
+              : t(desktopPetState.models.length === 1
+                ? '{count} compatible program detected in {folder}.'
+                : '{count} compatible programs detected in {folder}.', {
+                  count: desktopPetState.models.length, folder: desktopPetState.folderName,
+                })}
         </p>
         {desktopPetError !== null && (
-          <p className="desktop-pet-error" role="alert">{desktopPetError}</p>
+          <p className="desktop-pet-error" role="alert">{formatUiError(desktopPetError)}</p>
         )}
       </div>
       <fieldset
@@ -665,7 +695,7 @@ function AppearanceSettings({
         disabled={desktopPetBusy || desktopPetState === null}
         aria-describedby={`${themeGroupId}-desktop-pet-note`}
       >
-        <legend className="visually-hidden">Desktop Pet mode</legend>
+        <legend className="visually-hidden">{t("Desktop Pet mode")}</legend>
         {desktopPetOptions.map((option) => {
           const optionId = `${themeGroupId}-desktop-pet-${option.value}`
           const descriptionId = `${optionId}-description`
@@ -674,10 +704,12 @@ function AppearanceSettings({
               key={option.value}
               className={`theme-option${desktopPetMode === option.value ? ' selected' : ''}`}
               htmlFor={optionId}
+              title={t(option.description)}
             >
               <input
                 id={optionId}
                 type="radio"
+                aria-label={t(option.label)}
                 name={`${themeGroupId}-desktop-pet`}
                 value={option.value}
                 checked={desktopPetMode === option.value}
@@ -687,8 +719,8 @@ function AppearanceSettings({
               />
               <Icon name={option.icon} className="theme-option-icon" />
               <span className="theme-option-copy">
-                <strong>{option.label}</strong>
-                <span id={descriptionId}>{option.description}</span>
+                <strong>{t(option.label)}</strong>
+                <span id={descriptionId} className="visually-hidden">{t(option.description)}</span>
               </span>
               <span className="theme-option-indicator" aria-hidden="true" />
             </label>
@@ -698,8 +730,8 @@ function AppearanceSettings({
       <div className="desktop-pet-status" id={`${themeGroupId}-desktop-pet-note`}>
         <p role="status" aria-live="polite">
           {desktopPetState === null
-            ? 'Loading the Desktop Pet preference…'
-            : `Preference: ${desktopPetState.mode}. Companion program: ${desktopPetState.runtime}.`}
+            ? t("Loading the Desktop Pet preference…")
+            : t("Preference: {value0}. Companion program: {value1}.", { value0: settingsStateLabel(desktopPetState.mode), value1: settingsStateLabel(desktopPetState.runtime) })}
         </p>
         {desktopPetState?.mode === 'visible'
           && desktopPetState.runtime === 'failed' && (
@@ -710,23 +742,19 @@ function AppearanceSettings({
               disabled={desktopPetBusy}
               onClick={() => { void onDesktopPetModeChange('visible') }}
             >
-              {desktopPetBusy ? 'Retrying…' : 'Retry companion program'}
+              {desktopPetBusy ? t("Retrying…") : t("Retry companion program")}
             </button>
           </div>
         )}
       </div>
-      <p className="desktop-pet-note">
-        Visible launches the selected local program. Hidden stops that program but
-        keeps the selection and its own settings for the next launch. Off disables
-        Desktop Pet until you opt in again.
-      </p>
+
       {desktopPetState?.warning !== null && desktopPetState?.warning !== undefined && (
         <p className="desktop-pet-warning" role="status">
-          {desktopPetState.warning}
+          {t(desktopPetState.warning)}
         </p>
       )}
       <p className="resolved-theme" role="status" aria-live="polite">
-        Elysia is rendered in {resolvedTheme.toLowerCase()} mode with static character artwork.
+        {t('Elysia is rendered in {theme} mode.', { theme: t(resolvedTheme === 'dark' ? 'Dark' : 'Light') })}
       </p>
     </section>
   )
@@ -746,6 +774,7 @@ function PresenceNotificationSettings({
     reminderFrequency: PresenceReminderFrequency,
   ): Promise<void>
 }) {
+  useLocale()
   const sectionId = useId()
   const completionNotifications = state?.completionNotifications ?? false
   const reminderFrequency = state?.reminderFrequency ?? 'off'
@@ -756,13 +785,13 @@ function PresenceNotificationSettings({
       aria-labelledby={`${sectionId}-heading`}
     >
       <div className="settings-section-heading">
-        <h2 id={`${sectionId}-heading`}>Presence &amp; notifications</h2>
-        <p>Optional native notices belong to this device and are off by default.</p>
+        <h2 id={`${sectionId}-heading`}>{t("Presence & notifications")}</h2>
       </div>
       <div className="settings-field-grid">
         <label className="settings-field">
-          <span>Reply completion notifications</span>
+          <span>{t("Reply completion notifications")}</span>
           <select
+            aria-label={t("Reply completion notifications")}
             value={String(completionNotifications)}
             disabled={disabled}
             onChange={(event) => {
@@ -773,18 +802,16 @@ function PresenceNotificationSettings({
             }}
             aria-describedby={`${sectionId}-completion-help`}
           >
-            <option value="false">Off</option>
-            <option value="true">On</option>
+            <option value="false">{t("Off")}</option>
+            <option value="true">{t("On")}</option>
           </select>
-          <small id={`${sectionId}-completion-help`}>
-            When On, one generic notice appears only after a reply you started
-            finishes while Elysia is in the background. Reply text, prompts,
-            Chat or Project names, and file names are never included.
-          </small>
+          <HelpHint id={`${sectionId}-completion-help`} label={t("Reply completion notifications")}>
+            {t("When On, one generic notice appears only after a reply you started finishes while Elysia is in the background. Reply text, prompts, Chat or Project names, and file names are never included.")}</HelpHint>
         </label>
         <label className="settings-field">
-          <span>Neutral presence reminders</span>
+          <span>{t("Neutral presence reminders")}</span>
           <select
+            aria-label={t("Neutral presence reminders")}
             value={reminderFrequency}
             disabled={disabled}
             onChange={(event) => {
@@ -795,21 +822,19 @@ function PresenceNotificationSettings({
             }}
             aria-describedby={`${sectionId}-reminder-help`}
           >
-            <option value="off">Off</option>
-            <option value="daily">At most once a day</option>
-            <option value="weekly">At most once a week</option>
+            <option value="off">{t("Off")}</option>
+            <option value="daily">{t("At most once a day")}</option>
+            <option value="weekly">{t("At most once a week")}</option>
           </select>
-          <small id={`${sectionId}-reminder-help`}>
-            Reminders run only while Elysia is already open, stay quiet during
-            active Chat, Voice, or Knowledge work, and never catch up after downtime.
-          </small>
+          <HelpHint id={`${sectionId}-reminder-help`} label={t("Neutral presence reminders")}>
+            {t("Reminders run only while Elysia is already open, stay quiet during active Chat, Voice, or Knowledge work, and never catch up after downtime.")}</HelpHint>
         </label>
       </div>
       <div className="presence-notification-status">
         <p role="status" aria-live="polite">
           {state === null
-            ? 'Loading notification preferences…'
-            : `Native notification runtime: ${state.runtime}.`}
+            ? t("Loading notification preferences…")
+            : t("Native notification runtime: {value0}.", { value0: settingsStateLabel(state.runtime) })}
         </p>
         <button
           type="button"
@@ -820,20 +845,18 @@ function PresenceNotificationSettings({
           }
           onClick={() => { void onChange(false, 'off') }}
         >
-          {pending ? 'Applying…' : 'Turn all off'}
+          {pending ? t("Applying…") : t("Turn all off")}
         </button>
       </div>
-      <p className="presence-notification-note">
-        Notifications are silent and never start a message, microphone capture,
-        background service, or engagement streak. Clicking one only opens Elysia.
-      </p>
+      <HelpHint label={t("Presence & notifications")}>
+        {t("Notifications are silent and never start a message, microphone capture, background service, or engagement streak. Clicking one only opens Elysia.")}</HelpHint>
       {state?.warning !== null && state?.warning !== undefined && (
         <p className="presence-notification-warning" role="status">
-          {state.warning}
+          {t(state.warning)}
         </p>
       )}
       {error !== null && (
-        <p className="presence-notification-error" role="alert">{error}</p>
+        <p className="presence-notification-error" role="alert">{formatUiError(error)}</p>
       )}
     </section>
   )
@@ -844,7 +867,7 @@ const DATA_STORAGE_CATEGORY_LABELS: Readonly<Record<DataStorageCategory, string>
   chats: 'Chats',
   projects: 'Projects',
   memory: 'Memory',
-  sources: 'Sources',
+  sources: 'Project Sources',
   indexes: 'Indexes',
   audio: 'Temporary audio',
   cache: 'Cache',
@@ -858,7 +881,7 @@ const DATA_STORAGE_CLEANABLE_CATEGORY_SET: ReadonlySet<DataStorageCategory>
 /** Format a byte count without implying precision absent from the latest scan. */
 function formatDataStorageBytes(value: number | null): string {
   if (value === null || !Number.isFinite(value) || value < 0) {
-    return 'Unavailable'
+    return t('Unavailable')
   }
   const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'] as const
   let amount = value
@@ -890,6 +913,7 @@ function DataStorageSettings({
   onClear(): Promise<void>
   onOpen(): Promise<void>
 }) {
+  useLocale()
   const sectionId = useId()
   const inventory = state?.inventory ?? null
   const inventoryIsCurrent = state !== null
@@ -906,7 +930,7 @@ function DataStorageSettings({
     : new Date(inventory.measuredAt)
   const measuredAtLabel = measuredAt !== null
     && !Number.isNaN(measuredAt.getTime())
-    ? measuredAt.toLocaleString()
+    ? measuredAt.toLocaleString(getDateLocale())
     : inventory?.measuredAt ?? null
   const clearEnabled = inventoryIsCurrent
     && inventory.reclaimableBytes > 0
@@ -918,34 +942,27 @@ function DataStorageSettings({
       aria-labelledby={`${sectionId}-heading`}
     >
       <div className="settings-section-heading">
-        <h2 id={`${sectionId}-heading`}>Local storage</h2>
-        <p>
-          Inspect the Main-managed data root, move it safely, or reclaim only
-          disposable local files.
-        </p>
+        <h2 id={`${sectionId}-heading`}>{t("Local storage")}</h2>
       </div>
 
       {state === null ? (
         <p className="data-storage-unavailable" role="status" aria-live="polite">
           {loading
-            ? 'Loading the managed data location and capacity…'
-            : 'Managed storage information is not available yet.'}
+            ? t("Loading the managed data location and capacity…")
+            : t("Managed storage information is not available yet.")}
         </p>
       ) : (
         <>
           <div className="data-storage-location">
-            <span>Active data directory</span>
+            <span>{t("Active data directory")}</span>
             <code>{state.state.activeDataRoot}</code>
           </div>
 
           {state.state.retainedRoots.length > 0 && (
             <div className="data-storage-recovery" role="status">
-              <strong>Recovery copies retained</strong>
+              <strong>{t("Recovery copies retained")}</strong>
               <p>
-                Elysia did not delete these locations because their contents
-                changed or could not be verified. Review them manually; generic
-                temporary-data cleanup never removes recovery copies.
-              </p>
+                {t("Elysia did not delete these locations because their contents changed or could not be verified. Review them manually; generic temporary-data cleanup never removes recovery copies.")}</p>
               <ul>
                 {state.state.retainedRoots.map((root) => (
                   <li key={root}><code>{root}</code></li>
@@ -954,41 +971,41 @@ function DataStorageSettings({
             </div>
           )}
 
-          <dl className="data-storage-summary" aria-label="Storage summary">
+          <dl className="data-storage-summary" aria-label={t("Storage summary")}>
             <div>
-              <dt>Managed data</dt>
+              <dt>{t("Managed data")}</dt>
               <dd>{formatDataStorageBytes(inventory?.totalBytes ?? null)}</dd>
             </div>
             <div>
-              <dt>Free on volume</dt>
+              <dt>{t("Free on volume")}</dt>
               <dd>{formatDataStorageBytes(inventory?.freeBytes ?? null)}</dd>
             </div>
             <div>
-              <dt>Reclaimable</dt>
+              <dt>{t("Reclaimable")}</dt>
               <dd>{formatDataStorageBytes(inventory?.reclaimableBytes ?? null)}</dd>
             </div>
           </dl>
 
-          <ul className="data-storage-category-list" aria-label="Managed data categories">
+          <ul className="data-storage-category-list" aria-label={t("Managed data categories")}>
             {DATA_STORAGE_CATEGORIES.map((category) => {
               const usage = usageByCategory.get(category)
               const cleanable = DATA_STORAGE_CLEANABLE_CATEGORY_SET.has(category)
               return (
                 <li key={category}>
                   <div>
-                    <strong>{DATA_STORAGE_CATEGORY_LABELS[category]}</strong>
+                    <strong>{t(DATA_STORAGE_CATEGORY_LABELS[category])}</strong>
                     <span className={cleanable
                       ? 'data-storage-category-kind temporary'
                       : 'data-storage-category-kind durable'}
                     >
-                      {cleanable ? 'Temporary' : 'Durable'}
+                      {cleanable ? t("Temporary") : t("Durable")}
                     </span>
                   </div>
                   <span>
-                    {formatDataStorageBytes(usage?.bytes ?? null)} ·{' '}
+                    {formatDataStorageBytes(usage?.bytes ?? null)}  {t("·")}{' '}
                     {usage === undefined
-                      ? 'files unavailable'
-                      : `${usage.fileCount.toLocaleString()} ${usage.fileCount === 1 ? 'file' : 'files'}`}
+                      ? t("files unavailable")
+                      : t(usage.fileCount === 1 ? '{count} file' : '{count} files', { count: usage.fileCount.toLocaleString(getDateLocale()) })}
                   </span>
                 </li>
               )
@@ -997,31 +1014,27 @@ function DataStorageSettings({
 
           <p className="data-storage-measurement" role="status" aria-live="polite">
             {measuredAtLabel === null
-              ? 'Capacity has not been measured yet.'
-              : <>Measured <time dateTime={inventory?.measuredAt}>{measuredAtLabel}</time>.</>}
-            {inventory !== null && ` ${inventory.fileCount.toLocaleString()} managed files.`}
+              ? t("Capacity has not been measured yet.")
+              : <>{t("Measured")} <time dateTime={inventory?.measuredAt}>{measuredAtLabel}</time>{t(".")}</>}
+            {inventory !== null && t(" {value0} managed files.", { value0: inventory.fileCount.toLocaleString(getDateLocale()) })}
           </p>
           {inventory?.blockedEntries !== undefined && inventory.blockedEntries > 0 && (
             <p className="data-storage-warning" role="status">
-              {inventory.blockedEntries.toLocaleString()} filesystem entries could not be measured.
-            </p>
+              {t('{count} filesystem entries could not be measured.', { count: inventory.blockedEntries.toLocaleString(getDateLocale()) })}</p>
           )}
           {inventory?.truncated === true && (
             <p className="data-storage-warning" role="status">
-              The bounded capacity scan stopped early, so these totals are partial.
-            </p>
+              {t("The bounded capacity scan stopped early, so these totals are partial.")}</p>
           )}
           {inventory?.warning !== null && inventory?.warning !== undefined && (
-            <p className="data-storage-warning" role="status">{inventory.warning}</p>
+            <p className="data-storage-warning" role="status">{formatStorageWarning(inventory.warning)}</p>
           )}
           {state.warning !== null && (
-            <p className="data-storage-warning" role="status">{state.warning}</p>
+            <p className="data-storage-warning" role="status">{formatStorageWarning(state.warning)}</p>
           )}
           {state.state.movePending && (
             <p className="data-storage-warning" role="status">
-              A data-directory move is waiting for Backend verification. Main will
-              retain the previous root until the transaction settles.
-            </p>
+              {t("A data-directory move is waiting for Backend verification. Main will retain the previous root until the transaction settles.")}</p>
           )}
         </>
       )}
@@ -1034,8 +1047,8 @@ function DataStorageSettings({
           onClick={() => { void onRefresh() }}
         >
           {action === 'refreshing' || state?.busyPhase === 'scanning'
-            ? 'Refreshing…'
-            : 'Refresh usage'}
+            ? t("Refreshing…")
+            : t("Refresh usage")}
         </button>
         <button
           type="button"
@@ -1044,8 +1057,8 @@ function DataStorageSettings({
           onClick={() => { void onMove() }}
         >
           {action === 'moving' || state?.busyPhase === 'moving'
-            ? 'Moving…'
-            : 'Change data directory'}
+            ? t("Moving…")
+            : t("Change data directory")}
         </button>
         <button
           type="button"
@@ -1053,7 +1066,7 @@ function DataStorageSettings({
           disabled={busy || state === null}
           onClick={() => { void onOpen() }}
         >
-          {action === 'opening' ? 'Opening…' : 'Open data directory'}
+          {action === 'opening' ? t("Opening…") : t("Open data directory")}
         </button>
         <button
           type="button"
@@ -1062,23 +1075,18 @@ function DataStorageSettings({
           onClick={() => { void onClear() }}
         >
           {action === 'cleaning' || state?.busyPhase === 'cleaning'
-            ? 'Clearing…'
-            : 'Clear temporary data'}
+            ? t("Clearing…")
+            : t("Clear temporary data")}
         </button>
       </div>
-      <p className="data-storage-cleanup-note">
-        Clear temporary data asks Main to show a native confirmation and remove
-        only temporary audio, cache, and logs from this exact scan. Configuration,
-        Chats, Projects, Memory, Sources, indexes, and other managed data are never
-        deleted here.
-      </p>
+      <HelpHint label={t("Clear temporary data")}>
+        {t("Clear temporary data asks Main to show a native confirmation and remove only temporary audio, cache, and logs from this exact scan. Configuration, Chats, Projects, Memory, Sources, indexes, and other managed data are never deleted here.")}</HelpHint>
       {mainBusy && (
         <p className="data-storage-measurement" role="status" aria-live="polite">
-          Main is {state.busyPhase} managed storage.
-        </p>
+          {t('Storage operation: {phase}.', { phase: settingsStateLabel(state.busyPhase) })}</p>
       )}
       {error !== null && (
-        <p className="data-storage-error" role="alert">{error}</p>
+        <p className="data-storage-error" role="alert">{formatUiError(error)}</p>
       )}
     </section>
   )
@@ -1087,6 +1095,7 @@ function DataStorageSettings({
 /** Render navigable settings categories without discarding unsaved drafts. */
 export function SettingsView({
   internetApi,
+  initialCategory = 'general',
   internetTools,
   imageSettings,
   themePreference,
@@ -1139,18 +1148,21 @@ export function SettingsView({
   onDirtyChange,
   onBack,
 }: SettingsViewProps) {
+  useLocale()
   const modelListId = useId()
   const backendFieldId = useId()
   const navigationId = useId()
   const formRef = useRef<HTMLFormElement>(null)
+  const scrollRef = useRef<HTMLDivElement>(null)
   const footerOwnedFocusRef = useRef(false)
   const validationFocusFieldRef = useRef<keyof SettingsDraft | null>(null)
   const [validationFocusRequest, setValidationFocusRequest] = useState(0)
-  const [activeCategory, setActiveCategory] = useState<SettingsCategory>('general')
+  const [activeCategory, setActiveCategory] = useState<SettingsCategory>(initialCategory)
   const [draft, setDraft] = useState<SettingsDraft | null>(null)
   const [clientError, setClientError] = useState<string | null>(null)
   const [voiceDirty, setVoiceDirty] = useState(false)
   const [internetDirty, setInternetDirty] = useState(false)
+  const [profileDirty, setProfileDirty] = useState(false)
 
   useLayoutEffect(() => {
     let active = true
@@ -1169,7 +1181,20 @@ export function SettingsView({
   const globalFooterVisible = globalDirty || pending
   useLayoutEffect(() => {
     if (globalFooterVisible) {
-      return
+      const scroll = scrollRef.current
+      if (scroll === null) return
+      // The footer, translated copy, and window resizing can reduce the edit
+      // viewport. Reveal its current field without moving focus or its selection.
+      const revealFocusedField = (): void => {
+        const focused = document.activeElement
+        if (focused instanceof HTMLElement && scroll.contains(focused)) {
+          focused.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+        }
+      }
+      revealFocusedField()
+      const observer = new ResizeObserver(revealFocusedField)
+      observer.observe(scroll)
+      return () => { observer.disconnect() }
     }
     const restoreFooterFocus = footerOwnedFocusRef.current
     footerOwnedFocusRef.current = false
@@ -1183,9 +1208,9 @@ export function SettingsView({
     }
   }, [activeCategory, globalFooterVisible, navigationId])
   useLayoutEffect(() => {
-    onDirtyChange(globalDirty || voiceDirty || internetDirty)
+    onDirtyChange(globalDirty || voiceDirty || internetDirty || profileDirty)
     return () => { onDirtyChange(false) }
-  }, [globalDirty, internetDirty, onDirtyChange, voiceDirty])
+  }, [globalDirty, internetDirty, onDirtyChange, profileDirty, voiceDirty])
 
   const modelOptions = useMemo(() => {
     const desiredModel = settingsState?.settings.modelName
@@ -1234,8 +1259,8 @@ export function SettingsView({
         onStopSpeakerTest()
       }
     }
-    if (category !== activeCategory && formRef.current !== null) {
-      formRef.current.scrollTop = 0
+    if (category !== activeCategory && scrollRef.current !== null) {
+      scrollRef.current.scrollTop = 0
     }
     setActiveCategory(category)
   }
@@ -1294,7 +1319,7 @@ export function SettingsView({
   function reloadSavedSettings(): void {
     if (
       globalDirty
-      && !window.confirm('Discard this draft and reload saved Settings?')
+      && !window.confirm(t('Discard this draft and reload saved Settings?'))
     ) {
       return
     }
@@ -1342,21 +1367,20 @@ export function SettingsView({
           type="button"
           className="settings-back"
           onClick={onBack}
-          aria-label="Back to chat"
+          aria-label={t("Back to chat")}
         >
           <Icon name="arrow-left" />
-          <span>Back</span>
+          <span>{t("Back")}</span>
         </button>
         <div className="settings-heading">
-          <h1 id="settings-title" tabIndex={-1}>Settings</h1>
-          <p>Make Elysia your own.</p>
+          <h1 id="settings-title" tabIndex={-1}>{t("Settings")}</h1>
         </div>
       </header>
 
       <div className="settings-layout">
         <nav
           className="settings-category-nav"
-          aria-label="Settings categories"
+          aria-label={t("Settings categories")}
           onFocusCapture={() => { footerOwnedFocusRef.current = false }}
         >
           {settingsCategories.map((category) => (
@@ -1369,7 +1393,7 @@ export function SettingsView({
               onClick={() => { chooseCategory(category.id) }}
             >
               <Icon name={category.icon} />
-              <span>{category.label}</span>
+              <span>{t(category.label)}</span>
             </button>
           ))}
         </nav>
@@ -1377,7 +1401,7 @@ export function SettingsView({
         <form
           ref={formRef}
           className="settings-content"
-          aria-label="Elysia settings"
+          aria-label={t("Elysia settings")}
           noValidate
           onFocusCapture={(event) => {
             footerOwnedFocusRef.current = event.target instanceof HTMLElement
@@ -1385,47 +1409,47 @@ export function SettingsView({
           }}
           onSubmit={(event) => { void submit(event) }}
         >
+          <div className="settings-scroll" ref={scrollRef}>
           {loading && settingsState === null ? (
             <LoadingState
-              title="Loading settings"
-              description="Reading the local settings snapshot."
+              title={t("Loading settings")}
             />
           ) : settingsState === null || draft === null ? (
             <InlineAlert
               tone="error"
-              title="Settings are unavailable"
-              action={{ label: 'Try again', onClick: onReload }}
+              title={t("Settings are unavailable")}
+              action={{ label: t('Try again'), onClick: onReload }}
             >
-              {error ?? 'The local Backend has not returned Settings yet.'}
+              {error === null ? t("The local Backend has not returned Settings yet.") : t(error)}
             </InlineAlert>
           ) : null}
 
           {settingsState !== null && draft !== null && (
             <>
               {settingsState.warning !== null && (
-                <InlineAlert tone="warning" title="Defaults restored">
+                <InlineAlert tone="warning" title={t("Defaults restored")}>
                   {settingsState.warning}
                 </InlineAlert>
               )}
               {(error !== null || clientError !== null) && (
                 <InlineAlert
                   tone="error"
-                  title="Settings were not saved"
+                  title={t("Settings were not saved")}
                   action={{
                     label: loading ? 'Reloading…' : 'Reload saved settings',
                     onClick: reloadSavedSettings,
                     disabled: backendFieldsDisabled,
                   }}
                 >
-                  {clientError ?? error}
+                  {t(clientError ?? error ?? '')}
                 </InlineAlert>
               )}
               {settingsState.restartRequired && (
                 <InlineAlert
                   tone="warning"
-                  title="Backend restart required"
+                  title={t("Backend restart required")}
                   action={{
-                    label: restartPending ? 'Restarting…' : 'Restart Backend',
+                    label: restartPending ? t('Restarting…') : t('Restart Backend'),
                     onClick: () => { void onRestart() },
                     disabled: (
                       restartPending
@@ -1436,32 +1460,35 @@ export function SettingsView({
                     ),
                   }}
                 >
-                  Saved changes to {settingsState.restartFields
-                    .map((field) => restartLabels[field])
-                    .join(', ')} will apply after restart.
-                  {globalDirty ? ' Save or discard the current draft first.' : ''}
+                  {t('Saved changes to {fields} will apply after restart.', {
+                    fields: settingsState.restartFields.map((field) => t(restartLabels[field])).join(t(', ')),
+                  })}
+                  {globalDirty ? t(" Save or discard the current draft first.") : ''}
                 </InlineAlert>
               )}
             </>
           )}
 
-          {/* Keeping categories mounted preserves both drafts without changing their save scopes. */}
+          {/* Keeping categories mounted preserves feature drafts without changing their save scopes. */}
           <SettingsCategoryPanel
             category="general"
             activeCategory={activeCategory}
             navigationId={navigationId}
           >
+            <InterfaceLanguageSettings />
+            <ProfileSettingsSection api={window.elysiaDesktop} generationBusy={generationBusy}
+              restartPending={restartPending} onDirtyChange={setProfileDirty} />
             {settingsState !== null && draft !== null && (
               <>
                 <section className="settings-section" aria-labelledby="model-settings-heading">
                   <div className="settings-section-heading">
-                    <h2 id="model-settings-heading">Model</h2>
-                    <p>Choose the global default and local Ollama origin.</p>
+                    <h2 id="model-settings-heading">{t("Model")}</h2>
                   </div>
                   <div className="settings-field-grid">
                     <label className="settings-field">
-                      <span>Default model</span>
+                      <span>{t("Default model")}</span>
                       <input
+                        aria-label={t("Default model")}
                         type="text"
                         list={modelListId}
                         data-settings-field="modelName"
@@ -1486,21 +1513,21 @@ export function SettingsView({
                           <option key={model} value={model}>{model}</option>
                         ))}
                       </datalist>
-                      <small id={`${backendFieldId}-model-name-help`}>
-                        Choose an installed model, or enter its exact Ollama name to repair a failed startup.
-                      </small>
+                      <HelpHint id={`${backendFieldId}-model-name-help`} label={t("Default model")}>
+                        {t("Choose an installed model, or enter its exact Ollama name to repair a failed startup.")}</HelpHint>
                       {validationErrors.modelName !== undefined && (
                         <small
                           className="settings-field-error"
                           id={`${backendFieldId}-model-name-error`}
                         >
-                          {validationErrors.modelName}
+                          {t(validationErrors.modelName)}
                         </small>
                       )}
                     </label>
                     <label className="settings-field">
-                      <span>Ollama origin</span>
+                      <span>{t("Ollama origin")}</span>
                       <input
+                        aria-label={t("Ollama origin")}
                         type="url"
                         data-settings-field="ollamaHost"
                         value={draft.ollamaHost}
@@ -1520,15 +1547,14 @@ export function SettingsView({
                           ? undefined
                           : `${backendFieldId}-ollama-host-error`}
                       />
-                      <small id={`${backendFieldId}-ollama-host-help`}>
-                        Credentials, paths, query strings, and fragments are rejected.
-                      </small>
+                      <HelpHint id={`${backendFieldId}-ollama-host-help`} label={t("Ollama origin")}>
+                        {t("Use local HTTP with localhost, 127.0.0.1, or [::1]. Credentials, paths, query strings, and fragments are rejected.")}</HelpHint>
                       {validationErrors.ollamaHost !== undefined && (
                         <small
                           className="settings-field-error"
                           id={`${backendFieldId}-ollama-host-error`}
                         >
-                          {validationErrors.ollamaHost}
+                          {t(validationErrors.ollamaHost)}
                         </small>
                       )}
                     </label>
@@ -1537,38 +1563,38 @@ export function SettingsView({
 
                 <section className="settings-section" aria-labelledby="general-settings-heading">
                   <div className="settings-section-heading">
-                    <h2 id="general-settings-heading">Settings scopes</h2>
-                    <p>Global values apply by default; Project and Chat values remain explicit.</p>
+                    <h2 id="general-settings-heading">{t("Settings scopes")}</h2>
+                    <HelpHint label={t("Settings scopes")}>
+                      {t("Global values apply by default; Project and Chat values remain explicit.")}</HelpHint>
                   </div>
-                  <div className="settings-scope-grid" aria-label="Settings scopes">
+                  <div className="settings-scope-grid" aria-label={t("Settings scopes")}>
                     <article>
-                      <strong>Global</strong>
-                      <span>Default model: {settingsState.settings.modelName}</span>
-                      <small>Revision {settingsState.revision}; saved locally.</small>
+                      <strong>{t("Global")}</strong>
+                      <span>{t("Default model:")} {settingsState.settings.modelName}</span>
                     </article>
                     <article>
-                      <strong>Project</strong>
+                      <strong>{t("Project")}</strong>
                       {settingsState.scopes.project === null ? (
-                        <span>No active Project. Global settings apply.</span>
+                        <span>{t("No active Project. Global settings apply.")}</span>
                       ) : (
                         <>
                           <span>{settingsState.scopes.project.projectName}</span>
                           <small>
                             {settingsState.scopes.project.modelName === null
-                              ? `Inherits ${settingsState.scopes.project.inheritedModelName}`
-                              : `Override: ${settingsState.scopes.project.modelName}`}
+                              ? t("Inherits {value0}", { value0: settingsState.scopes.project.inheritedModelName })
+                              : t("Override: {value0}", { value0: settingsState.scopes.project.modelName })}
                           </small>
                         </>
                       )}
                     </article>
                     <article>
-                      <strong>Chat</strong>
+                      <strong>{t("Chat")}</strong>
                       {settingsState.scopes.chat === null ? (
-                        <span>No active Chat.</span>
+                        <span>{t("No active Chat.")}</span>
                       ) : (
                         <>
                           <span>{settingsState.scopes.chat.chatTitle}</span>
-                          <small>Pinned to {settingsState.scopes.chat.modelName}</small>
+                          <small>{t("Pinned to")} {settingsState.scopes.chat.modelName}</small>
                         </>
                       )}
                     </article>
@@ -1577,7 +1603,7 @@ export function SettingsView({
               </>
             )}
             {(settingsState === null || draft === null) && (
-              <p className="settings-readonly-status">Conversation defaults will appear when settings are available.</p>
+              <p className="settings-readonly-status">{t("Conversation defaults will appear when settings are available.")}</p>
             )}
           </SettingsCategoryPanel>
 
@@ -1620,28 +1646,26 @@ export function SettingsView({
                   aria-labelledby="transcription-settings-heading"
                 >
                   <div className="settings-section-heading">
-                    <h2 id="transcription-settings-heading">Speech recognition</h2>
-                    <p>
-                      Choose an installed local model, execution device, and default
-                      language. Changes apply after the Backend restarts.
-                    </p>
+                    <h2 id="transcription-settings-heading">{t("Speech recognition")}</h2>
+                    <HelpHint label={t("Speech recognition")}>
+                      {t("Choose an installed local model, execution device, and default language. Changes apply after the Backend restarts.")}</HelpHint>
                   </div>
                   {transcriptionReadiness === null ? (
                     <p className="settings-readonly-status">
-                      Local speech-recognition readiness has not loaded yet.
-                    </p>
+                      {t("Local speech-recognition readiness has not loaded yet.")}</p>
                   ) : (
                     <InlineAlert
                       tone={transcriptionReadiness.tone}
-                      title={`Local speech recognition: ${transcriptionReadiness.label}`}
+                      title={t("Local speech recognition: {value0}", { value0: transcriptionReadiness.label })}
                     >
                       {transcriptionReadiness.summary}
                     </InlineAlert>
                   )}
                   <div className="settings-field-grid">
                     <label className="settings-field">
-                      <span>Speech model</span>
+                      <span>{t("Speech model")}</span>
                       <select
+                        aria-label={t("Speech model")}
                         data-settings-field="transcriptionModel"
                         value={draft.transcriptionModel}
                         onChange={(event) => {
@@ -1657,14 +1681,13 @@ export function SettingsView({
                           <option key={model} value={model}>{model}</option>
                         ))}
                       </select>
-                      <small id={`${backendFieldId}-transcription-model-help`}>
-                        Elysia only opens the matching local folder and never treats
-                        this name as permission to download weights.
-                      </small>
+                      <HelpHint id={`${backendFieldId}-transcription-model-help`} label={t("Speech model")}>
+                        {t("Elysia only opens the matching local folder and never treats this name as permission to download weights.")}</HelpHint>
                     </label>
                     <label className="settings-field">
-                      <span>Recognition device</span>
+                      <span>{t("Recognition device")}</span>
                       <select
+                        aria-label={t("Recognition device")}
                         data-settings-field="transcriptionDevice"
                         value={draft.transcriptionDevice}
                         onChange={(event) => {
@@ -1676,18 +1699,16 @@ export function SettingsView({
                         disabled={backendFieldsDisabled}
                         aria-describedby={`${backendFieldId}-transcription-device-help`}
                       >
-                        <option value="auto">Auto (CUDA, then CPU fallback)</option>
-                        <option value="cuda">CUDA only</option>
-                        <option value="cpu">CPU only</option>
+                        <option value="auto">{t("Auto (CUDA, then CPU fallback)")}</option>
+                        <option value="cuda">{t("CUDA only")}</option>
+                        <option value="cpu">{t("CPU only")}</option>
                       </select>
-                      <small id={`${backendFieldId}-transcription-device-help`}>
-                        Active: {settingsState.activeSettings.transcriptionDevice};
-                        readiness reports the resolved device without native details.
-                      </small>
+                      <small id={`${backendFieldId}-transcription-device-help`}>{t("Active:")} {settingsStateLabel(settingsState.activeSettings.transcriptionDevice)}</small>
                     </label>
                     <label className="settings-field">
-                      <span>Default recognition language</span>
+                      <span>{t("Default recognition language")}</span>
                       <select
+                        aria-label={t("Default recognition language")}
                         data-settings-field="transcriptionLanguage"
                         value={draft.transcriptionLanguage}
                         onChange={(event) => {
@@ -1699,14 +1720,12 @@ export function SettingsView({
                         disabled={backendFieldsDisabled}
                         aria-describedby={`${backendFieldId}-transcription-language-help`}
                       >
-                        <option value="auto">Automatic Chinese / English detection</option>
-                        <option value="zh">Chinese (Simplified output)</option>
-                        <option value="en">English</option>
+                        <option value="auto">{t("Automatic Chinese / English detection")}</option>
+                        <option value="zh">{t("Chinese (Simplified output)")}</option>
+                        <option value="en">{t("English")}</option>
                       </select>
-                      <small id={`${backendFieldId}-transcription-language-help`}>
-                        This recognition hint applies after restart. Final Chinese text is
-                        always normalized to Simplified Chinese.
-                      </small>
+                      <HelpHint id={`${backendFieldId}-transcription-language-help`} label={t("Default recognition language")}>
+                        {t("This recognition hint applies after restart. Final Chinese text is always normalized to Simplified Chinese.")}</HelpHint>
                     </label>
                   </div>
                 </section>
@@ -1716,16 +1735,11 @@ export function SettingsView({
                   aria-labelledby="voice-behavior-settings-heading"
                 >
                   <div className="settings-section-heading">
-                    <h2 id="voice-behavior-settings-heading">Voice behavior</h2>
-                    <p>
-                      Control local speech playback and Voice-call assistance. Device
-                      choices remain separate below because they belong to this PC.
-                    </p>
+                    <h2 id="voice-behavior-settings-heading">{t("Voice behavior")}</h2>
                   </div>
                   {speechReadiness === null ? (
                     <p className="settings-readonly-status">
-                      Local speech readiness has not loaded yet.
-                    </p>
+                      {t("Local speech readiness has not loaded yet.")}</p>
                   ) : (
                     <InlineAlert
                       tone={speechReadiness.state === 'ready'
@@ -1733,21 +1747,22 @@ export function SettingsView({
                         : speechReadiness.state === 'starting'
                           ? 'info'
                           : 'error'}
-                      title={`Local speech: ${speechReadiness.state}`}
+                      title={t("Local speech: {value0}", { value0: settingsStateLabel(speechReadiness.state) })}
                     >
                       {speechReadiness.state === 'ready'
-                        ? 'Read aloud and spoken Voice Call replies are ready.'
+                        ? t("Read aloud and spoken Voice Call replies are ready.")
                         : speechReadiness.state === 'starting'
-                          ? 'Wait for the local speech runtime to finish starting.'
+                          ? t("Wait for the local speech runtime to finish starting.")
                           : speechReadiness.reason === 'setup_unavailable'
-                            ? 'Configure the local GPT-SoVITS runtime and a compatible profile/emotion pair, then restart the Backend.'
-                            : 'Restart the Backend before using Read aloud or spoken Voice Call replies.'}
+                            ? t("Configure the local GPT-SoVITS runtime and a compatible profile/emotion pair, then restart the Backend.")
+                            : t("Restart the Backend before using Read aloud or spoken Voice Call replies.")}
                     </InlineAlert>
                   )}
                   <div className="settings-field-grid">
                     <label className="settings-field">
-                      <span>Speak Voice Call replies</span>
+                      <span>{t("Speak Voice Call replies")}</span>
                       <select
+                        aria-label={t("Speak Voice Call replies")}
                         data-settings-field="autoReadAloud"
                         value={String(draft.autoReadAloud)}
                         onChange={(event) => {
@@ -1756,19 +1771,17 @@ export function SettingsView({
                         disabled={backendFieldsDisabled}
                         aria-describedby={`${backendFieldId}-auto-read-aloud-help`}
                       >
-                        <option value="true">On</option>
-                        <option value="false">Off</option>
+                        <option value="true">{t("On")}</option>
+                        <option value="false">{t("Off")}</option>
                       </select>
-                      <small id={`${backendFieldId}-auto-read-aloud-help`}>
-                        Applies after saving. Ordinary Chat stays silent unless you
-                        choose Read aloud on a reply; this setting controls automatic
-                        speech inside Voice Call only.
-                      </small>
+                      <HelpHint id={`${backendFieldId}-auto-read-aloud-help`} label={t("Speak Voice Call replies")}>
+                        {t("Applies after saving. Ordinary Chat stays silent unless you choose Read aloud on a reply; this setting controls automatic speech inside Voice Call only.")}</HelpHint>
                     </label>
 
                     <label className="settings-field">
-                      <span>Speech rate (%)</span>
+                      <span>{t("Speech rate (%)")}</span>
                       <input
+                        aria-label={t("Speech rate (%)")}
                         type="number"
                         min="50"
                         max="200"
@@ -1790,23 +1803,23 @@ export function SettingsView({
                           ? undefined
                           : `${backendFieldId}-speech-rate-error`}
                       />
-                      <small id={`${backendFieldId}-speech-rate-help`}>
-                        Active: {settingsState.activeSettings.speechRatePercent}%.
-                        Enter 50–200; saved changes apply after a Backend restart.
-                      </small>
+                      <small>{t("Active:")} {settingsState.activeSettings.speechRatePercent}%</small>
+                      <HelpHint id={`${backendFieldId}-speech-rate-help`} label={t("Speech rate (%)")}>
+                        {t("Enter 50–200; saved changes apply after a Backend restart.")}</HelpHint>
                       {validationErrors.speechRatePercent !== undefined && (
                         <small
                           className="settings-field-error"
                           id={`${backendFieldId}-speech-rate-error`}
                         >
-                          {validationErrors.speechRatePercent}
+                          {t(validationErrors.speechRatePercent)}
                         </small>
                       )}
                     </label>
 
                     <label className="settings-field">
-                      <span>Speech volume (%)</span>
+                      <span>{t("Speech volume (%)")}</span>
                       <input
+                        aria-label={t("Speech volume (%)")}
                         type="number"
                         min="0"
                         max="100"
@@ -1828,23 +1841,22 @@ export function SettingsView({
                           ? undefined
                           : `${backendFieldId}-speech-volume-error`}
                       />
-                      <small id={`${backendFieldId}-speech-volume-help`}>
-                        Applies to managed speech after saving. Zero keeps synthesis
-                        enabled while silencing playback.
-                      </small>
+                      <HelpHint id={`${backendFieldId}-speech-volume-help`} label={t("Speech volume (%)")}>
+                        {t("Applies to managed speech after saving. Zero keeps synthesis enabled while silencing playback.")}</HelpHint>
                       {validationErrors.speechVolumePercent !== undefined && (
                         <small
                           className="settings-field-error"
                           id={`${backendFieldId}-speech-volume-error`}
                         >
-                          {validationErrors.speechVolumePercent}
+                          {t(validationErrors.speechVolumePercent)}
                         </small>
                       )}
                     </label>
 
                     <label className="settings-field">
-                      <span>Voice profile</span>
+                      <span>{t("Voice profile")}</span>
                       <input
+                        aria-label={t("Voice profile")}
                         type="text"
                         data-settings-field="voiceProfileId"
                         value={draft.voiceProfileId}
@@ -1866,23 +1878,23 @@ export function SettingsView({
                           ? undefined
                           : `${backendFieldId}-voice-profile-error`}
                       />
-                      <small id={`${backendFieldId}-voice-profile-help`}>
-                        Active: {settingsState.activeSettings.voiceProfileId}. Use a
-                        configured logical profile ID; saved changes apply after restart.
-                      </small>
+                      <small>{t("Active:")} {settingsState.activeSettings.voiceProfileId}</small>
+                      <HelpHint id={`${backendFieldId}-voice-profile-help`} label={t("Voice profile")}>
+                        {t("Use a configured logical profile ID; saved changes apply after restart.")}</HelpHint>
                       {validationErrors.voiceProfileId !== undefined && (
                         <small
                           className="settings-field-error"
                           id={`${backendFieldId}-voice-profile-error`}
                         >
-                          {validationErrors.voiceProfileId}
+                          {t(validationErrors.voiceProfileId)}
                         </small>
                       )}
                     </label>
 
                     <label className="settings-field">
-                      <span>Voice emotion</span>
+                      <span>{t("Voice emotion")}</span>
                       <select
+                        aria-label={t("Voice emotion")}
                         data-settings-field="voiceEmotion"
                         value={draft.voiceEmotion}
                         onChange={(event) => {
@@ -1905,21 +1917,19 @@ export function SettingsView({
                       >
                         {voiceEmotionOptions.map((option) => (
                           <option key={option.value} value={option.value}>
-                            {option.label}
+                            {t(option.label)}
                           </option>
                         ))}
                       </select>
-                      <small id={`${backendFieldId}-voice-emotion-help`}>
-                        Active: {settingsState.activeSettings.voiceEmotion}. This
-                        closed choice selects both the local reference voice and the
-                        reviewed character expression after a Backend restart.
-                      </small>
+                      <small>{t("Active:")} {t(voiceEmotionOptions.find((option) => option.value === settingsState.activeSettings.voiceEmotion)?.label ?? settingsState.activeSettings.voiceEmotion)}</small>
+                      <HelpHint id={`${backendFieldId}-voice-emotion-help`} label={t("Voice emotion")}>
+                        {t("Selects the local reference voice after a Backend restart.")}</HelpHint>
                       {validationErrors.voiceEmotion !== undefined && (
                         <small
                           className="settings-field-error"
                           id={`${backendFieldId}-voice-emotion-error`}
                         >
-                          {validationErrors.voiceEmotion}
+                          {t(validationErrors.voiceEmotion)}
                         </small>
                       )}
                     </label>
@@ -1943,12 +1953,14 @@ export function SettingsView({
               <>
                 <section className="settings-section" aria-labelledby="files-settings-heading">
                   <div className="settings-section-heading">
-                    <h2 id="files-settings-heading">Files</h2>
-                    <p>Limit the size of one local import bundle.</p>
+                    <h2 id="files-settings-heading">{t("Files")}</h2>
+                    <HelpHint label={t("Maximum import size (bytes)")}>
+                      {t("Limit the size of one local import bundle.")}</HelpHint>
                   </div>
                   <label className="settings-field settings-field-single">
-                    <span>Maximum import size (bytes)</span>
+                    <span>{t("Maximum import size (bytes)")}</span>
                     <input
+                      aria-label={t("Maximum import size (bytes)")}
                       type="number"
                       min="1"
                       max="2147483647"
@@ -1969,16 +1981,15 @@ export function SettingsView({
                         : `${backendFieldId}-data-import-error`}
                     />
                     <small id={`${backendFieldId}-data-import-help`}>
-                      Current draft: {positiveInteger(draft.dataImportMaxBytes, 2_147_483_647) === null
-                        ? 'invalid'
-                        : `${(Number(draft.dataImportMaxBytes) / 1_048_576).toFixed(1)} MiB`}.
-                    </small>
+                      {t("Current draft:")} {positiveInteger(draft.dataImportMaxBytes, 2_147_483_647) === null
+                        ? t("invalid")
+                        : t("{value0} MiB", { value0: (Number(draft.dataImportMaxBytes) / 1_048_576).toFixed(1) })}{t(".")}</small>
                     {validationErrors.dataImportMaxBytes !== undefined && (
                       <small
                         className="settings-field-error"
                         id={`${backendFieldId}-data-import-error`}
                       >
-                        {validationErrors.dataImportMaxBytes}
+                        {t(validationErrors.dataImportMaxBytes)}
                       </small>
                     )}
                   </label>
@@ -1993,7 +2004,7 @@ export function SettingsView({
           <SettingsCategoryPanel category="internet" activeCategory={activeCategory} navigationId={navigationId}>
             <InternetSettingsSection api={internetApi} onDirtyChange={setInternetDirty} />
             {internetTools !== undefined && <details className="internet-settings-advanced">
-              <summary>Advanced research tools</summary>
+              <summary>{t("Advanced research tools")}</summary>
               {internetTools}
             </details>}
           </SettingsCategoryPanel>
@@ -2007,13 +2018,15 @@ export function SettingsView({
               <>
                 <section className="settings-section" aria-labelledby="memory-settings-heading">
                   <div className="settings-section-heading">
-                    <h2 id="memory-settings-heading">Memory</h2>
-                    <p>Bound local context and retrieval without changing stored memories.</p>
+                    <h2 id="memory-settings-heading">{t("Memory")}</h2>
+                    <HelpHint label={t("Memory")}>
+                      {t("Bound local context and retrieval without changing stored memories.")}</HelpHint>
                   </div>
                   <div className="settings-field-grid">
                     <label className="settings-field">
-                      <span>Short-term token budget</span>
+                      <span>{t("Short-term token budget")}</span>
                       <input
+                        aria-label={t("Short-term token budget")}
                         type="number"
                         min="1"
                         max="10000000"
@@ -2035,21 +2048,21 @@ export function SettingsView({
                           ? undefined
                           : `${backendFieldId}-short-term-memory-error`}
                       />
-                      <small id={`${backendFieldId}-short-term-memory-help`}>
-                        Enter a whole number from 1 to 10,000,000.
-                      </small>
+                      <HelpHint id={`${backendFieldId}-short-term-memory-help`} label={t("Short-term token budget")}>
+                        {t("Enter a whole number from 1 to 10,000,000.")}</HelpHint>
                       {validationErrors.shortTermMemoryTokenBudget !== undefined && (
                         <small
                           className="settings-field-error"
                           id={`${backendFieldId}-short-term-memory-error`}
                         >
-                          {validationErrors.shortTermMemoryTokenBudget}
+                          {t(validationErrors.shortTermMemoryTokenBudget)}
                         </small>
                       )}
                     </label>
                     <label className="settings-field">
-                      <span>Retrieved memories per turn</span>
+                      <span>{t("Retrieved memories per turn")}</span>
                       <input
+                        aria-label={t("Retrieved memories per turn")}
                         type="number"
                         min="1"
                         max="10000000"
@@ -2071,15 +2084,14 @@ export function SettingsView({
                           ? undefined
                           : `${backendFieldId}-memory-retrieval-error`}
                       />
-                      <small id={`${backendFieldId}-memory-retrieval-help`}>
-                        Enter a whole number from 1 to 10,000,000.
-                      </small>
+                      <HelpHint id={`${backendFieldId}-memory-retrieval-help`} label={t("Retrieved memories per turn")}>
+                        {t("Enter a whole number from 1 to 10,000,000.")}</HelpHint>
                       {validationErrors.memoryRetrievalLimit !== undefined && (
                         <small
                           className="settings-field-error"
                           id={`${backendFieldId}-memory-retrieval-error`}
                         >
-                          {validationErrors.memoryRetrievalLimit}
+                          {t(validationErrors.memoryRetrievalLimit)}
                         </small>
                       )}
                     </label>
@@ -2088,42 +2100,39 @@ export function SettingsView({
 
                 <section className="settings-section" aria-labelledby="work-settings-heading">
                   <div className="settings-section-heading">
-                    <h2 id="work-settings-heading">Work</h2>
-                    <p>Project workspace bindings remain Project-owned.</p>
+                    <h2 id="work-settings-heading">{t("Work")}</h2>
+                    <HelpHint label={t("Work")}>
+                      {t("Work plans use the current Project workspace. Review proposed actions and approve file changes separately in Work mode. Manage workspace bindings from Projects.")}</HelpHint>
                   </div>
-                  <p className="settings-readonly-status">
-                    Work plans use the current Project workspace. Review proposed actions and approve file changes separately in Work mode. Manage workspace bindings from Projects.
-                  </p>
                 </section>
 
                 <section className="settings-section" aria-labelledby="privacy-settings-heading">
                   <div className="settings-section-heading">
-                    <h2 id="privacy-settings-heading">Privacy</h2>
-                    <p>Settings, Chats, Projects, and Memory remain in the local workspace.</p>
+                    <h2 id="privacy-settings-heading">{t("Privacy")}</h2>
+                    <HelpHint label={t("Privacy")}>
+                      {[
+                        t("Settings, Chats, Projects, and Memory remain in the local workspace."),
+                        t("This settings file contains no API keys, tokens, or passwords."),
+                        t("Ollama requests use only the origin shown above."),
+                        t("External links require an explicit click and open outside Elysia."),
+                      ].join(' ')}</HelpHint>
                   </div>
-                  <ul className="settings-privacy-list">
-                    <li>This settings file contains no API keys, tokens, or passwords.</li>
-                    <li>Ollama requests use only the origin shown above.</li>
-                    <li>External links require an explicit click and open outside Elysia.</li>
-                  </ul>
                 </section>
               </>
             )}
             {(settingsState === null || draft === null) && (
-              <p className="settings-readonly-status">Advanced preferences will appear when settings are available.</p>
+              <p className="settings-readonly-status">{t("Advanced preferences will appear when settings are available.")}</p>
             )}
           </SettingsCategoryPanel>
 
+          </div>
           {settingsState !== null && draft !== null && globalFooterVisible && (
             <footer className="settings-save-bar">
               <div>
-                <strong>{globalDirty ? 'Unsaved global changes' : 'Global settings are up to date'}</strong>
-                <span>
-                  {generationBusy
-                    ? 'Wait for the current reply before saving. '
-                    : ''}
-                  Appearance and notification choices are saved separately and apply immediately.
-                </span>
+                <strong>{globalDirty ? t("Unsaved global changes") : t("Global settings are up to date")}</strong>
+                {generationBusy && <span>{t("Wait for the current reply before saving. ")}</span>}
+                <HelpHint label={t("Save changes")}>
+                  {t("Appearance and notification choices are saved separately and apply immediately.")}</HelpHint>
               </div>
               <div className="settings-save-actions">
                 <button
@@ -2135,8 +2144,7 @@ export function SettingsView({
                     setClientError(null)
                   }}
                 >
-                  Discard
-                </button>
+                  {t("Discard")}</button>
                 <button
                   type="submit"
                   className="primary-button"
@@ -2146,7 +2154,7 @@ export function SettingsView({
                     || generationBusy
                   }
                 >
-                  {pending ? 'Saving…' : 'Save changes'}
+                  {pending ? t("Saving…") : t("Save changes")}
                 </button>
               </div>
             </footer>

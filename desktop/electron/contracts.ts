@@ -5,13 +5,17 @@
  * the smaller capability-safe surface exposed to the sandboxed renderer.
  */
 
-import type { WorkActivity, WorkTurnOptions } from './work-agent-protocol.js'
+import type { WorkActivity, WorkTurnOptions, WorkCommandApprovalDecision } from './work-agent-protocol.js'
 import type { ImageClient } from './image-client.js'
 import type {
   SettingsStateResult,
+  UserProfileState,
+  UpdateUserProfileRequest,
+  ChatResearchStage,
   SettingsValues,
   VoiceTranscriptionStatus,
 } from './protocol.js'
+export type { UserProfileState, UpdateUserProfileRequest } from './protocol.js'
 import type {
   DesktopPetState,
   UpdateDesktopPetRequest,
@@ -83,6 +87,8 @@ export interface ActiveChatGeneration {
   userMessageId?: string
   assistantMessageId?: string
   reply: string
+  /** Current bounded research activity; never contains search text or provider details. */
+  researchStage?: ChatResearchStage
   /** True only when this generation owns the global Project knowledge lease. */
   usesProjectKnowledge?: boolean
   /** Preserve whether this exact generation may produce managed speech. */
@@ -112,6 +118,8 @@ export interface BackendSnapshot {
   /** Latest process for the active Work Chat, retained across renderer reloads. */
   workActivity?: WorkActivity
   activeKnowledgeOperation?: ActiveKnowledgeOperation
+  /** Authenticated startup failure category; absent once startup is retried or completes. */
+  initializationErrorCode?: string
   error?: string
 }
 
@@ -598,10 +606,14 @@ export type BackendEvent =
  * filesystem primitives.
  */
 export interface DesktopApi extends ImageClient, WorkWorkspaceClient, WorkToolClient, WorkPlanClient, WorkAuditClient, WorkDesktopClient, VisionClient, VisionAnalysisClient, VisionCaptureClient, VisionContextClient, VisionHistoryClient, InternetPolicyClient, InternetResearchClient, InternetReviewClient, InternetWriteClient, InternetCacheClient {
+  /** Answer the exact Main-owned CMD question without sending executable source or increasing permissions. */
+  resolveWorkCommandApproval(request: WorkCommandApprovalDecision): Promise<{ ok: boolean; activity?: WorkActivity }>
   /** Signal that the renderer can receive events and the main window may appear. */
   rendererReady(): Promise<void>
   /** Keep native window chrome aligned with the renderer's saved appearance. */
   setThemePreference(theme: DesktopThemePreference): Promise<void>
+  /** Keep native dialogs and tray copy aligned with the saved interface language. */
+  setInterfaceLocale(locale: 'en' | 'zh-CN'): Promise<void>
   /** Return Electron-owned Desktop Pet intent and bounded runtime status. */
   getDesktopPetState(): Promise<DesktopPetState>
   /** Persist one revision-checked Desktop Pet visibility choice. */
@@ -649,6 +661,10 @@ export interface DesktopApi extends ImageClient, WorkWorkspaceClient, WorkToolCl
   openDataDirectory(): Promise<void>
   /** Load the canonical persisted Desktop settings state. */
   getSettings(): Promise<DesktopSettingsState>
+  /** Read the saved name without requiring an initialized local model. */
+  getProfile(): Promise<UserProfileState>
+  /** Replace the reviewed name; a concurrent edit is rejected rather than overwritten. */
+  updateProfile(request: UpdateUserProfileRequest): Promise<UserProfileState>
   /** Validate and persist a revision-aware Desktop settings update. */
   updateSettings(
     request: UpdateDesktopSettingsRequest,

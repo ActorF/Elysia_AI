@@ -71,7 +71,7 @@ CSV 使用局部线性状态机，避免修改 `csv.field_size_limit` 的进程�
 
 ## PDF
 
-当前依赖固定为 `pypdf==6.19.0`，实际 parser 版本进入 `loader_version`。
+当前依赖固定为 `pypdf==6.21.2`，实际 parser 版本进入 `loader_version`。
 
 加载器先验证 signature 并使用 strict reader。所有加密 PDF 都失败，包括可用空密码打开的文件；密码生命周期不在本层。缺失或 null `/Contents`、无文字页仍计入页数，但不伪造空 Block。每个有意义页面产生一个带页码的段落，只保留可证明的页面边界和内嵌标题。
 

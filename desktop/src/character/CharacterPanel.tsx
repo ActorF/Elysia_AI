@@ -3,6 +3,8 @@
  * This view is read-only and never mutates Chat, Memory, or model state.
  */
 
+import { t, useLocale } from '../i18n/LocaleProvider.tsx'
+
 import type { BackendSnapshot } from '../../electron/contracts.ts'
 import { Icon } from '../design-system/Icon.tsx'
 import { CharacterPanelArtwork } from './CharacterPanelArtwork.tsx'
@@ -30,6 +32,7 @@ export function CharacterPanel({
   snapshot,
   onClose,
 }: CharacterPanelProps) {
+  useLocale()
   return (
     <aside
       className="character-panel character-panel-compact"
@@ -41,14 +44,14 @@ export function CharacterPanel({
       tabIndex={-1}
     >
       <div className="character-panel-header">
-        <h2 id="character-panel-title">Elysia</h2>
+        <h2 id="character-panel-title">{t("Elysia")}</h2>
         <div className="character-panel-actions">
           <button
             type="button"
             className="icon-button character-panel-close"
             data-panel-initial-focus
-            aria-label="Close Elysia character panel"
-            title="Close panel"
+            aria-label={t("Close Elysia character panel")}
+            title={t("Close panel")}
             disabled={pending}
             onClick={onClose}
           >
@@ -66,24 +69,23 @@ export function CharacterPanel({
             aria-live="polite"
             aria-atomic="true"
           >
-            <strong className="character-presence-label">
+            <strong className="character-presence-label" title={t(characterState.description)}>
               <span className="status-dot" aria-hidden="true" />
-              {characterState.label}
+              {t(characterState.label)}
             </strong>
-            <span>{characterState.description}</span>
           </div>
         </div>
       </div>
 
       <footer className="character-panel-footer">
         <div className="character-context-row">
-          <span className="context-label">Chat</span>
+          <span className="context-label">{t("Chat")}</span>
           <strong title={chatTitle}>{chatTitle}</strong>
         </div>
         <div className="character-context-row">
-          <span className="context-label">Model</span>
+          <span className="context-label">{t("Model")}</span>
           <span title={snapshot.modelName ?? undefined}>
-            {snapshot.modelName ?? 'Waiting for the local model'}
+            {snapshot.modelName ?? t("Waiting for the local model")}
           </span>
         </div>
       </footer>

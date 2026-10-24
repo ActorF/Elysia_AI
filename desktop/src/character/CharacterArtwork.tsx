@@ -7,6 +7,7 @@
  */
 
 import { useState, type CSSProperties } from 'react'
+import { t, useLocale } from '../i18n/LocaleProvider.tsx'
 
 import type { CharacterEmotion } from './character-emotion.ts'
 import {
@@ -14,6 +15,19 @@ import {
   getCharacterPresentation,
 } from './character-presentation.ts'
 import type { CharacterState } from './character-state.ts'
+
+const EXPRESSION_LABELS: Readonly<Record<CharacterEmotion, string>> = {
+  neutral: 'Elysia neutral expression',
+  happy: 'Elysia happy expression',
+  sad: 'Elysia sad expression',
+  caring: 'Elysia caring expression',
+  moved: 'Elysia moved expression',
+  playful: 'Elysia playful expression',
+  affectionate: 'Elysia affectionate expression',
+  teasing: 'Elysia teasing expression',
+  serious: 'Elysia serious expression',
+  surprised: 'Elysia surprised expression',
+}
 
 interface CharacterArtworkProps {
   className?: string
@@ -53,6 +67,7 @@ export function CharacterArtwork({
   state,
   variant = 'state',
 }: CharacterArtworkProps) {
+  useLocale()
   const [expressionAtlasFailed, setExpressionAtlasFailed] = useState(false)
   const [stateAtlasFailed, setStateAtlasFailed] = useState(false)
   const [portraitFailed, setPortraitFailed] = useState(false)
@@ -100,19 +115,19 @@ export function CharacterArtwork({
         <div
           className="character-artwork-fallback"
           role="img"
-          aria-label="Elysia character portrait unavailable"
+          aria-label={t("Elysia character portrait unavailable")}
         >
           <span className="character-artwork-fallback-mark" aria-hidden="true">
             ✦
           </span>
-          <span aria-hidden="true">Artwork unavailable</span>
+          <span aria-hidden="true">{t("Artwork unavailable")}</span>
         </div>
       ) : assetStage === 'expression-atlas' ? (
         <div className="character-artwork-expression-frame">
           <img
             className="character-artwork-image character-artwork-expression-atlas"
             src="./character/elysia-expression-atlas.png"
-            alt={`Elysia ${emotion} expression`}
+            alt={t(EXPRESSION_LABELS[emotion])}
             decoding="async"
             style={expressionAtlasStyle}
             onError={() => { setExpressionAtlasFailed(true) }}
@@ -123,7 +138,7 @@ export function CharacterArtwork({
           <img
             className="character-artwork-image character-artwork-atlas"
             src="./character/elysia-state-atlas.png"
-            alt="Elysia character portrait"
+            alt={t("Elysia character portrait")}
             decoding="async"
             style={stateAtlasStyle}
             onError={() => { setStateAtlasFailed(true) }}
@@ -133,7 +148,7 @@ export function CharacterArtwork({
         <img
           className="character-artwork-image character-artwork-static"
           src="./character/elysia-portrait.png"
-          alt="Elysia character portrait"
+          alt={t("Elysia character portrait")}
           decoding="async"
           onError={() => { setPortraitFailed(true) }}
         />

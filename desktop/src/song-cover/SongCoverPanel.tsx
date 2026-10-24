@@ -4,6 +4,8 @@
  * with the existing privileged callbacks and never create a second audio owner.
  */
 
+import { t, useTranslation } from '../i18n/LocaleProvider.tsx'
+import { formatUiError } from '../i18n/ui-error.ts'
 import { useRef, useState, type CSSProperties, type RefObject } from 'react'
 import type { SongCoverState } from '../../electron/song-cover-contracts.ts'
 import { Icon } from '../design-system/Icon.tsx'
@@ -29,35 +31,35 @@ function playbackTime(seconds: number): string {
 }
 
 function keyLabel(shift: SongCoverState['keyShiftSemitones']): string {
-  if (shift === null) return 'Key pending'
-  if (shift === 0) return 'Original key'
+  if (shift === null) return t("Key pending")
+  if (shift === 0) return t("Original key")
   const semitones = Math.abs(shift)
-  return `${shift > 0 ? 'Raised' : 'Lowered'} ${semitones} ${
-    semitones === 1 ? 'semitone' : 'semitones'
-  }`
+  return shift > 0
+    ? t(semitones === 1 ? "Raised {count} semitone" : "Raised {count} semitones", { count: semitones })
+    : t(semitones === 1 ? "Lowered {count} semitone" : "Lowered {count} semitones", { count: semitones })
 }
 
 function engineLabel(engine: SongCoverState['engine']): string {
-  if (engine === 'lyrics-svs') return 'Lyrics-driven singing'
-  if (engine === 'source-svc') return 'Voice conversion'
-  if (engine === 'legacy-svc') return 'Legacy RVC'
-  return 'Singing method pending'
+  if (engine === 'lyrics-svs') return t("Lyrics-driven singing")
+  if (engine === 'source-svc') return t("Voice conversion")
+  if (engine === 'legacy-svc') return t("Legacy RVC")
+  return t("Singing method pending")
 }
 
 function stageLabel(stage: SongCoverState['stage']): string {
   switch (stage) {
-    case 'idle': return 'Song Cover'
-    case 'validating': return 'Preparing audio'
-    case 'separating': return 'Separating vocals'
-    case 'transcribing': return 'Finding lyrics'
-    case 'aligning': return 'Aligning lyrics'
-    case 'synthesizing': return 'Singing'
-    case 'converting': return 'Converting voice'
-    case 'mixing': return 'Mixing your cover'
-    case 'ready': return 'Ready to play'
-    case 'playing': return 'Now playing'
-    case 'cancelled': return 'Cancelled'
-    case 'error': return 'Needs attention'
+    case 'idle': return t("Song Cover")
+    case 'validating': return t("Preparing audio")
+    case 'separating': return t("Separating vocals")
+    case 'transcribing': return t("Finding lyrics")
+    case 'aligning': return t("Aligning lyrics")
+    case 'synthesizing': return t("Singing")
+    case 'converting': return t("Converting voice")
+    case 'mixing': return t("Mixing your cover")
+    case 'ready': return t("Ready to play")
+    case 'playing': return t("Now playing")
+    case 'cancelled': return t("Cancelled")
+    case 'error': return t("Needs attention")
   }
 }
 
@@ -79,6 +81,7 @@ export function SongCoverPanel({
   onSeek,
   onStop,
 }: SongCoverPanelProps) {
+  useTranslation()
   const running = isSongCoverBusyStage(state.stage)
   const playing = state.stage === 'playing'
   const [scrubPosition, setScrubPosition] = useState<number | null>(null)
@@ -106,15 +109,15 @@ export function SongCoverPanel({
   return (
     <section
       className={`song-cover-panel song-studio-player ${state.stage}`}
-      aria-label="Song Cover"
+      aria-label={t("Song Cover")}
     >
       <button
         ref={hideButtonRef}
         type="button"
         className="song-studio-hide"
         onClick={onHide}
-        aria-label="Hide Song Cover"
-        title="Hide player"
+        aria-label={t("Hide Song Cover")}
+        title={t("Hide player")}
       >
         <Icon name="close" />
       </button>
@@ -123,29 +126,29 @@ export function SongCoverPanel({
       </div>
       <div className="song-studio-track">
         <div className="song-studio-track-heading">
-          <span className="song-studio-eyebrow">Elysia · Song Cover</span>
+          <span className="song-studio-eyebrow">{t("Elysia · Song Cover")}</span>
           <span className="song-studio-stage">
             {playing && <span className="song-studio-equalizer" aria-hidden="true"><i /><i /><i /></span>}
             {stageLabel(state.stage)}
           </span>
         </div>
-        <strong className="song-studio-track-name" title={state.sourceName ?? 'Song Cover'}>
-          {state.sourceName ?? 'Song Cover'}
+        <strong className="song-studio-track-name" title={state.sourceName ?? t("Song Cover")}>
+          {state.sourceName ?? t("Song Cover")}
         </strong>
-        <div className="song-studio-track-settings" aria-label="Song Cover settings">
+        <div className="song-studio-track-settings" aria-label={t("Song Cover settings")}>
           <span>{engineLabel(state.engine)}</span>
           <span>{keyLabel(state.keyShiftSemitones)}</span>
           {state.keyShiftSemitones !== null
             && state.keyShiftSemitones !== 0
             && state.shiftAccompaniment !== null && (
             <span>{state.shiftAccompaniment
-              ? 'Vocal + accompaniment shift'
-              : 'Vocal-only shift'}</span>
+              ? t("Vocal + accompaniment shift")
+              : t("Vocal-only shift")}</span>
           )}
         </div>
         {state.sourceMode === 'stems' && state.accompanimentName !== null && (
           <span className="song-studio-track-accompaniment" title={state.accompanimentName}>
-            Accompaniment · {state.accompanimentName}
+            {t("Accompaniment · ")}{state.accompanimentName}
           </span>
         )}
       </div>
@@ -154,7 +157,7 @@ export function SongCoverPanel({
         {running && (
           <div className="song-studio-job-progress">
             <div className="song-studio-steps" aria-hidden="true">
-              {['Prepare', 'Sing', 'Mix'].map((label, index) => (
+              {[t("Prepare"), t("Sing"), t("Mix")].map((label, index) => (
                 <span key={label} className={index <= step ? 'is-current' : ''}>
                   <i />{label}
                 </span>
@@ -166,7 +169,7 @@ export function SongCoverPanel({
             <progress
               max={100}
               value={state.progressPercent}
-              aria-label="Song Cover progress"
+              aria-label={t("Song Cover progress")}
             />
           </div>
         )}
@@ -175,8 +178,8 @@ export function SongCoverPanel({
             <input
               type="range"
               className="song-studio-seek"
-              aria-label="Seek Song Cover"
-              aria-valuetext={`${playbackTime(position)} of ${playbackTime(duration)}`}
+              aria-label={t("Seek Song Cover")}
+              aria-valuetext={t("{position} of {duration}", { position: playbackTime(position), duration: playbackTime(duration) })}
               min={0}
               max={duration > 0 ? duration : 1}
               step={0.1}
@@ -209,7 +212,7 @@ export function SongCoverPanel({
                 }
               }}
             />
-            <div className="song-studio-time" aria-label="Playback time">
+            <div className="song-studio-time" aria-label={t("Playback time")}>
               <span>{playbackTime(position)}</span>
               <span>{playbackTime(duration)}</span>
             </div>
@@ -220,13 +223,13 @@ export function SongCoverPanel({
           role={state.error === null ? 'status' : 'alert'}
           aria-live="polite"
         >
-          {state.error ?? state.message ?? 'Choose another song to try again.'}
+          {formatUiError(state.error ?? state.message ?? "Choose another song to try again.")}
         </p>}
       </div>
       <div className="song-studio-player-actions">
         {running && (
-          <button type="button" className="song-studio-action" onClick={onCancel} aria-label="Cancel Song Cover">
-            <Icon name="close" /><span>Cancel</span>
+          <button type="button" className="song-studio-action" onClick={onCancel} aria-label={t("Cancel Song Cover")}>
+            <Icon name="close" /><span>{t("Cancel")}</span>
           </button>
         )}
         {state.outputAvailable && (
@@ -236,19 +239,19 @@ export function SongCoverPanel({
               className="song-studio-action song-studio-action-primary"
               disabled={!playing && playbackDisabled}
               onClick={playing ? onStop : onPlay}
-              aria-label={playing ? 'Stop Song Cover' : 'Play Song Cover'}
+              aria-label={playing ? t("Stop Song Cover") : t("Play Song Cover")}
             >
               <Icon name={playing ? 'stop' : 'play'} />
-              <span>{playing ? 'Stop' : 'Play cover'}</span>
+              <span>{playing ? t("Stop") : t("Play cover")}</span>
             </button>
             <button
               type="button"
               className="song-studio-action"
               onClick={onExport}
-              aria-label="Export Song Cover"
-              title="Export lossless WAV"
+              aria-label={t("Export Song Cover")}
+              title={t("Export lossless WAV")}
             >
-              <Icon name="download" /><span>Save WAV</span>
+              <Icon name="download" /><span>{t("Save WAV")}</span>
             </button>
           </>
         )}

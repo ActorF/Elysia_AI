@@ -22,6 +22,7 @@ from attachments.domain import validate_file_name, validate_media_type
 from core.internet_assistant import validate_internet_evidence, validate_internet_query
 from core.work_assistant import DESKTOP_TOOLS, validate_work_call, validate_work_options, validate_work_result as validate_chat_work_result
 from work_tools.wire import validate_work_params, validate_work_result
+from memory.profile import validate_user_name
 
 PROTOCOL_NAME: Final = "elysia.desktop"
 PROTOCOL_VERSION: Final = 1
@@ -176,6 +177,7 @@ ProtocolEventName: TypeAlias = Literal[
     "chat.work.request",
     "chat.work.progress",
     "chat.internet.request",
+    "chat.research.status",
     "chat.started",
     "chat.completed",
     "chat.cancelled",
@@ -227,6 +229,7 @@ _PROTOCOL_EVENT_NAMES: Final = (
         "chat.work.request",
         "chat.work.progress",
         "chat.internet.request",
+        "chat.research.status",
         "voice.speech.clip",
         "voice.speech.failure",
         "voice.speech.terminal",
@@ -286,6 +289,8 @@ ProtocolMethod = Literal[
     "knowledge.source.export",
     "settings.get",
     "settings.update",
+    "profile.get",
+    "profile.update",
     "voice.settings.get",
     "voice.settings.update",
     "voice.capture.complete",
@@ -352,6 +357,8 @@ SUPPORTED_METHODS: Final[tuple[ProtocolMethod, ...]] = (
     "knowledge.source.export",
     "settings.get",
     "settings.update",
+    "profile.get",
+    "profile.update",
     "voice.settings.get",
     "voice.settings.update",
     "voice.capture.complete",
@@ -455,6 +462,7 @@ class ChatRetryParams(TypedDict):
     speakReply: bool
     message: NotRequired[str]
     useProjectKnowledge: NotRequired[bool]
+    automaticInternet: NotRequired[bool]
     workOptions: NotRequired[dict[str, str]]
 
 
@@ -1537,7 +1545,7 @@ def _validate_internet_resolve_params(params: JsonObject) -> None:
 
 def _validate_internet_request_data(data: JsonObject) -> None:
     context = "chat.internet.request data"
-    _require_fields(data, {"chatId", "searchId", "query", "language"}, context)
+    _require_fields(data, {"chatId", "searchId", "query", "language"}, context, optional={"kind", "when"})
     _validate_internet_identity(data, context)
     try:
         validate_internet_query(data.get("query"))
@@ -1545,6 +1553,18 @@ def _validate_internet_request_data(data: JsonObject) -> None:
         raise ProtocolValidationError("protocol.invalid_message", "Internet query is invalid.") from None
     if data.get("language") not in ("en", "zh"):
         raise ProtocolValidationError("protocol.invalid_message", "Internet language is invalid.")
+    if data.get("kind", "search") not in ("search", "weather"):
+        raise ProtocolValidationError("protocol.invalid_message", "Internet request kind is invalid.")
+    if "when" in data and (data.get("kind") != "weather" or data["when"] not in ("now", "today", "tomorrow")):
+        raise ProtocolValidationError("protocol.invalid_message", "Weather time is invalid.")
+
+
+def _validate_research_status_data(data: JsonObject) -> None:
+    context = "chat.research.status data"
+    _require_fields(data, {"chatId", "stage"}, context)
+    _require_identifier(data, "chatId", context)
+    if data.get("stage") not in ("planning", "searching", "weather", "reading", "answering", "failed"):
+        raise ProtocolValidationError("protocol.invalid_message", "Research stage is invalid.")
 
 
 def _validate_native_attachment_result(result: JsonObject) -> None:
@@ -1826,12 +1846,14 @@ def _validate_chat_retry_params(params: JsonObject) -> None:
         params,
         {"chatId", "userMessageId", "assistantMessageId", "speakReply"},
         context,
-        optional={"message", "useProjectKnowledge", "workOptions"},
+        optional={"message", "useProjectKnowledge", "automaticInternet", "workOptions"},
     )
     _require_identifier(params, "chatId", context)
     _require_identifier(params, "userMessageId", context)
     _require_identifier(params, "assistantMessageId", context)
     _require_boolean(params, "speakReply", context)
+    if "automaticInternet" in params:
+        _require_boolean(params, "automaticInternet", context)
     _validate_work_options_param(params)
     if "message" in params:
         message = _require_string(params, "message", context)
@@ -2795,6 +2817,18 @@ def parse_client_request(value: object) -> ClientRequest:
         _require_fields(params, set(), "settings.get params")
     elif method == "settings.update":
         _validate_settings_update_params(params)
+    elif method == "profile.get":
+        _require_fields(params, set(), "profile.get params")
+    elif method == "profile.update":
+        _require_fields(params, {"userName", "expectedUserName"}, "profile.update params")
+        # The expected value may be a legacy name outside today's edit policy;
+        # accepting it permits a safe replacement without migrating user data.
+        if not isinstance(params["expectedUserName"], str):
+            raise ProtocolValidationError("protocol.invalid_params", "Expected name must be text.")
+        try:
+            validate_user_name(params["userName"])
+        except ValueError as error:
+            raise ProtocolValidationError("protocol.invalid_params", str(error)) from None
     elif method == "voice.settings.get":
         _require_fields(params, set(), "voice.settings.get params")
     elif method == "voice.settings.update":
@@ -4245,6 +4279,10 @@ def _validate_success_result(result: JsonObject) -> None:
             raise ProtocolValidationError("protocol.invalid_message", "Work response is invalid.") from None
         return
     fields = set(result)
+    if fields == {"kind", "userName"} and result.get("kind") == "profile":
+        if not isinstance(result["userName"], str):
+            raise ProtocolValidationError("protocol.invalid_message", "Profile name must be text.")
+        return
     kind = result.get("kind")
     if kind == "image.generation":
         _validate_image_generation_result(result)
@@ -5149,6 +5187,8 @@ def _validate_event(message: JsonObject) -> EventMessage:
     data = _as_object(message["data"], "event.data")
     if event == "chat.internet.request":
         _validate_internet_request_data(data)
+    elif event == "chat.research.status":
+        _validate_research_status_data(data)
     elif event == "chat.work.request":
         _validate_work_request_data(data)
     elif event == "chat.work.progress":

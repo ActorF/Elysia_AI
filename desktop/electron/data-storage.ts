@@ -527,6 +527,10 @@ function classifyDataPath(relativePath: string): PathClassification {
     gallery: 'other',
     'image-runs': 'other',
     'image-recovery': 'other',
+    // Installed speech models and GPT-SoVITS components live with private
+    // data so app updates cannot replace them. Their nested models/cache is
+    // an installed runtime, not disposable application cache.
+    models: 'other',
     recovery: 'config',
     sources: 'sources',
     attachments: 'sources',

@@ -1,4 +1,4 @@
-/** Verify Chat and Work navigation preserves separate canonical sessions and drafts without executing task tools. */
+/** Verify icon-rail navigation and Project folders preserve separate canonical Chat/Work histories, drafts, and keyboard access. */
 
 import { createRequire } from 'node:module'
 import path from 'node:path'
@@ -12,6 +12,7 @@ interface NavigationControl {
   getCalls(): Array<{ method: string; args: unknown[] }>
   emitBackendEvent(event: unknown): void
   setChatState(state: unknown): void
+  setProjectState(state: unknown): void
   failNextChatMode(message: string): void
   setSelectedWorkspace(path: string | null): void
 }
@@ -31,6 +32,36 @@ const chat = {
   messageCount: 0, projectId: null, modelName: 'qwen3.5:9b', pinned: false, archived: false,
 }
 const task = { ...chat, chatId: 'task_navigation', title: 'Design the next task', mode: 'work' }
+const projectChat = { ...chat, projectId: 'project_navigation_alpha' }
+const otherProjectChat = { ...chat, chatId: 'chat_navigation_beta', title: 'A separate conversation', projectId: 'project_navigation_beta' }
+const ungroupedChat = { ...chat, chatId: 'chat_navigation_ungrouped', title: 'An ungrouped conversation' }
+const archivedProjectChat = { ...projectChat, chatId: 'chat_navigation_archived', title: 'An archived conversation', archived: true }
+const projectTask = { ...task, projectId: projectChat.projectId }
+
+/** Load Project names and mixed histories atomically, matching the canonical listProjects response. */
+async function connectGrouped(): Promise<void> {
+  await page.evaluate(({ projectChat, otherProjectChat, ungroupedChat, archivedProjectChat, projectTask }) => {
+    const control = (window as NavigationWindow).elysiaDesktopTest
+    const metadata = {
+      createdAt: projectChat.createdAt, updatedAt: projectChat.updatedAt, customInstructions: null,
+      workspacePath: null, archived: false, chatCount: 0,
+    }
+    control.setProjectState({ activeProject: null, projects: [
+      { ...metadata, projectId: projectChat.projectId, name: 'Alpha research' },
+      { ...metadata, projectId: otherProjectChat.projectId, name: 'Beta planning' },
+    ], chatState: {
+      activeChat: { ...projectChat, messages: [] },
+      chats: [projectChat, otherProjectChat, ungroupedChat, archivedProjectChat, projectTask],
+    } })
+    control.emitBackendEvent({ type: 'snapshot', snapshot: {
+      revision: 1, status: 'ready', capabilities: ['chat.stream', 'chat.mode', 'work.workspace', 'work.tools', 'work.read',
+        'work.preview', 'work.confirm', 'work.plan', 'work.audit', 'work.undo'],
+      models: ['qwen3.5:9b'], modelName: 'qwen3.5:9b', chatId: projectChat.chatId, chatTitle: projectChat.title,
+    } })
+  }, { projectChat, otherProjectChat, ungroupedChat, archivedProjectChat, projectTask })
+  await expect(page.getByRole('heading', { name: projectChat.title, exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Alpha research', exact: true })).toBeEnabled()
+}
 
 /** Seed canonical sessions before connecting the renderer so both navigation collections load deterministically. */
 async function connect(includeTask: boolean): Promise<void> {
@@ -96,6 +127,63 @@ test('restores separate Chat and Work sessions and their unsent drafts', async (
   await primary.getByRole('button', { name: 'Work', exact: true }).click()
   await expect(draft).toHaveValue('An unfinished task brief.')
   await expectNavigationOnly()
+})
+
+test('groups sessions by Project with searchable folders while preserving Chat and Work scope', async () => {
+  await connectGrouped()
+  const sidebar = page.locator('#app-sidebar')
+  const primary = page.getByRole('navigation', { name: 'Primary', exact: true })
+  const activeChats = page.getByRole('list', { name: 'Active chats', exact: true })
+  const alpha = sidebar.getByRole('button', { name: 'Alpha research', exact: true })
+  const openProjectChat = sidebar.getByRole('button', { name: `Open chat ${projectChat.title}`, exact: true })
+  await expect(activeChats.getByRole('list', { name: 'Alpha research', exact: true })).toContainText(projectChat.title)
+  await expect(activeChats.getByRole('button', { name: `Open chat ${ungroupedChat.title}`, exact: true })).toBeVisible()
+  await expect(activeChats).not.toContainText(projectTask.title)
+  await expect(activeChats).not.toContainText(archivedProjectChat.title)
+  const rail = await sidebar.locator('.sidebar-rail').boundingBox()
+  const sessions = await sidebar.locator('.sidebar-sessions').boundingBox()
+  expect(rail?.width).toBeLessThan(60)
+  expect(sessions?.x).toBeGreaterThanOrEqual((rail?.x ?? 0) + (rail?.width ?? 0))
+  await alpha.click()
+  await expect(alpha).toHaveAttribute('aria-expanded', 'false')
+  await expect(openProjectChat).toBeHidden()
+  await sidebar.getByRole('button', { name: 'Search chats', exact: true }).click()
+  const search = sidebar.getByRole('textbox', { name: 'Search chats', exact: true })
+  await search.fill('Alpha research')
+  await expect(alpha).toHaveAttribute('aria-expanded', 'true')
+  await expect(alpha).toBeDisabled()
+  await expect(openProjectChat).toBeVisible()
+  await expect(activeChats).not.toContainText(otherProjectChat.title)
+  await expect(activeChats).not.toContainText(ungroupedChat.title)
+  await expect(activeChats).not.toContainText(projectTask.title)
+  await search.fill('')
+  await expect(alpha).toHaveAttribute('aria-expanded', 'false')
+  await sidebar.getByRole('button', { name: 'Select chats', exact: true }).click()
+  await expect(alpha).toHaveAttribute('aria-expanded', 'true')
+  await expect(sidebar.getByRole('checkbox', { name: `Select ${projectChat.title}`, exact: true })).toBeVisible()
+  await sidebar.getByRole('toolbar', { name: 'Selected chats', exact: true }).getByRole('button', { name: 'Cancel', exact: true }).click()
+  await expect(alpha).toHaveAttribute('aria-expanded', 'false')
+  await primary.getByRole('button', { name: 'Work', exact: true }).click()
+  await expect(conversationMode(page)).toHaveValue('work')
+  await sidebar.getByRole('button', { name: 'Search chats', exact: true }).click()
+  await search.fill('Alpha research')
+  const activeTasks = page.getByRole('list', { name: 'Active tasks', exact: true })
+  await expect(activeTasks.getByRole('button', { name: `Open chat ${projectTask.title}`, exact: true })).toBeVisible()
+  await expect(activeTasks).not.toContainText(projectChat.title)
+  await expect(activeTasks).not.toContainText(archivedProjectChat.title)
+  await expectNavigationOnly()
+})
+
+test('reveals a collapsed Project when it receives keyboard focus after deleting another conversation', async () => {
+  await connectGrouped()
+  const beta = page.getByRole('button', { name: 'Beta planning', exact: true })
+  await beta.click()
+  await expect(beta).toHaveAttribute('aria-expanded', 'false')
+  await page.getByRole('button', { name: `More actions for ${projectChat.title}`, exact: true }).click()
+  await page.getByRole('menuitem', { name: 'Delete', exact: true }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Delete Chat', exact: true }).click()
+  await expect(beta).toHaveAttribute('aria-expanded', 'true')
+  await expect(page.getByRole('button', { name: `Open chat ${otherProjectChat.title}`, exact: true })).toBeFocused()
 })
 
 test('creates Work sessions for an empty Work collection and the New task action', async () => {

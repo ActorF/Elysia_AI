@@ -1,6 +1,9 @@
 /** Present explicit native desktop gestures with complete one-time reviews and redacted decision history. */
 
 import { useEffect, useRef, useState } from 'react'
+import { getDateLocale, useTranslation } from '../i18n/LocaleProvider.tsx'
+import { formatUiError } from '../i18n/ui-error.ts'
+import { HelpHint } from '../design-system/HelpHint.tsx'
 import type { WorkDesktopClient, WorkDesktopState, WorkDesktopAuditEntry } from '../../electron/work-desktop-protocol.ts'
 import './DesktopToolsPanel.css'
 
@@ -18,6 +21,7 @@ interface DesktopToolsPanelProps {
 
 /** Review exact native actions independently of model output, file tools, and plan permissions. */
 export function DesktopToolsPanel({ api, chatId, workspacePath, ready, disabled, onBusyChange, onAttention }: DesktopToolsPanelProps) {
+  const { t } = useTranslation()
   const [state, setState] = useState<WorkDesktopState | null>(null)
   const [text, setText] = useState('')
   const [pending, setPending] = useState(false)
@@ -97,67 +101,66 @@ export function DesktopToolsPanel({ api, chatId, workspacePath, ready, disabled,
           : result.applied === null ? 'The native app reported an error after starting. Check its state before retrying.'
             : 'Desktop action failed before completion.'
 
-  return <section className="desktop-tools" aria-label="Desktop tools" aria-busy={pending}>
-    <p>Each approval applies to one action only.</p>
+  return <section className="desktop-tools" aria-label={t("Desktop tools")} aria-busy={pending}>
+    <HelpHint label={t("Desktop tools")}>{t("Each approval applies to one action only.")}</HelpHint>
     <div className="desktop-tool-groups">
-      <section className="desktop-tool-group" aria-label="Apps and windows">
-        <h4>Apps &amp; windows</h4>
+      <section className="desktop-tool-group" aria-label={t("Apps and windows")}>
+        <h4>{t("Apps & windows")}</h4>
         <div className="desktop-tools-actions desktop-tools-action-list">
-          <button type="button" disabled={locked || workspacePath === null} onClick={() => { void act((client) => client.chooseDesktopDocument(chatId)) }}>Choose document to review</button>
-          <button type="button" disabled={locked} onClick={() => { void act((client) => client.previewDesktopNotepad(chatId)) }}>Review opening Notepad</button>
-          <button type="button" disabled={locked} onClick={() => { void act((client) => client.listDesktopWindows(chatId)) }}>List window names</button>
+          <button type="button" disabled={locked || workspacePath === null} onClick={() => { void act((client) => client.chooseDesktopDocument(chatId)) }}>{t("Choose document to review")}</button>
+          <button type="button" disabled={locked} onClick={() => { void act((client) => client.previewDesktopNotepad(chatId)) }}>{t("Review opening Notepad")}</button>
+          <button type="button" disabled={locked} onClick={() => { void act((client) => client.listDesktopWindows(chatId)) }}>{t("List window names")}</button>
         </div>
       </section>
-      <section className="desktop-tool-group" aria-label="Clipboard actions">
-        <div className="desktop-tool-group-heading"><h4>Clipboard</h4>
-          <button type="button" className="tool-quiet" disabled={locked} onClick={() => { void act((client) => client.readDesktopClipboard(chatId)) }}>Read clipboard text</button></div>
+      <section className="desktop-tool-group" aria-label={t("Clipboard actions")}>
+        <div className="desktop-tool-group-heading"><h4>{t("Clipboard")}</h4>
+          <button type="button" className="tool-quiet" disabled={locked} onClick={() => { void act((client) => client.readDesktopClipboard(chatId)) }}>{t("Read clipboard text")}</button></div>
         {visible?.clipboardText !== null && visible?.clipboardText !== undefined && <div>
-          <strong>{visible.clipboardText === '' ? 'Clipboard was empty on your last click.' : 'Clipboard text read on your last click'}</strong>
-          <pre aria-label="Read clipboard text">{visible.clipboardText}</pre>
+          <strong>{visible.clipboardText === '' ? t("Clipboard was empty on your last click.") : t("Clipboard text read on your last click")}</strong>
+          <pre aria-label={t("Read clipboard text")}>{visible.clipboardText}</pre>
         </div>}
-        <label className="desktop-clipboard-label">Text to put on clipboard
-          <textarea rows={3} value={text} disabled={locked} maxLength={32768}
+        <label className="desktop-clipboard-label">{t("Text to put on clipboard")}<textarea rows={3} value={text} disabled={locked} maxLength={32768}
             onChange={(event) => { setText(event.target.value); setPreviewHidden(true) }} />
         </label>
         <button type="button" disabled={locked || text.trim() === ''} onClick={() => {
           void act((client) => client.previewDesktopClipboard({ chatId, text }))
-        }}>Review clipboard replacement</button>
+        }}>{t("Review clipboard replacement")}</button>
       </section>
     </div>
-    {approval !== null && approval !== undefined && <section aria-label="Desktop action review" className="desktop-action-review">
-      <strong>{approval.preview.action} · {approval.risk} risk</strong>
-      <p>{approval.preview.impact}</p>
-      <pre aria-label="Exact desktop action">{approval.preview.action === 'clipboard.write'
+    {approval !== null && approval !== undefined && <section aria-label={t("Desktop action review")} className="desktop-action-review">
+      <strong>{t('{action} · {risk} risk', { action: t(approval.preview.action), risk: t(approval.risk) })}</strong>
+      <p>{t(approval.preview.impact)}</p>
+      <pre aria-label={t("Exact desktop action")}>{approval.preview.action === 'clipboard.write'
         ? approval.preview.text : JSON.stringify(approval.preview, null, 2)}</pre>
-      <small>Expires {approval.expiresAt}. Approve once or deny.</small>
+      <small>{t('Expires {expires}. Approve once or deny.', { expires: new Date(approval.expiresAt).toLocaleString(getDateLocale()) })}</small>
       <div className="desktop-tools-actions">
         <button type="button" className="tool-primary" disabled={locked} onClick={() => { void act((client) => client.decideDesktopAction({
-          chatId, approvalId: approval.approvalId, granted: true }), true) }}>Approve desktop action once</button>
+          chatId, approvalId: approval.approvalId, granted: true }), true) }}>{t("Approve desktop action once")}</button>
         <button type="button" disabled={locked} onClick={() => { void act((client) => client.decideDesktopAction({
-          chatId, approvalId: approval.approvalId, granted: false }), true) }}>Deny desktop action</button>
-        <button type="button" disabled={locked} onClick={() => { setPreviewHidden(true) }}>Edit and prepare a new review</button>
+          chatId, approvalId: approval.approvalId, granted: false }), true) }}>{t("Deny desktop action")}</button>
+        <button type="button" disabled={locked} onClick={() => { setPreviewHidden(true) }}>{t("Edit and prepare a new review")}</button>
       </div>
     </section>}
     {(visible?.windows.length ?? 0) > 0 && <fieldset disabled={locked}>
-      <legend>Select one window name</legend>
-      <p>Selection records metadata only. It does not capture the window.</p>
+      <legend>{t("Select one window name")}</legend>
+      <HelpHint label={t("Select one window name")}>{t("Selection records metadata only. It does not capture the window.")}</HelpHint>
       {visible!.windows.map((window) => <button type="button" key={window.selectionId} onClick={() => {
         void act((client) => client.selectDesktopWindow({ chatId, selectionId: window.selectionId }))
       }}>{window.title}</button>)}
     </fieldset>}
-    {visible?.selectedWindow && <p>Selected window name: {visible.selectedWindow.title}. No capture permission was granted.</p>}
-    {resultText !== null && <p role="status">{resultText}{result?.error ? ` (${result.error})` : ''}</p>}
-    {error !== null && <p role="alert">{error}</p>}
+    {visible?.selectedWindow && <p>{t('Selected window name: {name}. No capture permission was granted.', { name: visible.selectedWindow.title })}</p>}
+    {resultText !== null && <p role="status">{t(resultText)}{result?.error ? ` (${t(result.error)})` : ''}</p>}
+    {error !== null && <p role="alert">{formatUiError(error)}</p>}
     <div className="desktop-tools-footer">
-      <button type="button" className="tool-quiet" disabled={locked} onClick={() => { void loadHistory() }}>Load desktop decision history</button>
-      <button type="button" className="tool-quiet" disabled={locked} onClick={() => { void act((client) => client.getWorkDesktopState(chatId)) }}>Reload desktop tools</button>
+      <button type="button" className="tool-quiet" disabled={locked} onClick={() => { void loadHistory() }}>{t("Load desktop decision history")}</button>
+      <button type="button" className="tool-quiet" disabled={locked} onClick={() => { void act((client) => client.getWorkDesktopState(chatId)) }}>{t("Reload desktop tools")}</button>
     </div>
-    {history !== null && <section aria-label="Desktop decision history">
-      <p>History records metadata; clipboard and document contents are omitted.</p>
-      {history.truncated && <p>Older records are outside the retained history.</p>}
-      {history.entries.length === 0 ? <p>No desktop decisions recorded.</p> : <ol>{history.entries.map((entry, index) =>
+    {history !== null && <section aria-label={t("Desktop decision history")}>
+      <HelpHint label={t("Desktop decision history")}>{t("History records metadata; clipboard and document contents are omitted.")}</HelpHint>
+      {history.truncated && <p>{t("Older records are outside the retained history.")}</p>}
+      {history.entries.length === 0 ? <p>{t("No desktop decisions recorded.")}</p> : <ol>{history.entries.map((entry, index) =>
         <li key={`${entry.actionId}:${entry.phase}:${index}`}>
-          {entry.timestamp} · {entry.action} · {entry.phase}{entry.error ? ` · ${entry.error}` : ''}
+          {new Date(entry.timestamp).toLocaleString(getDateLocale())} · {t(entry.action)} · {t(entry.phase)}{entry.error ? ` · ${t(entry.error)}` : ''}
           <pre>{JSON.stringify(entry.summary, null, 2)}</pre>
         </li>)}</ol>}
     </section>}

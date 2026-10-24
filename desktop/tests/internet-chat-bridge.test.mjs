@@ -59,6 +59,94 @@ test('Private wire accepts Main opt-in and rejects malformed Internet identities
   }
 })
 
+test('Retry research accepts only a native grant and resolves one fresh owned search', async () => {
+  const retry = { chatId, userMessageId: 'user_last', assistantMessageId: 'assistant_last', speakReply: false }
+  assert.equal(createRequest('retry', 'chat.retry', { ...retry, automaticInternet: true }).params.automaticInternet, true)
+  assert.throws(() => createRequest('retry', 'chat.retry', { ...retry, automaticInternet: 1 }))
+  for (const enabled of [false, true]) {
+    const calls = []
+    const { backend, writes } = fixture(async request => { calls.push(request); return { sources: [source], error: null } })
+    const { requestId } = backend.beginRetry({ ...retry, automaticInternet: true }, enabled)
+    assert.equal(writes[0].params.automaticInternet === true, enabled)
+    deliver(backend, { type: 'event', event: 'chat.research.status', requestId, data: { chatId, stage: 'planning' } })
+    assert.equal(backend.getSnapshot().activeGeneration.researchStage, 'planning')
+    deliver(backend, requestEvent(requestId))
+    deliver(backend, requestEvent(requestId))
+    await tick()
+    assert.equal(calls.length, enabled ? 1 : 0)
+    assert.equal(writes.at(-1).method, 'chat.internet.resolve')
+    assert.equal(writes.at(-1).params.requestId, requestId)
+    assert.deepEqual(writes.at(-1).params.sources, enabled ? [source] : [])
+  }
+})
+
+test('Weather wire requires a bounded kind and forecast date while accepting provider evidence', () => {
+  for (const when of [undefined, 'now', 'today', 'tomorrow']) {
+    const message = requestEvent('generation', { kind: 'weather', query: 'Chicago', ...(when === undefined ? {} : { when }) })
+    assert.deepEqual(parseServerMessage({ protocol, ...message }).data, message.data)
+  }
+  assert.equal(parseChatInternetResolveParams({ requestId: 'generation', chatId, searchId,
+    sources: [{ ...source, provider: 'weather' }], error: null }).sources[0].provider, 'weather')
+  for (const changes of [{ kind: 'shell' }, { kind: 'weather', when: 'next year' }, { when: 'today' }, { kind: 'search', when: 'now' }]) {
+    assert.throws(() => parseServerMessage({ protocol, ...requestEvent('generation', changes) }))
+  }
+})
+
+test('Research status is bounded, renderer-safe and owned by one active generation', () => {
+  const { backend, events } = fixture()
+  const { requestId } = backend.beginChat(chat, true)
+  const status = (stage, changes = {}) => ({ type: 'event', event: 'chat.research.status', requestId,
+    data: { chatId, stage }, ...changes })
+  for (const stage of ['planning', 'searching', 'weather', 'reading', 'answering', 'failed']) {
+    deliver(backend, status(stage))
+    assert.equal(backend.getSnapshot().activeGeneration.researchStage, stage)
+  }
+  deliver(backend, status('planning', { requestId: 'unknown' }))
+  deliver(backend, status('planning', { data: { chatId: 'chat_other', stage: 'planning' } }))
+  assert.equal(backend.getSnapshot().activeGeneration.researchStage, 'failed')
+  assert.equal(events.some(event => event.type === 'protocol-event'), false)
+  for (const data of [{ chatId, stage: 'shell' }, { chatId, stage: 'reading', query: 'private' }]) {
+    assert.throws(() => parseServerMessage({ protocol, ...status('reading'), data }))
+  }
+  deliver(backend, { type: 'event', event: 'chat.completed', requestId, data: { chatId } })
+  deliver(backend, status('reading'))
+  assert.equal(backend.getSnapshot().activeGeneration.researchStage, undefined)
+})
+
+test('Reading callbacks cannot resurrect progress after Stop, navigation or terminal completion', async () => {
+  for (const boundary of ['stop', 'navigation', 'completed']) {
+    const held = deferred()
+    let onReading, stopping
+    const { backend } = fixture((_request, _signal, progress) => { onReading = progress; return held.promise })
+    const { requestId } = backend.beginChat(chat, true)
+    deliver(backend, requestEvent(requestId))
+    onReading()
+    assert.equal(backend.getSnapshot().activeGeneration.researchStage, 'reading')
+    if (boundary === 'stop') stopping = backend.stopGeneration(requestId)
+    else if (boundary === 'navigation') backend.snapshot.chatId = 'chat_other'
+    else deliver(backend, { type: 'event', event: 'chat.completed', requestId, data: { chatId } })
+    const revision = backend.getSnapshot().revision
+    onReading()
+    assert.equal(backend.getSnapshot().revision, revision)
+    if (boundary !== 'navigation') assert.equal(backend.getSnapshot().activeGeneration.researchStage, undefined)
+    held.resolve({ sources: [], error: 'cancelled' })
+    await tick()
+    backend.fail('Synthetic research cleanup')
+    if (stopping) await assert.rejects(stopping)
+  }
+})
+
+test('A settled native search cannot replace the model answering stage with late reading progress', async () => {
+  let onReading
+  const { backend } = fixture(async (_request, _signal, progress) => { onReading = progress; return { sources: [source], error: null } })
+  const { requestId } = backend.beginChat(chat, true)
+  deliver(backend, requestEvent(requestId))
+  await tick()
+  deliver(backend, { type: 'event', event: 'chat.research.status', requestId, data: { chatId, stage: 'answering' } })
+  onReading()
+  assert.equal(backend.getSnapshot().activeGeneration.researchStage, 'answering')
+})
+
 test('A generation requires native opt-in, the capability and a configured native callback', async () => {
   for (const [enabled, capabilities, configured] of [[false, ['chat.internet'], true], [true, [], true], [true, ['chat.internet'], false]]) {
     let calls = 0

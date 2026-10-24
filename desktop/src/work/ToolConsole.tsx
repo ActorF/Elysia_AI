@@ -7,6 +7,8 @@
  */
 
 import { useEffect, useRef, useState } from 'react'
+import { useTranslation } from '../i18n/LocaleProvider.tsx'
+import { formatUiError } from '../i18n/ui-error.ts'
 import {
   parseWorkToolCall,
   type WorkToolDescriptor,
@@ -21,6 +23,7 @@ import {
 } from '../../electron/work-tool-protocol.ts'
 import './ToolConsole.css'
 import { ApprovalPreview } from './ApprovalPreview.tsx'
+import { HelpHint } from '../design-system/HelpHint.tsx'
 
 interface ToolConsoleApi {
   /** Execute one explicitly supplied scoped call and return a validated outcome. */
@@ -69,6 +72,7 @@ const READ_TOOLS = new Set<WorkToolId>(['list_directory', 'read_text', 'search_f
 /** Present explicit calls, escaped outcomes, and exact write previews before consent. */
 export function ToolConsole({ api, chatId, workspacePath, ready, readAvailable, previewAvailable, confirmAvailable,
   disabled, tools, planAvailable, planActive, planQueueFull, onAddToPlan, onBusyChange, onAttention }: ToolConsoleProps) {
+  const { t } = useTranslation()
   const [selectedTool, setSelectedTool] = useState<WorkToolId>('list_directory')
   const [path, setPath] = useState('')
   const [query, setQuery] = useState('')
@@ -193,25 +197,25 @@ export function ToolConsole({ api, chatId, workspacePath, ready, readAvailable, 
     ? approval.approval : null
 
   return (
-    <section className="work-tool-console" aria-label="File tools">
-      <p className="work-section-hint">Read files, preview changes, or add a plan step.</p>
-      {workspacePath === null && <p>Choose a Workspace to enable file tools.</p>}
+    <section className="work-tool-console" aria-label={t("File tools")}>
+      <HelpHint label={t("File tools")}>{t("Read files, preview changes, or add a plan step.")}</HelpHint>
+      {workspacePath === null && <p>{t("Choose a Workspace to enable file tools.")}</p>}
       <form onSubmit={(event) => { event.preventDefault(); void run() }} aria-busy={pending}>
         <fieldset disabled={blocked}>
           <label>
-            <span>Work tool</span>
-            <select aria-label="Work tool" value={activeTool?.toolId ?? ''} onChange={(event) => {
+            <span>{t("Work tool")}</span>
+            <select aria-label={t("Work tool")} value={activeTool?.toolId ?? ''} onChange={(event) => {
               const next = event.currentTarget.value as WorkToolId
               if (tools.some((tool) => tool.toolId === next)) {
                 setSelectedTool(next)
                 invalidateDraft()
               }
             }}>
-              {tools.map((tool) => <option key={tool.toolId} value={tool.toolId}>{tool.name}</option>)}
+              {tools.map((tool) => <option key={tool.toolId} value={tool.toolId}>{t(tool.toolId)}</option>)}
             </select>
           </label>
           <label>
-            <span>Relative path</span>
+            <span>{t("Relative path")}</span>
             <input ref={pathInputRef} value={path} maxLength={4096} placeholder="docs/notes.md"
               required={activeTool?.toolId === 'read_text' || isWrite} onChange={(event) => {
                 setPath(event.currentTarget.value); invalidateDraft()
@@ -219,7 +223,7 @@ export function ToolConsole({ api, chatId, workspacePath, ready, readAvailable, 
           </label>
           {activeTool?.toolId === 'search_files' && (
             <label>
-              <span>Filename contains</span>
+              <span>{t("Filename contains")}</span>
               <input value={query} maxLength={256} required onChange={(event) => {
                 setQuery(event.currentTarget.value); invalidateDraft()
               }} />
@@ -227,7 +231,7 @@ export function ToolConsole({ api, chatId, workspacePath, ready, readAvailable, 
           )}
           {activeTool?.toolId === 'move' && (
             <label>
-              <span>Destination path</span>
+              <span>{t("Destination path")}</span>
               <input value={destination} maxLength={4096} required onChange={(event) => {
                 setDestination(event.currentTarget.value); invalidateDraft()
               }} />
@@ -235,32 +239,32 @@ export function ToolConsole({ api, chatId, workspacePath, ready, readAvailable, 
           )}
           {(activeTool?.toolId === 'create' || activeTool?.toolId === 'edit') && (
             <label className="work-content-field">
-              <span>Complete file content</span>
+              <span>{t("Complete file content")}</span>
               <textarea value={content} maxLength={262144} rows={5} onChange={(event) => {
                 setContent(event.currentTarget.value); invalidateDraft()
               }} />
             </label>
           )}
           <div className="work-tool-actions"><button className="tool-primary" type="submit" disabled={isWrite ? !previewAvailable : !readAvailable}>
-            {pending ? 'Working…' : isWrite ? 'Prepare change' : 'Run tool'}
+            {pending ? t("Working…") : isWrite ? t("Prepare change") : t("Run tool")}
           </button>
           {planAvailable && <button type="button" disabled={planQueueFull} onClick={() => {
             try { onAddToPlan(draftCall()); setError(null) }
             catch { setError('Use valid tool parameters before adding a plan step.') }
-          }}>Add to plan</button>}</div>
+          }}>{t("Add to plan")}</button>}</div>
         </fieldset>
-        {!isWrite && activeTool?.toolId !== 'read_text' && <small>Leave the path empty to use the Workspace root.</small>}
+        {!isWrite && activeTool?.toolId !== 'read_text' && <small>{t("Leave the path empty to use the Workspace root.")}</small>}
       </form>
-      {error !== null && <p className="work-tool-error" role="alert">{error}</p>}
+      {error !== null && <p className="work-tool-error" role="alert">{formatUiError(error)}</p>}
       {visibleApproval !== null && (
         <ApprovalPreview key={visibleApproval.approvalId} approval={visibleApproval} disabled={blocked}
           confirmationAvailable={confirmAvailable} onDecision={(granted) => { void confirm(granted) }}
           onEdit={() => { invalidateDraft(); pathInputRef.current?.focus() }} />
       )}
       {visibleResult !== null && (
-        <section className="work-tool-result" aria-label="Work tool result">
-          <strong role="status">{visibleResult.status === 'succeeded' ? 'Completed' : visibleResult.status}</strong>
-          {visibleResult.error !== null && <p>{visibleResult.error.message}</p>}
+        <section className="work-tool-result" aria-label={t("Work tool result")}>
+          <strong role="status">{visibleResult.status === 'succeeded' ? t("Completed") : t(visibleResult.status)}</strong>
+          {visibleResult.error !== null && <p>{t(visibleResult.error.message)}</p>}
           {visibleResult.data !== null && <pre>{JSON.stringify(visibleResult.data, null, 2)}</pre>}
         </section>
       )}

@@ -144,6 +144,22 @@ class AppSettings:
         root = self.base_dir if self.data_root is None else self.data_root
         return ProductionDataLayout(root.absolute())
 
+    @property
+    def model_assets_root(self) -> Path:
+        """Keep packaged speech assets durable while preserving source installs.
+
+        Electron development also supplies a separate data root, so that alone
+        cannot identify an installed app. The package builder's manifest marks
+        the replaceable Backend tree. Existing source users retain their local
+        runtime/weight setup; packaged updates always reuse user-data models.
+        """
+
+        if self.data_root is not None and (
+            self.base_dir / "distribution-manifest.json"
+        ).is_file():
+            return self.data_layout.models
+        return self.base_dir.resolve() / "models"
+
 
 def parse_bool(value: str) -> bool:
     """Interpret common truthy environment-variable spellings.

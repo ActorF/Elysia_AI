@@ -66,7 +66,8 @@ test.afterEach(async () => { await application?.close(); application = undefined
 test('service forms start blank and invalid or denied inputs never call the bridge', async () => {
   await expect(page.getByRole('textbox', { name: 'Latitude', exact: true })).toHaveValue('')
   await expect(page.getByRole('textbox', { name: 'Longitude', exact: true })).toHaveValue('')
-  await expect(page.getByRole('region', { name: 'Weather lookup', exact: true })).toContainText('No location is detected automatically')
+  await page.getByRole('button', { name: 'Help: Location and weather data', exact: true }).click()
+  await expect(page.getByRole('tooltip')).toContainText('No location is detected automatically')
   await expect(page.getByRole('button', { name: 'Get weather', exact: true })).toBeDisabled()
   for (const latitude of ['91', 'NaN', '0x20', '1e2', '']) {
     await page.getByRole('textbox', { name: 'Latitude', exact: true }).fill(latitude)

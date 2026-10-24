@@ -1,5 +1,5 @@
 /**
- * Elysia's restrained rose visual tokens for system-native light and dark themes.
+ * Elysia's pearl-white, rose and crystal-lilac surfaces with quiet champagne trim.
  *
  * Components consume semantic tokens only. Theme-specific values live in this
  * file so light and dark themes cannot drift into component styles.
@@ -15,16 +15,16 @@
   --font-family-mono:
     "Cascadia Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   --font-size-xs: 0.75rem;
-  --font-size-sm: 0.8125rem;
-  --font-size-md: 0.875rem;
+  --font-size-sm: 0.875rem;
+  --font-size-md: 0.9375rem;
   --font-size-lg: 1rem;
   --font-size-xl: 1.25rem;
   --font-size-2xl: 1.5rem;
-  --font-size-3xl: 2rem;
+  --font-size-3xl: 1.75rem;
   --line-height-tight: 1.2;
   --line-height-snug: 1.35;
-  --line-height-normal: 1.5;
-  --line-height-relaxed: 1.7;
+  --line-height-normal: 1.6;
+  --line-height-relaxed: 1.75;
   --font-weight-regular: 400;
   --font-weight-medium: 500;
   --font-weight-semibold: 600;
@@ -47,15 +47,15 @@
 
   /* Shape and control sizing */
   --radius-none: 0;
-  --radius-sm: 0.375rem;
-  --radius-md: 0.625rem;
-  --radius-lg: 0.875rem;
-  --radius-xl: 1.125rem;
-  --radius-2xl: 1.5rem;
+  --radius-sm: 0.25rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.625rem;
+  --radius-xl: 0.75rem;
+  --radius-2xl: 0.75rem;
   --radius-full: 999rem;
   --control-height-sm: 2rem;
-  --control-height-md: 2.5rem;
-  --control-height-lg: 2.75rem;
+  --control-height-md: 2.25rem;
+  --control-height-lg: 2.5rem;
   --control-hit-target: 2.75rem;
   --icon-size-sm: 1rem;
   --icon-size-md: 1.25rem;
@@ -79,56 +79,63 @@
 
   /* App-shell layout */
   --layout-window-min-width: 20rem;
-  --layout-sidebar-width: 15.5rem;
+  --layout-sidebar-width: 19.5rem;
   --layout-sidebar-compact-width: 4.5rem;
   --layout-character-panel-width: 20.25rem;
   --layout-header-height: 3.75rem;
-  --layout-content-max-width: 48rem;
+  --layout-content-max-width: 56rem;
   --layout-settings-max-width: 52rem;
-  --layout-composer-max-width: 48rem;
+  --layout-composer-max-width: 56rem;
   --layout-main-min-width: 20rem;
   --layout-compact-breakpoint: 65rem;
 
-  /* A faint plum tint connects dark surfaces to the character's rose palette. */
-  --theme-color: #242125;
-  --color-bg-canvas: #242125;
-  --color-bg-sidebar: #1c191d;
-  --color-bg-surface: #2b272c;
-  --color-bg-raised: #343035;
-  --color-bg-hover: #3b353c;
-  --color-bg-active: #443c46;
-  --color-bg-soft: rgb(237 168 202 / 5%);
-  --color-bg-overlay: rgb(14 11 15 / 66%);
-  --color-text-primary: #f6f1f4;
-  --color-text-secondary: #c9c1c7;
-  --color-text-muted: #a99da6;
-  --color-text-disabled: #756b72;
-  --color-text-inverse: #292028;
-  --color-text-link: #f1b8d3;
-  --color-border: rgb(255 243 250 / 9%);
-  --color-border-strong: rgb(255 243 250 / 17%);
-  --color-border-focus: #eda8ca;
+  /* Window chrome is darker than reading surfaces. Keeping it separate from
+     canvas lets the rounded content frame remain visible without a heavy line. */
+  --theme-color: #19141f;
+  --color-bg-window: #19141f;
+  --color-bg-canvas: #2b2331;
+  --color-bg-sidebar: #211a27;
+  --color-bg-surface: #382d3e;
+  --color-bg-raised: #413347;
+  --color-bg-hover: #49394e;
+  --color-bg-active: #4f3858;
+  --color-bg-message: #443044;
+  --color-bg-soft: rgb(240 172 205 / 7%);
+  --color-bg-overlay: rgb(20 13 26 / 64%);
+  --color-text-primary: #faeff5;
+  --color-text-secondary: #d4c0d1;
+  --color-text-muted: #bfa7bd;
+  --color-text-disabled: #8f758a;
+  --color-text-inverse: #342132;
+  --color-text-link: #f4b9d6;
+  --color-border: rgb(232 188 212 / 14%);
+  --color-border-strong: rgb(232 188 212 / 28%);
+  /* Champagne outlines only the shared frame; controls retain rose outlines
+     so the decorative trim cannot be mistaken for warning or focus state. */
+  --color-border-frame: rgb(215 187 150 / 19%);
+  --color-border-focus: #f0accd;
 
-  /* Rose marks actions; soft fills keep the character identity unobtrusive. */
-  --color-accent: #eda8ca;
-  --color-accent-hover: #f5c0d9;
-  --color-accent-soft: rgb(237 168 202 / 8%);
-  --color-accent-secondary: #bba6d8;
-  --color-accent-contrast: #292028;
+  /* Pink identifies actions; lavender remains a quiet supporting accent.
+     Status colors retain their meaning instead of becoming decorative pink. */
+  --color-accent: #f0accd;
+  --color-accent-hover: #f8c3dc;
+  --color-accent-soft: rgb(240 172 205 / 10%);
+  --color-accent-secondary: #bda3d8;
+  --color-accent-contrast: #342132;
   --color-brand: var(--color-accent);
   --color-brand-soft: var(--color-accent-soft);
-  --color-success: #8acdaa;
-  --color-success-soft: rgb(138 205 170 / 10%);
-  --color-warning: #e9c17c;
-  --color-warning-soft: rgb(233 193 124 / 10%);
-  --color-danger: #f39a9f;
-  --color-danger-soft: rgb(243 154 159 / 10%);
-  --color-info: #a5c1e9;
-  --color-info-soft: rgb(165 193 233 / 10%);
-  --color-selection-bg: #eda8ca;
-  --color-selection-text: #292028;
-  --color-scrollbar: rgb(255 243 250 / 20%);
-  --color-scrollbar-hover: rgb(255 243 250 / 32%);
+  --color-success: #a3d2be;
+  --color-success-soft: rgb(163 210 190 / 10%);
+  --color-warning: #e9c68d;
+  --color-warning-soft: rgb(233 198 141 / 10%);
+  --color-danger: #f2a4b3;
+  --color-danger-soft: rgb(242 164 179 / 10%);
+  --color-info: #b1c6e5;
+  --color-info-soft: rgb(177 198 229 / 10%);
+  --color-selection-bg: #f0accd;
+  --color-selection-text: #342132;
+  --color-scrollbar: rgb(212 192 209 / 24%);
+  --color-scrollbar-hover: rgb(212 192 209 / 40%);
 
   /* Feedback-state aliases keep components independent of palette names. */
   --color-state-loading: var(--color-info);
@@ -175,47 +182,50 @@
 
 :root[data-theme="light"] {
   color-scheme: light;
-  --theme-color: #fcfafb;
-  --color-bg-canvas: #fcfafb;
-  --color-bg-sidebar: #f5f1f4;
-  --color-bg-surface: #ffffff;
-  --color-bg-raised: #ffffff;
-  --color-bg-hover: #f0e8ed;
-  --color-bg-active: #eadde5;
-  --color-bg-soft: rgb(180 81 130 / 4%);
-  --color-bg-overlay: rgb(29 22 28 / 36%);
-  --color-text-primary: #2c252b;
-  --color-text-secondary: #60565e;
-  --color-text-muted: #786b74;
-  --color-text-disabled: #a49ba2;
+  --theme-color: #ebe0ec;
+  --color-bg-window: #ebe0ec;
+  --color-bg-canvas: #fffbfd;
+  --color-bg-sidebar: #f4e9f1;
+  --color-bg-surface: #fffefe;
+  --color-bg-raised: #fffefe;
+  --color-bg-hover: #eee0ee;
+  --color-bg-active: #e8d5ec;
+  --color-bg-message: #f8e9f1;
+  --color-bg-soft: rgb(150 53 98 / 5%);
+  --color-bg-overlay: rgb(42 25 44 / 34%);
+  --color-text-primary: #382b38;
+  --color-text-secondary: #5f4d5e;
+  --color-text-muted: #625260;
+  --color-text-disabled: #ae95a5;
   --color-text-inverse: #ffffff;
-  --color-text-link: #974169;
-  --color-border: rgb(51 36 47 / 9%);
-  --color-border-strong: rgb(51 36 47 / 17%);
-  --color-border-focus: #b45182;
-  --color-accent: #b45182;
-  --color-accent-hover: #9c3f6b;
-  --color-accent-soft: rgb(180 81 130 / 6%);
-  --color-accent-secondary: #8060ae;
+  --color-text-link: #90345f;
+  --color-border: rgb(110 67 96 / 13%);
+  --color-border-strong: rgb(110 67 96 / 29%);
+  --color-border-frame: rgb(167 131 87 / 28%);
+  --color-border-focus: #963562;
+  --color-accent: #963562;
+  --color-accent-hover: #7c2c52;
+  --color-accent-soft: rgb(150 53 98 / 9%);
+  --color-accent-secondary: #92749a;
   --color-accent-contrast: #ffffff;
-  --color-success: #286a4b;
-  --color-success-soft: rgb(40 106 75 / 8%);
-  --color-warning: #875b12;
-  --color-warning-soft: rgb(135 91 18 / 8%);
-  --color-danger: #b23948;
-  --color-danger-soft: rgb(178 57 72 / 8%);
-  --color-info: #355f99;
-  --color-info-soft: rgb(53 95 153 / 8%);
-  --color-selection-bg: #b45182;
+  --color-success: #336d59;
+  --color-success-soft: rgb(51 109 89 / 8%);
+  --color-warning: #805c23;
+  --color-warning-soft: rgb(128 92 35 / 8%);
+  --color-danger: #a8324c;
+  --color-danger-soft: rgb(168 50 76 / 8%);
+  --color-info: #4b658d;
+  --color-info-soft: rgb(75 101 141 / 8%);
+  --color-selection-bg: #963562;
   --color-selection-text: #ffffff;
-  --color-scrollbar: rgb(51 36 47 / 20%);
-  --color-scrollbar-hover: rgb(51 36 47 / 32%);
-  --shadow-sm: 0 1px 3px rgb(20 20 25 / 5%);
-  --shadow-md: 0 6px 20px rgb(20 20 25 / 7%);
-  --shadow-lg: 0 16px 40px rgb(20 20 25 / 10%);
+  --color-scrollbar: rgb(110 67 96 / 23%);
+  --color-scrollbar-hover: rgb(110 67 96 / 38%);
+  --shadow-sm: 0 1px 3px rgb(78 40 65 / 5%);
+  --shadow-md: 0 6px 20px rgb(78 40 65 / 8%);
+  --shadow-lg: 0 16px 40px rgb(78 40 65 / 11%);
   --shadow-floating:
-    0 18px 55px rgb(20 20 25 / 11%),
-    0 2px 8px rgb(20 20 25 / 5%);
+    0 18px 55px rgb(78 40 65 / 12%),
+    0 2px 8px rgb(78 40 65 / 5%);
 }
 
 :root[data-theme="dark"] {

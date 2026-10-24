@@ -1,7 +1,9 @@
 /**
  * @fileoverview Render a themed select-only model combobox with a viewport-bound
- * listbox, keyboard navigation, and an original rounded petal mark.
+ * listbox and keyboard navigation.
  */
+
+import { t, useLocale } from '../i18n/LocaleProvider.tsx'
 
 import {
   useId,
@@ -60,21 +62,12 @@ function measurePopup(trigger: HTMLElement): PopupPlacement {
   }
 }
 
-function PetalMark() {
-  return (
-    <svg className="elysia-model-mark" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <ellipse cx="12" cy="12" rx="5.5" ry="9" transform="rotate(-40 12 12)" />
-      <ellipse cx="12" cy="12" rx="5.5" ry="9" transform="rotate(40 12 12)" />
-      <circle cx="12" cy="12" r="1.8" />
-    </svg>
-  )
-}
-
 /**
  * Select one available model without changing it during navigation. Focus stays
  * on the combobox; Enter, Space, Tab, or a pointer selection commits the option.
  */
 export function ModelPicker({ value, options, disabled, onChange }: ModelPickerProps) {
+  useLocale()
   const listboxId = useId()
   const triggerRef = useRef<HTMLButtonElement>(null)
   const popupRef = useRef<HTMLDivElement>(null)
@@ -207,7 +200,7 @@ export function ModelPicker({ value, options, disabled, onChange }: ModelPickerP
         ref={triggerRef}
         type="button"
         role="combobox"
-        aria-label="AI model"
+        aria-label={t("AI model")}
         aria-haspopup="listbox"
         aria-disabled={!available}
         aria-expanded={open}
@@ -219,7 +212,7 @@ export function ModelPicker({ value, options, disabled, onChange }: ModelPickerP
         // ARIA plus guarded handlers preserves the current focus without a
         // deferred restoration that could steal the user's next interaction.
         tabIndex={available ? 0 : -1}
-        title={value || 'No model'}
+        title={value || t("No model")}
         onClick={() => {
           if (open) setInteraction({ available, open: false })
           else openPopup()
@@ -227,8 +220,7 @@ export function ModelPicker({ value, options, disabled, onChange }: ModelPickerP
         onKeyDown={handleKeyDown}
         onBlur={() => { setInteraction({ available, open: false }) }}
       >
-        <PetalMark />
-        <span className="elysia-model-value">{value || 'No model'}</span>
+        <span className="elysia-model-value">{value || t("No model")}</span>
         <svg className="elysia-model-chevron" viewBox="0 0 16 16" fill="none" aria-hidden="true">
           <path d="m5 9 3-3 3 3" />
         </svg>
@@ -245,10 +237,10 @@ export function ModelPicker({ value, options, disabled, onChange }: ModelPickerP
           }}
         >
           <div className="elysia-model-heading" aria-hidden="true">
-            <span>Choose a model</span>
-            <span>{options.length} available</span>
+            <span>{t("Choose a model")}</span>
+            <span>{options.length} {t("available")}</span>
           </div>
-          <div id={listboxId} role="listbox" aria-label="AI models" className="elysia-model-options">
+          <div id={listboxId} role="listbox" aria-label={t("AI models")} className="elysia-model-options">
             {options.map((option, index) => (
               <div
                 id={`${listboxId}-${index}`}

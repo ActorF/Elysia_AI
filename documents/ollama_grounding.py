@@ -39,6 +39,7 @@ from .grounding import (
     GroundedAnswerRequest,
     GroundedAnswerUnavailableError,
     GroundedAnswerValidationError,
+    _MODEL_TAG_PATTERN,
     _snapshot_request,
 )
 from .ollama_embedding import (
@@ -63,7 +64,6 @@ MAX_OLLAMA_GROUNDED_MODEL_RECORDS: Final = 4_096
 _PROVIDER: Final = "ollama"
 _ADAPTER_ID: Final = "ollama-grounding-http"
 _ADAPTER_VERSION: Final = "1.0.0"
-_MODEL_TAG_PATTERN: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:+-]{0,199}$")
 _DIGEST_PATTERN: Final = re.compile(r"^[0-9a-f]{64}$")
 _SERVICE_UNAVAILABLE_MESSAGE: Final = (
     "Local grounded-answer service is not running or reachable."
@@ -194,12 +194,17 @@ class OllamaGroundedAnswerConfig:
     max_response_body_bytes: int = DEFAULT_OLLAMA_GROUNDED_MAX_RESPONSE_BYTES
 
     def __post_init__(self) -> None:
-        """Reject mutable aliases, remote origins, and unbounded HTTP policy."""
+        """Reject malformed/cloud model names, remote origins, and unbounded I/O."""
+
+        # Defer the core import until configuration construction to avoid the
+        # core Brain -> documents import cycle while sharing local-model policy.
+        from core.local_ollama import is_cloud_ollama_model_name
 
         if (
             type(self.model_tag) is not str
             or self.model_tag != self.model_tag.strip()
             or _MODEL_TAG_PATTERN.fullmatch(self.model_tag) is None
+            or is_cloud_ollama_model_name(self.model_tag)
         ):
             raise ValueError("Ollama grounded-answer model_tag is invalid.")
         object.__setattr__(
@@ -353,6 +358,8 @@ class OllamaGroundedAnswerAdapter:
     def _read_model_digest(self) -> str:
         """Resolve one exact installed tag and reject conflicting tag records."""
 
+        from core.local_ollama import model_name_with_default_tag
+
         response = self._request_json(
             "GET",
             "/api/tags",
@@ -367,13 +374,15 @@ class OllamaGroundedAnswerAdapter:
         ):
             raise GroundedAnswerUnavailableError(_MODEL_UNAVAILABLE_MESSAGE)
 
+        requested_name = model_name_with_default_tag(self._config.model_tag)
         digests: list[str] = []
         for record in records:
             if type(record) is not dict:
                 continue
-            if self._config.model_tag not in (
-                record.get("name"),
-                record.get("model"),
+            if not any(
+                type(candidate) is str
+                and model_name_with_default_tag(candidate) == requested_name
+                for candidate in (record.get("name"), record.get("model"))
             ):
                 continue
             digest = record.get("digest")
@@ -391,8 +400,13 @@ class OllamaGroundedAnswerAdapter:
     ) -> str:
         """Validate Ollama completion state and return exact structured text."""
 
+        from core.local_ollama import model_name_with_default_tag
+
+        response_model = response.get("model")
         if (
-            response.get("model") != self._config.model_tag
+            type(response_model) is not str
+            or model_name_with_default_tag(response_model)
+            != model_name_with_default_tag(self._config.model_tag)
             or response.get("done") is not True
             or response.get("done_reason") != "stop"
         ):

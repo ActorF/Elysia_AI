@@ -1,7 +1,11 @@
 /**
- * Render message input, attachments, model selection, Song Cover progress,
- * feedback, and voice entry points. Privileged actions use callback props.
+ * Render one message card with attachments and CMD consent above the draft,
+ * permission controls on the left, and model, voice, and send actions on the
+ * right. Privileged actions and controlled drafts remain owned by callbacks.
  */
+
+import { t, useLocale } from '../i18n/LocaleProvider.tsx'
+import { formatUiError } from '../i18n/ui-error.ts'
 
 import {
   useLayoutEffect,
@@ -61,6 +65,8 @@ interface ComposerProps {
   voiceCallDisabled: boolean
   /** Open the persistent Vision workspace from the icon beside Add files. */
   screenshotControl?: ReactNode
+  /** Present only the current generation's native-owned CMD consent. */
+  workCommandApproval?: ReactNode
   onChooseAttachments(): void
   onDismissAttachmentError(): void
   onDismissNotice(): void
@@ -115,6 +121,7 @@ export function Composer({
   stopPending,
   voiceCallDisabled,
   screenshotControl,
+  workCommandApproval,
   onChooseAttachments,
   onDismissAttachmentError,
   onDismissNotice,
@@ -136,6 +143,7 @@ export function Composer({
   onStopSongCover,
   onToggleDictation,
 }: ComposerProps) {
+  useLocale()
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const attachmentTriggerRef = useRef<HTMLButtonElement | null>(null)
   const songCoverTriggerRef = useRef<HTMLButtonElement | null>(null)
@@ -150,9 +158,11 @@ export function Composer({
   const songCoverTriggerTitle = songCoverHidden
     ? 'Show Song Cover'
     : songCoverStartUnavailableMessage ?? 'Choose a song for Elysia to sing'
-  const displayedNotice = notice?.message ?? snapshot.error ?? null
+  const backendUnavailable = snapshot.status === 'error' || snapshot.status === 'stopped'
+  const displayedNotice = notice?.message ?? snapshot.error
+    ?? (backendUnavailable ? 'The local service is offline. Retry to reconnect.' : null)
   const noticeTone = notice?.tone
-    ?? (snapshot.error === undefined ? 'info' : 'error')
+    ?? (backendUnavailable || snapshot.error !== undefined ? 'error' : 'info')
   const attachmentInteractionDisabled = attachmentDisabled
     || attachmentAdding
     || attachmentRemovingIds.length > 0
@@ -164,8 +174,21 @@ export function Composer({
     if (textarea === null || !visible) {
       return
     }
-    textarea.style.height = 'auto'
-    textarea.style.height = `${Math.min(textarea.scrollHeight, 160)}px`
+    const resizeDraft = (): void => {
+      textarea.style.height = 'auto'
+      textarea.style.height = `${Math.min(textarea.scrollHeight, 160)}px`
+    }
+    resizeDraft()
+    let previousWidth = textarea.clientWidth
+    // Sidebars and zoom can reflow an unchanged draft. Observe only width so
+    // adjusting the textarea's own height cannot create a resize feedback loop.
+    const observer = new ResizeObserver(() => {
+      if (textarea.clientWidth === previousWidth) return
+      previousWidth = textarea.clientWidth
+      resizeDraft()
+    })
+    observer.observe(textarea)
+    return () => { observer.disconnect() }
   }, [draft, visible])
 
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>): void {
@@ -180,22 +203,22 @@ export function Composer({
   }
 
   return (
-    <footer className="composer-zone" aria-label="Message composer">
+    <footer className="composer-zone" aria-label={t("Message composer")}>
       {displayedNotice !== null && (
         <InlineAlert
           tone={noticeTone}
           onDismiss={notice !== null ? onDismissNotice : undefined}
           action={
-            notice === null && snapshot.error !== undefined
+            backendUnavailable || (notice === null && snapshot.error !== undefined)
               ? {
-                  label: retryPending ? 'Retrying…' : 'Retry',
+                  label: retryPending ? t("Retrying…") : t("Retry"),
                   onClick: onRetryConnection,
                   disabled: retryPending,
                 }
               : undefined
           }
         >
-          {displayedNotice}
+          {formatUiError(displayedNotice)}
         </InlineAlert>
       )}
 
@@ -235,9 +258,9 @@ export function Composer({
             onStop={onStopSongCover}
           />
         )}
+        {workCommandApproval}
         <label className="visually-hidden" htmlFor="chat-composer">
-          Message Elysia
-        </label>
+          {t("Message Elysia")}</label>
         <textarea
           ref={textareaRef}
           id="chat-composer"
@@ -247,8 +270,8 @@ export function Composer({
           onKeyDown={handleKeyDown}
           placeholder={
             snapshot.status === 'ready'
-              ? mode === 'work' ? '描述任务，或聊聊下一步…' : 'Message Elysia…'
-              : 'Waiting for the local Backend…'
+              ? mode === 'work' ? t("描述任务，或聊聊下一步…") : t("Message Elysia…")
+              : t("Waiting for the local Backend…")
           }
           disabled={snapshot.status !== 'ready'}
         />
@@ -260,12 +283,25 @@ export function Composer({
               className="tool-button composer-attachment-button"
               disabled={attachmentInteractionDisabled}
               onClick={onChooseAttachments}
-              aria-label="Choose files"
-              title={attachmentAdding ? 'Adding files…' : 'Add files'}
+              aria-label={t("Choose files")}
+              title={attachmentAdding ? t("Adding files…") : t("Add files")}
             >
               <Icon name={attachmentAdding ? 'refresh' : 'plus'} />
             </button>
             {screenshotControl}
+            {mode === 'work' && workOptions !== null && <div className="composer-work-options">
+              <WorkPermissionPicker
+                value={workOptions.permission}
+                disabled={workOptionsDisabled}
+                onChange={(permission) => onWorkOptionsChange({
+                  ...workOptions,
+                  permission,
+                })}
+              />
+            </div>}
+          </div>
+
+          <div className="composer-controls">
             <ModelPicker
               value={snapshot.modelName ?? ''}
               options={modelOptions}
@@ -277,21 +313,12 @@ export function Composer({
               }
               onChange={onSelectModel}
             />
-            {mode === 'work' && workOptions !== null && <div className="composer-work-options">
-              <WorkPermissionPicker
-                value={workOptions.permission}
-                disabled={workOptionsDisabled}
-                onChange={(permission) => onWorkOptionsChange({
-                  ...workOptions,
-                  permission,
-                })}
-              />
-              <button
+            {mode === 'work' && workOptions !== null && <button
                 type="button"
                 className="composer-thinking-button"
-                aria-label="Deep thinking"
+                aria-label={t("Deep thinking")}
                 aria-pressed={workOptions.thinking === 'deep'}
-                title={workOptions.thinking === 'deep' ? '关闭深度思考' : '开启深度思考'}
+                title={workOptions.thinking === 'deep' ? t("关闭深度思考") : t("开启深度思考")}
                 disabled={workOptionsDisabled}
                 onClick={() => onWorkOptionsChange({
                   ...workOptions,
@@ -299,101 +326,97 @@ export function Composer({
                 })}
               >
                 <Icon name="brain" />
-                <span>深度思考</span>
-                <span className="composer-thinking-state">
-                  {workOptions.thinking === 'deep' ? '已开启' : '已关闭'}
-                </span>
-              </button>
-            </div>}
-          </div>
-
-          <div className="voice-tools">
-            <span
-              className="song-cover-trigger"
-              title={songCoverTriggerTitle}
-            >
-              <button
-                ref={songCoverTriggerRef}
-                type="button"
-                className={`tool-button song-cover-button${songCoverHidden ? ' has-hidden-cover' : ''}`}
-                disabled={
-                  !songCoverHidden && (
-                    songCoverDisabled || songCoverStartUnavailableMessage !== null
-                  )
-                }
-                onClick={() => {
-                  if (songCoverHidden) {
-                    setHiddenSongCoverId(null)
-                    // During conversion the toolbar returns to a disabled
-                    // start button. Move focus into the restored card instead
-                    // of leaving keyboard users on a disabled control.
-                    requestAnimationFrame(() => { songCoverHideRef.current?.focus() })
-                  } else onOpenSongCoverSetup()
-                }}
-                aria-label={songCoverHidden ? 'Show Song Cover' : 'Song Cover'}
-                aria-expanded={songCoverId === null ? undefined : !songCoverHidden}
-                aria-describedby={songCoverStartUnavailableMessage === null || songCoverHidden
-                  ? undefined
-                  : 'song-cover-readiness-description'}
-                title={songCoverTriggerTitle}
+              </button>}
+            <div className="voice-tools">
+              <span
+                className="song-cover-trigger"
+                title={t(songCoverTriggerTitle)}
               >
-                <Icon name="music" />
-              </button>
-              {songCoverStartUnavailableMessage !== null && (
-                <span
-                  id="song-cover-readiness-description"
-                  className="visually-hidden"
+                <button
+                  ref={songCoverTriggerRef}
+                  type="button"
+                  className={`tool-button song-cover-button${songCoverHidden ? ' has-hidden-cover' : ''}`}
+                  disabled={
+                    !songCoverHidden && (
+                      songCoverDisabled || songCoverStartUnavailableMessage !== null
+                    )
+                  }
+                  onClick={() => {
+                    if (songCoverHidden) {
+                      setHiddenSongCoverId(null)
+                      // During conversion the toolbar returns to a disabled
+                      // start button. Move focus into the restored card instead
+                      // of leaving keyboard users on a disabled control.
+                      requestAnimationFrame(() => { songCoverHideRef.current?.focus() })
+                    } else onOpenSongCoverSetup()
+                  }}
+                  aria-label={songCoverHidden ? t("Show Song Cover") : t("Song Cover")}
+                  aria-expanded={songCoverId === null ? undefined : !songCoverHidden}
+                  aria-describedby={songCoverStartUnavailableMessage === null || songCoverHidden
+                    ? undefined
+                    : 'song-cover-readiness-description'}
+                  title={t(songCoverTriggerTitle)}
                 >
-                  {songCoverStartUnavailableMessage}
-                </span>
-              )}
-            </span>
-            <button
-              type="button"
-              className={'tool-button dictation-button' + (
-                dictationActive ? ' active' : ''
-              )}
-              disabled={!dictationActive && dictationDisabled}
-              onClick={onToggleDictation}
-              aria-label={dictationActive ? 'Stop dictation' : 'Dictate'}
-              aria-pressed={dictationActive}
-              title={dictationActive ? 'Stop dictation' : 'Dictate'}
-            >
-              <Icon name="microphone" />
-            </button>
-            <button
-              ref={callButtonRef}
-              type="button"
-              className="tool-button phone-button"
-              disabled={voiceCallDisabled}
-              onClick={onOpenCall}
-              aria-label="Voice Call"
-              title="Voice Call"
-            >
-              <Icon name="phone" />
-            </button>
-            {streaming ? (
+                  <Icon name="music" />
+                </button>
+                {songCoverStartUnavailableMessage !== null && (
+                  <span
+                    id="song-cover-readiness-description"
+                    className="visually-hidden"
+                  >
+                    {t(songCoverStartUnavailableMessage)}
+                  </span>
+                )}
+              </span>
               <button
                 type="button"
-                className="send-button stop-button"
-                disabled={stopPending}
-                onClick={onStop}
-                aria-label={stopPending ? 'Stopping generation' : 'Stop generation'}
-                title={stopPending ? 'Stopping…' : 'Stop generation'}
+                className={'tool-button dictation-button' + (
+                  dictationActive ? ' active' : ''
+                )}
+                disabled={!dictationActive && dictationDisabled}
+                onClick={onToggleDictation}
+                aria-label={dictationActive ? t("Stop dictation") : t("Dictate")}
+                aria-pressed={dictationActive}
+                title={dictationActive ? t("Stop dictation") : t("Dictate")}
               >
-                <Icon name="stop" />
+                <Icon name="microphone" />
               </button>
-            ) : (
               <button
+                ref={callButtonRef}
                 type="button"
-                className="send-button"
-                disabled={!canSend}
-                onClick={onSend}
-                aria-label="Send message"
+                className="tool-button phone-button"
+                disabled={voiceCallDisabled}
+                onClick={onOpenCall}
+                aria-label={t("Voice Call")}
+                title={t("Voice Call")}
               >
-                <Icon name="send" />
+                <Icon name="phone" />
               </button>
-            )}
+              {streaming ? (
+                <button
+                  type="button"
+                  className="send-button stop-button"
+                  disabled={stopPending}
+                  onClick={onStop}
+                  aria-label={stopPending ? t("Stopping generation") : t("Stop generation")}
+                  title={stopPending ? t("Stopping…") : t("Stop generation")}
+                >
+                  <Icon name="stop" />
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="send-button"
+                  disabled={!canSend}
+                  onClick={onSend}
+                  aria-label={t("Send message")}
+                >
+                  <svg className="composer-send-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <path d="M12 19V5m-6 6 6-6 6 6" />
+                  </svg>
+                </button>
+              )}
+            </div>
           </div>
         </div>
       </AttachmentSurface>

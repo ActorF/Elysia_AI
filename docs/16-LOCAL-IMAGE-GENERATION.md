@@ -1,6 +1,6 @@
 # 本地图片生成
 
-已接通受信生成核心、私有 ComfyUI 监督器、持久 Gallery、应用服务、Python Backend 路由、Electron 私有预览/原生导出、React 图片生成器、受信安装配置与 Readiness，以及跨模型 GPU 准入。真实模型、桌面预览和恢复验收的范围与证据见[真实环境验收记录](18-LOCAL-IMAGE-REAL-ACCEPTANCE.md)。
+已接通受信生成核心、私有 ComfyUI 监督器、持久 Gallery、应用服务、Python Backend 路由、Electron 私有预览/原生导出、React 图片生成器、受信安装配置与 Readiness，以及跨模型 GPU 准入。真实模型、桌面预览和恢复验收的范围与证据见[真实环境验收记录](image-runtime-validation.md#真实环境验收)。
 
 ## 架构与责任
 
@@ -192,7 +192,7 @@ Settings 的“图片生成”页以文件导入为主。折叠的高级安装�
 
 Windows 受管启动保留卷 GUID 文件身份，解释器的原生启动拼写使用同一卷的 `\\.\Volume{GUID}\...`；入口和模型仍使用受保护路径。私有工作目录为应用拥有的普通 DOS 路径，不具有这些文件的原生卷身份固定保证。Windows venv 重定向器不能通过该命名空间查找 `pyvenv.cfg`，因此需选择完整解释器。嵌入式 Python 的 `_pth` 需审查并使用安装内标准库与依赖的绝对路径，保持 CPython 原有安全 DLL 搜索标志。固定摘要保护解释器、ComfyUI 入口、Checkpoint 和所选 LoRA；第三方 DLL、标准库和 `site-packages` 属于受信完整安装，使用 Windows/CPython 常规路径解析，不享有上述卷身份固定保证。依赖清单与文件摘要审计不能视为进程沙箱或第三方代码无缺陷的证明。
 
-实际依赖摘要、模型许可和来源见[运行环境审计](17-LOCAL-IMAGE-RUNTIME-AUDIT.md)；本机真实生成、私有预览、导出、取消及持续运行的事实与范围见[真实验收记录](18-LOCAL-IMAGE-REAL-ACCEPTANCE.md)。
+实际依赖摘要、模型许可和来源见[运行环境审计](image-runtime-validation.md#运行环境审计)；本机真实生成、私有预览、导出、取消及持续运行的事实与范围见[真实验收记录](image-runtime-validation.md#真实环境验收)。
 
 Windows 便携 Python 可先用 `scripts/prepare_image_python.py --python <完整绝对路径> --runtime-root <ComfyUI绝对路径>` 预览静态准备计划；仅在审核来源与依赖目录后增加 `--apply`。工具保留带原始摘要的备份，拒绝逃逸目录、重定向文件及额外执行指令。Settings 的 Readiness 会明确提示尚未准备的环境。
 
@@ -225,4 +225,4 @@ npm run test:contract
 npm run test:image
 ```
 
-本机真实模型、显存峰值、取消与持续运行的验收基线见[真实验收记录](18-LOCAL-IMAGE-REAL-ACCEPTANCE.md)；其他模型、升级后的依赖与不同目标 GPU 仍需单独验收。
+本机真实模型、显存峰值、取消与持续运行的验收基线见[真实验收记录](image-runtime-validation.md#真实环境验收)；其他模型、升级后的依赖与不同目标 GPU 仍需单独验收。

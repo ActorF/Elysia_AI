@@ -1,6 +1,9 @@
 /** Review one exact GitHub Issue write before a separate native confirmation, retaining truthful scoped outcomes and physical admission. */
 
+import { t, useTranslation, getDateLocale } from '../i18n/LocaleProvider.tsx'
+import { formatUiError } from '../i18n/ui-error.ts'
 import { useEffect, useRef, useState } from 'react'
+import { HelpHint } from '../design-system/HelpHint.tsx'
 import type { InternetPolicyState } from '../../electron/internet-policy-protocol.ts'
 import { parseGithubIssueApproval, parseGithubIssueWriteResult, parseInternetWriteStatus, parsePrepareGithubIssueRequest,
   type GithubIssueApproval, type GithubIssueWriteResult, type InternetWriteClient, type PrepareGithubIssueRequest } from '../../electron/internet-write-protocol.ts'
@@ -33,6 +36,7 @@ const FAILURES: Record<string, string> = {
 
 /** Keep external writes distinct from public reads, with complete previews, one-use confirmation and no automatic retry. */
 export function GitHubIssueSection({ api, chatId, projectId, lifecycleEpoch, ready, disabled, policy, onBusyChange, onOpenSource }: GitHubIssueSectionProps) {
+  useTranslation()
   const [configured, setConfigured] = useState(false)
   const [owner, setOwner] = useState('')
   const [repo, setRepo] = useState('')
@@ -105,7 +109,7 @@ export function GitHubIssueSection({ api, chatId, projectId, lifecycleEpoch, rea
       if (token !== version.current || epoch !== policyVersion.current) return
       if (next.scope.chatId !== chatId || next.scope.projectId !== projectId || next.owner !== expected.owner || next.repo !== expected.repo
         || next.title !== expected.title || next.body !== expected.body || Date.parse(next.expiresAt) <= Date.now()
-        || Date.parse(next.expiresAt) > Date.now() + 300000) throw new Error('Issue preview changed or expired.')
+        || Date.parse(next.expiresAt) > Date.now() + 300000) throw new Error(t("Issue preview changed or expired."))
       approvalRef.current = next; setApproval(next)
     } catch { if (token === version.current && epoch === policyVersion.current) setError('Could not prepare this Issue. Check the current inputs, Internet policy and token configuration.') }
     finally { physicalPending.current = false; setPending(false); onBusyChange(false) }
@@ -124,7 +128,7 @@ export function GitHubIssueSection({ api, chatId, projectId, lifecycleEpoch, rea
       if (token !== version.current) return
       if (outcome.status === 'created') {
         const parts = new URL(outcome.issueUrl!).pathname.split('/')
-        if (parts[1].toLowerCase() !== current.owner.toLowerCase() || parts[2].toLowerCase() !== current.repo.toLowerCase()) throw new Error('Issue identity changed.')
+        if (parts[1].toLowerCase() !== current.owner.toLowerCase() || parts[2].toLowerCase() !== current.repo.toLowerCase()) throw new Error(t("Issue identity changed."))
       }
       setResult(outcome)
     } catch {
@@ -134,34 +138,34 @@ export function GitHubIssueSection({ api, chatId, projectId, lifecycleEpoch, rea
     } finally { physicalPending.current = false; setPending(false); onBusyChange(false) }
   }
 
-  return <section className="github-issue-section" aria-label="Create GitHub Issue" aria-busy={pending}>
-    <h3>Review before publishing</h3>
-    <p>Previewing sends nothing. Creating an Issue requires a separate confirmation window and may notify repository participants.</p>
-    <p>{configured ? 'A GitHub write token is configured for this app session.' : 'GitHub Issue creation is unavailable until a write token is configured. Public repository queries remain available.'}</p>
-    <details><summary>Token setup help</summary><p>Before starting Elysia, set ELYSIA_GITHUB_TOKEN in its launch environment to a GitHub token with access to the chosen repository and Issues write permission. Restart Elysia after changing it. The token is kept in the main process and is not entered here or sent to the AI. See the project documentation, docs/19-INTERNET-AND-SERVICES.md, for setup details.</p></details>
-    {!allowed && <p>Enable Internet and allow api.github.com in Internet settings before previewing.</p>}
+  return <section className="github-issue-section" aria-label={t("Create GitHub Issue")} aria-busy={pending}>
+    <h3>{t("Review before publishing")}</h3>
+    <p>{t("Previewing sends nothing. Creating an Issue requires a separate confirmation window and may notify repository participants.")}</p>
+    <p>{configured ? t("A GitHub write token is configured for this app session.") : t("GitHub Issue creation is unavailable until a write token is configured. Public repository queries remain available.")}</p>
+    <HelpHint label={t("Token setup help")}>{t("Before starting Elysia, set ELYSIA_GITHUB_TOKEN in its launch environment to a GitHub token with access to the chosen repository and Issues write permission. Restart Elysia after changing it. The token is kept in the main process and is not entered here or sent to the AI. See the project documentation, docs/19-INTERNET-AND-SERVICES.md, for setup details.")}</HelpHint>
+    {!allowed && <p>{t("Enable Internet and allow api.github.com in Internet settings before previewing.")}</p>}
     <div className="internet-service-fields">
-      <label>Issue repository owner<input value={owner} maxLength={39} disabled={locked} onChange={event => { edit(); setOwner(event.target.value) }} /></label>
-      <label>Issue repository name<input value={repo} maxLength={100} disabled={locked} onChange={event => { edit(); setRepo(event.target.value) }} /></label>
+      <label>{t("Issue repository owner")}<input value={owner} maxLength={39} disabled={locked} onChange={event => { edit(); setOwner(event.target.value) }} /></label>
+      <label>{t("Issue repository name")}<input value={repo} maxLength={100} disabled={locked} onChange={event => { edit(); setRepo(event.target.value) }} /></label>
     </div>
-    <label>Issue title<input value={title} maxLength={256} disabled={locked} onChange={event => { edit(); setTitle(event.target.value) }} /></label>
-    <label>Issue body (optional)<textarea value={body} maxLength={4000} rows={3} disabled={locked} onChange={event => { edit(); setBody(event.target.value) }} /></label>
-    <p className="internet-input-count">Title {new TextEncoder().encode(title).length}/256 · Body {new TextEncoder().encode(body).length}/4,000 UTF-8 bytes. Empty bodies are allowed.</p>
-    <button className="internet-primary" type="button" disabled={locked || !configured || !allowed || request === null} onClick={() => { void prepare() }}>{pending ? 'Waiting for the Issue action…' : 'Preview Issue'}</button>
-    {error !== null && <p role="alert">{error}</p>}
-    {notice !== null && <p role="status">{notice}</p>}
-    {approval !== null && <section className="github-issue-preview" aria-label="GitHub Issue preview">
-      <h4>{approval.owner}/{approval.repo}</h4><p>Title</p><pre>{approval.title}</pre><p>Body</p><pre>{approval.body || '(Empty body)'}</pre>
-      <p>Expires: {new Date(approval.expiresAt).toLocaleString()}. The confirmation window will show this exact repository, title and body again.</p>
-      <button type="button" disabled={locked || !allowed} onClick={() => { void confirm() }}>Create Issue…</button>
+    <label>{t("Issue title")}<input value={title} maxLength={256} disabled={locked} onChange={event => { edit(); setTitle(event.target.value) }} /></label>
+    <label>{t("Issue body (optional)")}<textarea value={body} maxLength={4000} rows={3} disabled={locked} onChange={event => { edit(); setBody(event.target.value) }} /></label>
+    <p className="internet-input-count">{t("Title ")}{new TextEncoder().encode(title).length}{t("/256 · Body ")}{new TextEncoder().encode(body).length}{t("/4,000 UTF-8 bytes. Empty bodies are allowed.")}</p>
+    <button className="internet-primary" type="button" disabled={locked || !configured || !allowed || request === null} onClick={() => { void prepare() }}>{pending ? t("Waiting for the Issue action…") : t("Preview Issue")}</button>
+    {error !== null && <p role="alert">{formatUiError(error)}</p>}
+    {notice !== null && <p role="status">{t(notice)}</p>}
+    {approval !== null && <section className="github-issue-preview" aria-label={t("GitHub Issue preview")}>
+      <h4>{approval.owner}/{approval.repo}</h4><p>{t("Title")}</p><pre>{approval.title}</pre><p>{t("Body")}</p><pre>{approval.body || t("(Empty body)")}</pre>
+      <p>{t("Expires: ")}{new Date(approval.expiresAt).toLocaleString(getDateLocale())}{t(". The confirmation window will show this exact repository, title and body again.")}</p>
+      <button type="button" disabled={locked || !allowed} onClick={() => { void confirm() }}>{t("Create Issue…")}</button>
     </section>}
-    {result !== null && <section aria-label="GitHub Issue outcome" role="status">
-      {result.status === 'created' && <p>GitHub confirmed Issue #{result.number} was created. <a href={result.issueUrl!} onClick={event => {
+    {result !== null && <section aria-label={t("GitHub Issue outcome")} role="status">
+      {result.status === 'created' && <p>{t("GitHub confirmed Issue #")}{result.number} {t(" was created. ")}<a href={result.issueUrl!} onClick={event => {
         event.preventDefault(); void onOpenSource(result.issueUrl!).catch(() => { setError('Could not open the Issue. Check Internet settings.') })
-      }}>Open created Issue</a></p>}
-      {result.status === 'cancelled' && <p>Cancelled before the Issue request was sent. No Issue was created by this attempt.</p>}
-      {result.status === 'outcome_unknown' && <p>The outcome is unknown. GitHub may already have created the Issue. Inspect the repository before preparing any new attempt to avoid duplicates. Elysia will not retry automatically.</p>}
-      {result.status === 'failed' && <p>{FAILURES[result.error ?? ''] ?? 'The Issue could not be created. Review the current Chat, inputs and Internet settings before preparing another preview.'}</p>}
+      }}>{t("Open created Issue")}</a></p>}
+      {result.status === 'cancelled' && <p>{t("Cancelled before the Issue request was sent. No Issue was created by this attempt.")}</p>}
+      {result.status === 'outcome_unknown' && <p>{t("The outcome is unknown. GitHub may already have created the Issue. Inspect the repository before preparing any new attempt to avoid duplicates. Elysia will not retry automatically.")}</p>}
+      {result.status === 'failed' && <p>{t(FAILURES[result.error ?? ''] ?? 'The Issue could not be created. Review the current Chat, inputs and Internet settings before preparing another preview.')}</p>}
     </section>}
   </section>
 }

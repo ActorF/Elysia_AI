@@ -2043,7 +2043,7 @@ def test_binary_loader_identity_and_routes_are_stable() -> None:
     docx_loader = DocxDocumentLoader()
 
     assert pdf_loader.loader_id == "pdf-pypdf"
-    assert pdf_loader.loader_version == "1.0.0+pypdf-6.19.0"
+    assert pdf_loader.loader_version == "1.0.0+pypdf-6.21.2"
     assert pdf_loader.routes == frozenset({(".pdf", "application/pdf")})
     assert docx_loader.loader_id == "docx-ooxml"
     assert docx_loader.loader_version == "1.0.0"

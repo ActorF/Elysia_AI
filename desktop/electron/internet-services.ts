@@ -132,6 +132,11 @@ export async function readInternetWeather(transport: Pick<InternetTransport, 're
     || units.wind_speed_10m !== 'km/h') fail('invalid_output')
   const providerTime = timestamp(current.time, true), interval = integer(current.interval, 86400)
   if (interval === 0) fail('invalid_output')
+  // Current conditions use quarter-hour model values. A generous three-hour
+  // age window tolerates provider/cache delays without presenting an old day
+  // as current; one future interval tolerates normal boundary rounding.
+  const age = Date.parse(timestamp(response.fetchedAt)) - Date.parse(providerTime)
+  if (age > 3 * 60 * 60 * 1000 || age < -15 * 60 * 1000) fail('unavailable')
   const temperature = number(current.temperature_2m, -150, 100, true)
   const humidity = number(current.relative_humidity_2m, 0, 100, true)
   const precipitation = number(current.precipitation, 0, 5000, true)
@@ -150,6 +155,60 @@ export async function readInternetWeather(transport: Pick<InternetTransport, 're
   checkCancelled(signal)
   return source('weather', response, `Weather near ${location.latitude.toFixed(4)}, ${location.longitude.toFixed(4)}`,
     `${providerTime}: ${condition}; temperature ${display(temperature, '°C')}; wind ${display(wind, 'km/h')}. Model-derived conditions.`, content, null)
+}
+
+/** Read today's or tomorrow's model forecast in the selected place's timezone, never relabeling current conditions as a forecast. */
+export async function readInternetWeatherForecast(transport: Pick<InternetTransport, 'read'>, value: InternetWeatherLocation,
+  day: 'today' | 'tomorrow', signal: AbortSignal): Promise<InternetServiceSource> {
+  const location = parseInternetWeatherLocation(value)
+  if (day !== 'today' && day !== 'tomorrow') fail('invalid_request')
+  checkCancelled(signal)
+  const url = new URL('https://api.open-meteo.com/v1/forecast')
+  url.search = new URLSearchParams({ latitude: location.latitude.toFixed(4), longitude: location.longitude.toFixed(4),
+    daily: 'weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,precipitation_sum,wind_speed_10m_max',
+    forecast_days: '2', timezone: 'auto', temperature_unit: 'celsius', wind_speed_unit: 'kmh', precipitation_unit: 'mm' }).toString()
+  const response = await transport.read(url.href, { accept: 'application/json', maxBytes: MAX_RESPONSE_BYTES, maxRedirects: 0, signal })
+  checkCancelled(signal)
+  const root = jsonResponse(response, url.href), daily = object(root.daily), units = object(root.daily_units)
+  const zone = text(root.timezone, 128), retrieved = timestamp(response.fetchedAt)
+  if (root.error !== undefined && root.error !== false || !Number.isInteger(root.utc_offset_seconds)
+    || Math.abs(root.utc_offset_seconds as number) > 86400 || units.time !== 'iso8601' || units.weather_code !== 'wmo code'
+    || units.temperature_2m_max !== '°C' || units.temperature_2m_min !== '°C'
+    || units.precipitation_probability_max !== '%' || units.precipitation_sum !== 'mm' || units.wind_speed_10m_max !== 'km/h') fail('invalid_output')
+  let today: string
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit' })
+      .formatToParts(new Date(retrieved))
+    today = ['year', 'month', 'day'].map(type => parts.find(part => part.type === type)?.value).join('-')
+  } catch { return fail('invalid_output') }
+  // Daily dates belong to the forecast location, not the computer's timezone.
+  // Checking both days prevents a stale provider payload becoming "tomorrow".
+  const tomorrow = new Date(`${today}T00:00:00Z`)
+  tomorrow.setUTCDate(tomorrow.getUTCDate() + 1)
+  const dates = [today, tomorrow.toISOString().slice(0, 10)]
+  if (!Array.isArray(daily.time) || daily.time.length !== 2 || daily.time.some((date, index) => date !== dates[index])) fail('invalid_output')
+  const dayIndex = day === 'today' ? 0 : 1
+  const field = (key: string, minimum: number, maximum: number): number | null => {
+    const values = daily[key]
+    if (!Array.isArray(values) || values.length !== 2) return fail('invalid_output')
+    return values.map(value => number(value, minimum, maximum, true))[dayIndex]!
+  }
+  const maximum = field('temperature_2m_max', -150, 100), minimum = field('temperature_2m_min', -150, 100)
+  const probability = field('precipitation_probability_max', 0, 100), precipitation = field('precipitation_sum', 0, 5000)
+  const wind = field('wind_speed_10m_max', 0, 2000), code = field('weather_code', 0, 99)
+  if (maximum !== null && minimum !== null && maximum < minimum || code !== null && !Object.hasOwn(CONDITIONS, code)) fail('invalid_output')
+  if ([maximum, minimum, probability, precipitation, wind, code].every(item => item === null)) fail('unavailable')
+  const display = (value: number | null, unit: string): string => value === null ? 'Unavailable' : `${value} ${unit}`
+  const condition = code === null ? 'Unavailable' : `${CONDITIONS[code]} (WMO ${code})`
+  const content = [`Open-Meteo model forecast near ${location.latitude.toFixed(4)}, ${location.longitude.toFixed(4)}.`,
+    `Forecast date: ${dates[dayIndex]} (${day}; timezone: ${zone})`, `Conditions: ${condition}`,
+    `Minimum temperature at 2 m: ${display(minimum, '°C')}`, `Maximum temperature at 2 m: ${display(maximum, '°C')}`,
+    `Maximum precipitation probability: ${display(probability, '%')}`, `Total precipitation: ${display(precipitation, 'mm')}`,
+    `Maximum wind speed at 10 m: ${display(wind, 'km/h')}`, `Retrieved at (UTC): ${retrieved}`,
+    'This is a model forecast for the whole local calendar day; it is not a current observation.'].join('\n')
+  checkCancelled(signal)
+  return source('weather', response, `Weather forecast for ${dates[dayIndex]}`,
+    `${dates[dayIndex]} (${zone}): ${condition}; ${display(minimum, '°C')} to ${display(maximum, '°C')}. Model forecast.`, content, null)
 }
 
 /** Read bounded public repository metadata from GitHub without attaching credentials or following renamed-repository redirects. */

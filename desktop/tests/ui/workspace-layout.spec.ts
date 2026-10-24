@@ -165,7 +165,7 @@ for (const variant of [
 }
 
 test('uses a modal workspace when the character panel reduces the conversation canvas', async () => {
-  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.setViewportSize({ width: 1400, height: 900 })
   await page.emulateMedia({ reducedMotion: 'reduce' })
   await selectConversationMode(page, 'work')
   await page.getByRole('button', { name: 'Expand Elysia panel', exact: true }).click()

@@ -3,6 +3,8 @@
  * panel while enforcing modal-sidebar accessibility at compact widths.
  */
 
+import { t, useLocale } from '../i18n/LocaleProvider.tsx'
+
 import {
   useEffect,
   useRef,
@@ -51,6 +53,7 @@ export function AppShell({
   onDismissPanel,
   onDismissSidebar,
 }: AppShellProps) {
+  useLocale()
   const dismissSidebarRef = useRef(onDismissSidebar)
   const dismissPanelRef = useRef(onDismissPanel)
   const previousSidebarOpenRef = useRef(sidebarOpen)
@@ -166,6 +169,7 @@ export function AppShell({
     })
 
     const trapModalFocus = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape' && document.querySelector('.help-hint-popup:not([hidden])')) return
       if (event.key === 'Escape') {
         event.preventDefault()
         event.stopPropagation()
@@ -243,6 +247,7 @@ export function AppShell({
     })
 
     const trapPanelFocus = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape' && document.querySelector('.help-hint-popup:not([hidden])')) return
       if (event.key === 'Escape') {
         event.preventDefault()
         event.stopImmediatePropagation()
@@ -290,50 +295,52 @@ export function AppShell({
   }, [panelModalOpen])
 
   return (
-    <div
-      className={[
-        'app-shell',
-        sidebarOpen ? 'sidebar-open' : 'sidebar-collapsed',
-        panel === undefined ? '' : 'panel-open',
-        panelModalOpen ? 'panel-modal' : '',
-      ].filter(Boolean).join(' ')}
-    >
-      <a
-        className="skip-link"
-        href="#main-content"
-        tabIndex={modalLayerOpen ? -1 : 0}
-        aria-hidden={modalLayerOpen}
+    <div className="desktop-window">
+      <div className="desktop-titlebar" aria-hidden="true" />
+      <div
+        className={[
+          'app-shell',
+          sidebarOpen ? 'sidebar-open' : 'sidebar-collapsed',
+          panel === undefined ? '' : 'panel-open',
+          panelModalOpen ? 'panel-modal' : '',
+        ].filter(Boolean).join(' ')}
       >
-        Skip to main content
-      </a>
-      {sidebar}
-      <button
-        type="button"
-        className="sidebar-scrim"
-        aria-label="Close navigation"
-        onClick={onDismissSidebar}
-        tabIndex={-1}
-        aria-hidden="true"
-      />
-      <section
-        className="workspace-surface"
-        id="main-content"
-        tabIndex={-1}
-        inert={modalOpen || panelModalOpen}
-      >
-        {globalFeedback}
-        {children}
-      </section>
-      <button
-        type="button"
-        className="panel-scrim"
-        aria-label="Close Elysia character panel"
-        onClick={onDismissPanel}
-        tabIndex={-1}
-        aria-hidden="true"
-      />
-      <div className="panel-region" inert={modalOpen}>
-        {panel}
+        <a
+          className="skip-link"
+          href="#main-content"
+          tabIndex={modalLayerOpen ? -1 : 0}
+          aria-hidden={modalLayerOpen}
+        >
+          {t("Skip to main content")}</a>
+        {sidebar}
+        <button
+          type="button"
+          className="sidebar-scrim"
+          aria-label={t("Close navigation")}
+          onClick={onDismissSidebar}
+          tabIndex={-1}
+          aria-hidden="true"
+        />
+        <section
+          className="workspace-surface"
+          id="main-content"
+          tabIndex={-1}
+          inert={modalOpen || panelModalOpen}
+        >
+          {globalFeedback}
+          {children}
+        </section>
+        <button
+          type="button"
+          className="panel-scrim"
+          aria-label={t("Close Elysia character panel")}
+          onClick={onDismissPanel}
+          tabIndex={-1}
+          aria-hidden="true"
+        />
+        <div className="panel-region" inert={modalOpen}>
+          {panel}
+        </div>
       </div>
     </div>
   )

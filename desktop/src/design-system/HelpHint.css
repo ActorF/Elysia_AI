@@ -1,0 +1,8 @@
+/** Compact contextual help with unclipped, viewport-bounded hover and keyboard popups. */
+
+.help-hint { display: inline-flex; flex: none; vertical-align: middle; align-self: start; margin-inline-start: 0.25rem; }
+.help-hint .help-hint-trigger { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 1.5rem; height: 1.5rem; min-height: 1.5rem; padding: 0; border: 0; border-radius: 50%; color: var(--color-text-muted); background: transparent; cursor: help; }
+.help-hint .help-hint-trigger:hover, .help-hint .help-hint-trigger:focus-visible { color: var(--color-text-primary); background: var(--color-bg-hover); }
+.help-hint-trigger svg { width: 1rem; height: 1rem; }
+.help-hint-popup { position: fixed; z-index: 10000; display: block; width: min(20rem, calc(100vw - 24px)); max-height: min(20rem, calc(50vh - 32px)); overflow: auto; padding: 0.75rem 0.875rem; border: 1px solid var(--color-border-strong); border-radius: var(--radius-md); background: var(--color-bg-raised); color: var(--color-text-secondary); box-shadow: 0 8px 28px rgb(0 0 0 / 14%); font-size: var(--font-size-xs); font-weight: 400; line-height: 1.6; text-align: start; overflow-wrap: anywhere; white-space: normal; }
+.help-hint-popup[hidden] { display: none; }

@@ -5,6 +5,7 @@ import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 import vm from 'node:vm'
 import ts from 'typescript'
+import { localizeNativeDialog, nativeText } from '../dist-electron/native-locale.js'
 
 const text = await readFile(new URL('../electron/main.ts', import.meta.url), 'utf8')
 const source = ts.createSourceFile('main.ts', text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
@@ -28,7 +29,7 @@ function fixture() {
   const delayed = new Promise(resolve => { finishUpdate = resolve })
   const policy = { getState: () => ({ enabled: false }), hasActiveWork: () => physical,
     update: () => { updates += 1; physical = true; return delayed } }
-  const host = { module: { exports: {} }, internetPolicyService: policy, internetRequests: requests, internetResearchController: null,
+  const host = { module: { exports: {} }, localizeNativeDialog, nativeText, internetPolicyService: policy, internetRequests: requests, internetResearchController: null,
     internetWriteController: null,
     shutdownStarted: false, mainWindow: { isDestroyed: () => false, webContents: { send: (...args) => notifications.push(args) } },
     hasActiveDesktopWork: () => false, hasActiveVisionWork: () => false,

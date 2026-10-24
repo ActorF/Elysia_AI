@@ -1,5 +1,6 @@
 /** Adapt explicit desktop gestures to Electron without exposing native paths, commands, or capture handles. */
 
+import { localizeNativeDialog } from './native-locale.js'
 import { clipboard, desktopCapturer, dialog, shell, type BrowserWindow } from 'electron'
 import { spawn } from 'node:child_process'
 import { lstat, realpath } from 'node:fs/promises'
@@ -43,11 +44,11 @@ export function createWorkDesktopNativeCallbacks(host: WorkDesktopNativeHost): W
     getOwner: host.getOwner,
     platform: process.platform,
     chooseFile: async () => {
-      const selected = await dialog.showOpenDialog(host.getWindow(), {
+      const selected = await dialog.showOpenDialog(host.getWindow(), localizeNativeDialog({
         title: 'Select a Workspace document to review',
         properties: ['openFile', 'dontAddToRecent'],
         filters: [{ name: 'Review documents', extensions: ['txt', 'md', 'csv', 'json', 'pdf', 'docx'] }],
-      })
+      }))
       return !selected.canceled && selected.filePaths.length === 1 ? selected.filePaths[0]! : null
     },
     openDocument: async (document) => {

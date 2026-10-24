@@ -83,10 +83,14 @@ export interface VoiceActivityDetectorOptions {
   readonly noSpeechTimeoutSampleCount?: number | null
 }
 
-const DEFAULT_MINIMUM_VOICE_ENERGY = 0.012
+// Ordinary dictation must accept a quiet first sentence without requiring a
+// loud calibration phrase. Keep the ambient ratio and shape/onset gates; only
+// the absolute floor changes. Playback-interruption capture supplies its own
+// stricter floor because residual speaker audio must not interrupt Elysia.
+const DEFAULT_MINIMUM_VOICE_ENERGY = 0.004
 const DEFAULT_VOICE_TO_NOISE_RATIO = 3
 const DEFAULT_NOISE_ADAPTATION_RATE = 0.08
-const DEFAULT_INITIAL_NOISE_FLOOR = 0.004
+const DEFAULT_INITIAL_NOISE_FLOOR = 0.001
 const MINIMUM_NOISE_FLOOR = 0.000_25
 const MAXIMUM_NOISE_FLOOR = 0.25
 

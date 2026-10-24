@@ -24,7 +24,7 @@ svg {
 .skip-link {
   position: fixed;
   z-index: var(--z-index-toast);
-  top: var(--space-3);
+  top: calc(var(--window-titlebar-height) + var(--space-3));
   left: var(--space-3);
   padding: var(--space-2) var(--space-3);
   color: var(--color-accent-contrast);
@@ -34,12 +34,37 @@ svg {
   font-size: var(--font-size-sm);
   font-weight: var(--font-weight-semibold);
   text-decoration: none;
-  transform: translateY(calc(-100% - var(--space-6)));
+  transform: translateY(calc(-100% - var(--space-6) - var(--window-titlebar-height)));
   transition: transform var(--motion-duration-fast) var(--motion-easing-standard);
 }
 
 .skip-link:focus {
   transform: translateY(0);
+}
+
+.desktop-window {
+  --shell-corner-radius: 1rem;
+  display: grid;
+  /* Native caption metrics may lag a viewport resize; they must not widen the
+     content track and push the composer outside a compact window. */
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: var(--window-titlebar-height) minmax(0, 1fr);
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--color-bg-window);
+}
+
+/* Keep the drag surface empty: interactive controls belong below it, while
+   Windows draws the three caption buttons outside its available width. */
+.desktop-titlebar {
+  margin-left: env(titlebar-area-x, 0px);
+  width: env(titlebar-area-width, 100%);
+  max-width: calc(100% - env(titlebar-area-x, 0px));
+  height: var(--window-titlebar-height);
+  app-region: drag;
+  -webkit-app-region: drag;
+  user-select: none;
 }
 
 .app-shell {
@@ -49,8 +74,9 @@ svg {
   height: 100%;
   min-width: 0;
   min-height: 0;
+  padding: 0 var(--space-2) var(--space-2) 0;
   overflow: hidden;
-  background: var(--color-bg-canvas);
+  background: var(--color-bg-window);
   transition: grid-template-columns var(--motion-duration-normal) var(--motion-easing-standard);
 }
 
@@ -71,10 +97,42 @@ svg {
 
 .workspace-surface {
   position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   min-width: 0;
   min-height: 0;
   overflow: hidden;
   outline: 0;
+  background: var(--color-bg-canvas);
+  border: 1px solid var(--color-border-frame);
+  border-radius: 0 var(--shell-corner-radius) var(--shell-corner-radius) 0;
+}
+
+/* The rail stays on the window canvas; history and workspace share one rounded
+   frame. Closing navigation exposes the workspace's previously joined edge. */
+.sidebar-collapsed .workspace-surface {
+  margin-left: var(--space-2);
+  border-radius: var(--shell-corner-radius);
+}
+
+@media (min-width: 70.001rem) {
+  .app-shell.panel-open .workspace-surface {
+    border-right: 0;
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+  }
+
+  .app-shell.panel-open .character-panel {
+    border: 1px solid var(--color-border-frame);
+    border-radius: 0 var(--shell-corner-radius) var(--shell-corner-radius) 0;
+  }
+}
+
+/* Connection errors must leave navigation and repair controls clickable.
+   Reserve space for the notice instead of floating it across page headers. */
+.workspace-surface:has(> .global-workspace-alert) {
+  grid-template-rows: auto minmax(0, 1fr);
 }
 
 .sidebar-scrim {
@@ -100,7 +158,7 @@ svg {
   padding: var(--space-4) var(--space-3);
   overflow: hidden;
   background: var(--color-bg-sidebar);
-  border-right: 1px solid var(--color-border);
+  border-right: 0;
   opacity: 1;
   transform: translateX(0);
   transition:
@@ -120,7 +178,6 @@ svg {
     visibility 0s linear var(--motion-duration-normal);
 }
 
-.brand-row,
 .section-heading,
 .topbar,
 .composer-toolbar,
@@ -131,34 +188,13 @@ svg {
   align-items: center;
 }
 
-.brand-row {
-  justify-content: space-between;
-  min-height: var(--control-height-md);
-  padding-inline: var(--space-2) var(--space-1);
-}
-
-.brand {
-  display: flex;
-  gap: var(--space-3);
-  align-items: center;
-  min-width: 0;
-  color: var(--color-text-primary);
-  font-size: var(--font-size-lg);
-  font-weight: var(--font-weight-semibold);
-  letter-spacing: var(--letter-spacing-tight);
-}
-
 .brand-mark,
 .chat-list-icon {
   display: grid;
   place-items: center;
-  color: var(--color-accent-hover);
-  background: linear-gradient(
-    145deg,
-    color-mix(in srgb, var(--color-accent) 18%, transparent),
-    color-mix(in srgb, var(--color-accent-secondary) 13%, transparent)
-  );
-  border: 1px solid color-mix(in srgb, var(--color-accent) 22%, transparent);
+  color: var(--color-text-secondary);
+  background: transparent;
+  border: 0;
 }
 
 .brand-mark {
@@ -179,14 +215,14 @@ svg {
 .sidebar-quick-actions {
   display: grid;
   grid-template-columns: minmax(0, 1fr) var(--control-height-md);
-  gap: var(--space-2);
-  margin: var(--space-4) var(--space-1) 0;
+  gap: var(--space-1);
+  margin: var(--space-5) 0 0;
 }
 
 .sidebar-quick-actions > .icon-button {
-  background: var(--color-bg-raised);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-md);
 }
 
 .sidebar-quick-actions > .icon-button:hover {
@@ -200,10 +236,10 @@ svg {
   min-height: var(--control-height-md);
   margin: 0;
   padding: var(--space-2) var(--space-3);
-  color: var(--color-text-link);
-  background: var(--color-bg-raised);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
+  color: var(--color-text-primary);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-md);
   font-size: var(--font-size-sm);
   font-weight: var(--font-weight-medium);
   text-align: left;
@@ -224,12 +260,12 @@ svg {
   gap: var(--space-2);
   align-items: center;
   justify-content: center;
-  min-height: var(--control-height-lg);
+  min-height: var(--control-height-md);
   padding-inline: var(--space-4);
   border: 1px solid transparent;
   border-radius: var(--radius-md);
   font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-semibold);
+  font-weight: var(--font-weight-medium);
   transition:
     color var(--motion-duration-fast) var(--motion-easing-standard),
     background var(--motion-duration-fast) var(--motion-easing-standard),
@@ -247,8 +283,8 @@ svg {
 
 .secondary-button {
   color: var(--color-text-secondary);
-  background: var(--color-bg-surface);
-  border-color: var(--color-border-strong);
+  background: var(--color-bg-soft);
+  border-color: transparent;
 }
 
 .secondary-button:hover:not(:disabled) {
@@ -277,6 +313,7 @@ svg {
     background var(--motion-duration-fast) var(--motion-easing-standard),
     border-color var(--motion-duration-fast) var(--motion-easing-standard),
     transform var(--motion-duration-fast) var(--motion-easing-standard);
+  box-shadow: none;
 }
 
 .icon-button {
@@ -371,7 +408,7 @@ svg {
 .nav-item.active,
 .sidebar-settings.active {
   color: var(--color-text-primary);
-  background: var(--color-bg-hover);
+  background: var(--color-bg-active);
 }
 
 .nav-item.active,
@@ -727,7 +764,7 @@ svg {
 .chat-item-meta {
   gap: 0.25rem;
   color: var(--color-text-muted);
-  font-size: 0.6875rem;
+  font-size: var(--font-size-xs);
 }
 
 .mode-badge {
@@ -790,6 +827,8 @@ svg {
   display: grid;
   width: min(11rem, calc(100% - var(--space-3)));
   padding: var(--space-1);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   background: var(--color-bg-raised);
   border: 1px solid var(--color-border-strong);
   border-radius: var(--radius-md);
@@ -831,8 +870,11 @@ svg {
 }
 
 .chat-action-dialog {
+  /* Native dialogs live in the top layer and bypass the shell grid. Keep both
+     their centering area and scrolling cards below the native caption strip. */
+  inset-block: var(--window-titlebar-height) 0;
   width: min(28rem, calc(100vw - 2 * var(--space-4)));
-  max-height: calc(100vh - 2 * var(--space-4));
+  max-height: calc(100vh - var(--window-titlebar-height) - 2 * var(--space-4));
   margin: auto;
   padding: 0;
   overflow: visible;
@@ -842,20 +884,20 @@ svg {
 }
 
 .chat-action-dialog::backdrop {
-  background: rgb(0 0 0 / 55%);
-  backdrop-filter: blur(0.2rem);
+  inset: var(--window-titlebar-height) 0 0;
+  background: var(--color-bg-overlay);
 }
 
 .chat-action-dialog-card {
   display: grid;
   gap: var(--space-4);
-  max-height: calc(100vh - 2 * var(--space-4));
+  max-height: calc(100vh - var(--window-titlebar-height) - 2 * var(--space-4));
   padding: var(--space-5);
   overflow: auto;
   background: var(--color-bg-raised);
   border: 1px solid var(--color-border-strong);
   border-radius: var(--radius-xl);
-  box-shadow: var(--shadow-lg);
+  box-shadow: none;
 }
 
 .chat-action-dialog-copy {
@@ -887,9 +929,7 @@ svg {
 }
 
 .dialog-chat-names li {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .chat-rename-field {
@@ -1095,7 +1135,7 @@ svg {
 }
 
 .dialog-button-danger {
-  color: white;
+  color: var(--color-text-inverse);
   background: var(--color-danger);
 }
 
@@ -1155,7 +1195,7 @@ svg {
   overflow: hidden;
   color: var(--color-text-primary);
   font-size: var(--font-size-lg);
-  font-weight: var(--font-weight-semibold);
+  font-weight: var(--font-weight-medium);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1231,8 +1271,7 @@ svg {
 
 /* Chat */
 
-.chat-surface,
-.placeholder-view {
+.chat-surface {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
   width: 100%;
@@ -1279,10 +1318,10 @@ svg {
 
 .eyebrow,
 .context-label {
-  color: var(--color-text-link);
+  color: var(--color-text-muted);
   font-size: var(--font-size-xs);
-  font-weight: var(--font-weight-bold);
-  letter-spacing: 0.12em;
+  font-weight: var(--font-weight-medium);
+  letter-spacing: 0.04em;
   text-transform: uppercase;
 }
 
@@ -1314,9 +1353,9 @@ svg {
 .message.user .message-surface {
   width: fit-content;
   max-width: min(86%, 38.75rem);
-  padding: var(--space-3) var(--space-4);
-  background: var(--color-bg-soft);
-  border-radius: var(--radius-xl);
+  padding: var(--space-3) var(--space-5);
+  background: var(--color-bg-message);
+  border-radius: 1.25rem;
 }
 
 .message-body {
@@ -1333,7 +1372,7 @@ svg {
 .message-body p {
   margin: var(--space-2) 0 0;
   color: var(--color-text-primary);
-  font-size: var(--font-size-lg);
+  font-size: var(--font-size-md);
   line-height: var(--line-height-relaxed);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -1409,7 +1448,7 @@ svg {
 .message-markdown {
   min-width: 0;
   color: var(--color-text-primary);
-  font-size: var(--font-size-lg);
+  font-size: var(--font-size-md);
   line-height: var(--line-height-relaxed);
   overflow-wrap: anywhere;
 }
@@ -1475,7 +1514,7 @@ svg {
   padding: 0.1em 0.32em;
   background: color-mix(in srgb, var(--color-text-primary) 8%, transparent);
   border-radius: var(--radius-sm);
-  font-family: Consolas, "Cascadia Code", monospace;
+  font-family: var(--font-family-mono);
   font-size: 0.9em;
 }
 
@@ -1516,8 +1555,8 @@ svg {
   min-width: 0;
   margin: var(--space-3) 0;
   overflow: hidden;
-  background: color-mix(in srgb, var(--color-bg-canvas) 82%, black);
-  border: 1px solid var(--color-border-strong);
+  background: var(--color-bg-sidebar);
+  border: 0;
   border-radius: var(--radius-md);
 }
 
@@ -1529,8 +1568,8 @@ svg {
   min-height: 2.25rem;
   padding: var(--space-1) var(--space-2) var(--space-1) var(--space-3);
   color: var(--color-text-muted);
-  background: var(--color-bg-soft);
-  border-bottom: 1px solid var(--color-border);
+  background: transparent;
+  border-bottom: 0;
   font-size: var(--font-size-xs);
 }
 
@@ -1699,8 +1738,8 @@ svg {
   align-items: center;
   padding: var(--space-4);
   color: var(--color-text-secondary);
-  background: color-mix(in srgb, var(--color-bg-raised) 80%, transparent);
-  border: 1px solid var(--color-border);
+  background: var(--color-bg-soft);
+  border: 0;
   border-radius: var(--radius-lg);
 }
 
@@ -1709,7 +1748,7 @@ svg {
   height: 2.5rem;
   padding: 0.625rem;
   color: var(--color-state-empty);
-  background: var(--color-bg-soft);
+  background: transparent;
   border-radius: var(--radius-lg);
 }
 
@@ -1758,7 +1797,7 @@ svg {
 }
 
 .conversation-empty h2 {
-  font-size: clamp(1.5rem, 2.5vw, 2rem);
+  font-size: clamp(1.25rem, 2vw, 1.75rem);
   font-weight: var(--font-weight-medium);
   letter-spacing: var(--letter-spacing-tight);
   line-height: var(--line-height-normal);
@@ -1785,18 +1824,18 @@ svg {
   display: inline-flex;
   gap: var(--space-2);
   align-items: center;
-  min-height: var(--control-height-md);
+  min-height: var(--control-height-sm);
   padding: var(--space-2) var(--space-3);
   color: var(--color-text-secondary);
-  background: var(--color-bg-raised);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-full);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-md);
   font-size: var(--font-size-sm);
 }
 
 .conversation-starters button:hover {
-  color: var(--color-text-link);
-  background: var(--color-bg-soft);
+  color: var(--color-text-primary);
+  background: var(--color-bg-hover);
 }
 
 .conversation-starters svg {
@@ -1828,8 +1867,8 @@ svg {
   background: color-mix(in srgb, var(--color-bg-raised) 94%, transparent);
   border: 1px solid var(--color-border-strong);
   border-radius: var(--radius-md);
-  box-shadow: var(--shadow-sm);
-  font-size: var(--font-size-xs);
+  box-shadow: none;
+  font-size: var(--font-size-sm);
 }
 
 .inline-alert-error {
@@ -2119,10 +2158,10 @@ svg {
   width: min(100%, var(--layout-composer-max-width));
   margin-inline: auto;
   padding: var(--space-3);
-  background: var(--color-bg-raised);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-2xl);
-  box-shadow: var(--shadow-md);
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-xl);
+  box-shadow: none;
 }
 
 .attachment-surface-compact {
@@ -2247,7 +2286,7 @@ svg {
 }
 
 .song-cover-button {
-  color: var(--color-accent-hover);
+  color: var(--color-text-secondary);
 }
 
 .song-cover-trigger {
@@ -2256,10 +2295,8 @@ svg {
 }
 
 .composer-card:focus-within {
-  border-color: color-mix(in srgb, var(--color-border-focus) 56%, var(--color-border));
-  box-shadow:
-    var(--shadow-md),
-    0 0 0 1px color-mix(in srgb, var(--color-border-focus) 16%, transparent);
+  border-color: var(--color-border-focus);
+  box-shadow: none;
 }
 
 .composer-card textarea {
@@ -2274,8 +2311,8 @@ svg {
   background: transparent;
   border: 0;
   border-radius: var(--radius-md);
-  font-size: var(--font-size-lg);
-  line-height: var(--line-height-normal);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-relaxed);
 }
 
 #chat-composer:focus-visible {
@@ -2320,7 +2357,7 @@ svg {
   height: var(--control-height-sm);
   color: var(--color-text-secondary);
   background: transparent;
-  border-radius: var(--radius-full);
+  border-radius: var(--radius-md);
 }
 
 .composer-attachment-button:disabled {
@@ -2333,9 +2370,9 @@ svg {
 }
 
 .phone-button {
-  color: var(--color-accent-hover);
-  background: var(--color-bg-soft);
-  border-radius: var(--radius-full);
+  color: var(--color-text-secondary);
+  background: transparent;
+  border-radius: var(--radius-md);
 }
 
 .send-button {
@@ -2343,9 +2380,9 @@ svg {
   height: var(--control-height-md);
   margin-left: var(--space-1);
   color: var(--color-accent-contrast);
-  background: linear-gradient(135deg, var(--color-accent-hover), var(--color-accent-secondary));
+  background: var(--color-accent);
   border-radius: var(--radius-md);
-  box-shadow: 0 0.375rem 1rem color-mix(in srgb, var(--color-accent) 20%, transparent);
+  box-shadow: none;
 }
 
 .send-button svg {
@@ -2354,8 +2391,9 @@ svg {
 }
 
 .send-button:hover:not(:disabled) {
-  filter: brightness(1.04);
-  transform: translateY(-1px);
+  filter: none;
+  transform: none;
+  background: var(--color-accent-hover);
 }
 
 .stop-button {
@@ -2383,26 +2421,6 @@ svg {
   font-size: var(--font-size-xs);
 }
 
-/* Placeholder pages */
-
-.placeholder-view {
-  grid-template-rows: auto minmax(0, 1fr);
-}
-
-.placeholder-content {
-  display: grid;
-  min-width: 0;
-  min-height: 0;
-  place-items: center;
-  padding: var(--space-8);
-  overflow: auto;
-}
-
-.placeholder-content .empty-state {
-  width: min(100%, 32rem);
-  padding: var(--space-8);
-}
-
 /* Settings */
 
 .settings-view {
@@ -2421,8 +2439,8 @@ svg {
   gap: var(--space-5);
   align-items: center;
   min-height: var(--layout-header-height);
-  padding: var(--space-4) var(--space-6);
-  border-bottom: 1px solid var(--color-border);
+  padding: var(--space-2) var(--space-6);
+  border-bottom: 0;
 }
 
 .settings-back {
@@ -2455,13 +2473,14 @@ svg {
   margin: 0;
   color: var(--color-text-primary);
   font-size: var(--font-size-xl);
+  font-weight: var(--font-weight-medium);
   letter-spacing: var(--letter-spacing-tight);
 }
 
-.settings-heading p {
-  margin: var(--space-1) 0 0;
-  color: var(--color-text-muted);
-  font-size: var(--font-size-sm);
+.settings-heading h1:focus-visible,
+.settings-category-heading:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-ring-offset);
 }
 
 .settings-layout {
@@ -2476,9 +2495,9 @@ svg {
   flex-direction: column;
   gap: var(--space-1);
   min-width: 0;
-  padding: var(--space-5) var(--space-3);
+  padding: var(--space-6) var(--space-3);
   overflow-y: auto;
-  border-right: 1px solid var(--color-border);
+  border-right: 0;
 }
 
 .settings-category-button {
@@ -2504,54 +2523,65 @@ svg {
 }
 
 .settings-category-button[aria-current='page'] {
-  color: var(--color-text-link);
-  background: var(--color-bg-soft);
+  color: var(--color-text-primary);
+  background: var(--color-bg-active);
 }
 
 .settings-content {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
   width: 100%;
   min-width: 0;
   min-height: 0;
   margin-inline: auto;
-  padding: var(--space-6) max(var(--space-6), calc((100% - var(--layout-settings-max-width)) / 2));
+  overflow: hidden;
+}
+
+/* Keep the save actions in their own row so they never cover an edited field. */
+.settings-scroll {
+  min-width: 0;
+  min-height: 0;
+  scroll-padding-block: var(--space-3);
+  padding: var(--space-8) max(var(--space-6), calc((100% - var(--layout-settings-max-width)) / 2));
   overflow-y: auto;
   overflow-x: hidden;
 }
 
-.settings-content > .inline-alert + .inline-alert,
-.settings-content > .inline-alert + .settings-section {
+.settings-scroll > .inline-alert + .inline-alert,
+.settings-scroll > .inline-alert + .settings-section {
   margin-top: var(--space-4);
 }
 
-.settings-content > .inline-alert,
-.settings-content > .loading-state {
+.settings-scroll > .inline-alert,
+.settings-scroll > .loading-state {
   margin-bottom: var(--space-5);
 }
 
 .settings-section {
-  padding: var(--space-5) 0;
+  padding: var(--space-4) 0;
   background: transparent;
   border: 0;
   border-radius: 0;
 }
 
 .settings-section + .settings-section {
-  margin-top: var(--space-3);
-  border-top: 1px solid var(--color-border);
+  margin-top: var(--space-2);
+  border-top: 0;
 }
 
 .settings-category-heading {
   margin: 0 0 var(--space-2);
   font-size: var(--font-size-2xl);
-  font-weight: var(--font-weight-semibold);
+  font-weight: var(--font-weight-medium);
   letter-spacing: var(--letter-spacing-tight);
 }
 
-.settings-category-description {
-  margin: 0 0 var(--space-5);
-  color: var(--color-text-muted);
-  font-size: var(--font-size-sm);
-  line-height: var(--line-height-normal);
+.settings-section-heading,
+.appearance-subheading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
 }
 
 .settings-category-panel > .settings-section:first-of-type {
@@ -2562,6 +2592,7 @@ svg {
   margin: 0;
   color: var(--color-text-primary);
   font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-medium);
 }
 
 .settings-section-heading p {
@@ -2623,9 +2654,9 @@ svg {
   display: grid;
   gap: var(--space-3);
   margin-top: var(--space-4);
-  padding: var(--space-4);
-  background: var(--color-bg-soft);
-  border: 1px solid var(--color-border);
+  padding: var(--space-4) 0;
+  background: transparent;
+  border: 0;
   border-radius: var(--radius-lg);
 }
 
@@ -2689,14 +2720,14 @@ svg {
   position: relative;
   display: grid;
   grid-template-columns: 2.25rem minmax(0, 1fr) 1rem;
-  gap: var(--space-3);
+  gap: var(--space-2);
   align-items: center;
   min-width: 0;
-  padding: var(--space-4);
+  padding: var(--space-3);
   color: var(--color-text-secondary);
-  background: var(--color-bg-surface);
+  background: transparent;
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
   cursor: pointer;
 }
 
@@ -2706,8 +2737,9 @@ svg {
 }
 
 .theme-option.selected {
-  border-color: color-mix(in srgb, var(--color-accent) 60%, var(--color-border));
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 18%, transparent);
+  border-color: var(--color-accent);
+  box-shadow: none;
+  background: var(--color-accent-soft);
 }
 
 .theme-option:has(input:focus-visible) {
@@ -2727,8 +2759,8 @@ svg {
   width: 2.25rem;
   height: 2.25rem;
   padding: 0.5625rem;
-  color: var(--color-accent);
-  background: var(--color-bg-soft);
+  color: var(--color-text-secondary);
+  background: transparent;
   border-radius: var(--radius-md);
 }
 
@@ -2780,10 +2812,10 @@ svg {
 
 .settings-scope-grid article {
   display: grid;
-  gap: var(--space-2);
+  gap: var(--space-1);
   min-width: 0;
-  padding: var(--space-4);
-  background: var(--color-bg-soft);
+  padding: var(--space-2) 0;
+  background: transparent;
   border-radius: var(--radius-md);
 }
 
@@ -2814,9 +2846,22 @@ svg {
 }
 
 .settings-field {
+  position: relative;
   display: grid;
+  align-content: start;
   gap: var(--space-2);
   min-width: 0;
+}
+
+.settings-field:has(> .help-hint) > span:first-child {
+  padding-inline-end: 1.75rem;
+}
+
+.settings-field > .help-hint {
+  position: absolute;
+  inset-inline-end: 0;
+  top: -0.125rem;
+  margin: 0;
 }
 
 .settings-field-single {
@@ -2859,22 +2904,20 @@ svg {
 }
 
 .global-workspace-alert {
-  position: absolute;
-  z-index: var(--z-index-toast);
-  top: var(--space-3);
-  left: 50%;
+  position: relative;
+  justify-self: center;
   width: min(34rem, calc(100% - 2 * var(--space-4)));
-  margin: 0;
-  transform: translateX(-50%);
-  box-shadow: var(--shadow-lg);
+  max-height: min(10rem, 30vh);
+  margin: var(--space-2) 0;
+  overflow-y: auto;
 }
 
 .settings-readonly-status {
   margin: var(--space-5) 0 0;
   padding: var(--space-4);
   color: var(--color-text-secondary);
-  background: var(--color-bg-surface);
-  border: 1px dashed var(--color-border-strong);
+  background: var(--color-bg-soft);
+  border: 0;
   border-radius: var(--radius-lg);
   font-size: var(--font-size-sm);
   line-height: var(--line-height-normal);
@@ -2897,8 +2940,8 @@ svg {
   min-width: 0;
   padding: var(--space-3);
   color: var(--color-text-secondary);
-  background: var(--color-bg-surface);
-  border: 1px solid var(--color-border);
+  background: var(--color-bg-soft);
+  border: 0;
   border-radius: var(--radius-md);
   font-size: var(--font-size-xs);
   line-height: var(--line-height-normal);
@@ -2945,9 +2988,9 @@ svg {
   display: grid;
   gap: var(--space-1);
   min-width: 0;
-  padding: var(--space-3);
-  background: var(--color-bg-surface);
-  border: 1px solid var(--color-border);
+  padding: var(--space-3) 0;
+  background: transparent;
+  border: 0;
   border-radius: var(--radius-lg);
 }
 
@@ -2977,8 +3020,8 @@ svg {
   gap: var(--space-2);
   min-width: 0;
   padding: var(--space-3);
-  background: var(--color-bg-surface);
-  border: 1px solid var(--color-border);
+  background: var(--color-bg-soft);
+  border: 0;
   border-radius: var(--radius-md);
 }
 
@@ -3138,13 +3181,22 @@ svg {
   gap: var(--space-3);
   min-width: 0;
   padding: var(--space-4);
-  background: var(--color-bg-surface);
-  border: 1px solid var(--color-border);
+  background: var(--color-bg-soft);
+  border: 0;
   border-radius: var(--radius-lg);
 }
 
 .voice-test-card > div:first-child {
-  display: grid;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.voice-permission > div:has(> .help-hint) {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: var(--space-1);
 }
 
@@ -3172,7 +3224,7 @@ svg {
   display: block;
   height: 100%;
   min-width: 0;
-  background: linear-gradient(90deg, var(--color-accent), var(--color-success));
+  background: var(--color-accent);
   border-radius: inherit;
   transition: width 80ms linear;
 }
@@ -3260,19 +3312,14 @@ svg {
 }
 
 .settings-save-bar {
-  position: sticky;
-  bottom: calc(var(--space-6) * -1);
-  z-index: 2;
   display: flex;
   gap: var(--space-4);
   align-items: center;
   justify-content: space-between;
   min-width: 0;
-  margin: var(--space-4) calc(var(--space-6) * -1) calc(var(--space-6) * -1);
-  padding: var(--space-4) var(--space-6);
-  background: color-mix(in srgb, var(--color-bg-surface) 94%, transparent);
+  padding: var(--space-4) max(var(--space-6), calc((100% - var(--layout-settings-max-width)) / 2));
+  background: var(--color-bg-surface);
   border-top: 1px solid var(--color-border);
-  backdrop-filter: blur(16px);
 }
 
 .settings-save-bar > div:first-child {
@@ -4029,9 +4076,10 @@ kbd {
 /* The Voice Call is deliberately a compact modal instead of a replacement
    application page. Native dialog modality keeps Chat mounted but inert. */
 .call-dialog {
+  inset-block: var(--window-titlebar-height) 0;
   width: min(34rem, calc(100vw - var(--space-6)));
   max-width: none;
-  max-height: calc(100vh - var(--space-6));
+  max-height: calc(100vh - var(--window-titlebar-height) - var(--space-6));
   padding: 0;
   overflow: visible;
   color: var(--color-text-primary);
@@ -4040,6 +4088,7 @@ kbd {
 }
 
 .call-dialog::backdrop {
+  inset: var(--window-titlebar-height) 0 0;
   background: var(--color-bg-overlay);
   backdrop-filter: blur(0.375rem);
 }
@@ -4048,8 +4097,8 @@ kbd {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
   width: 100%;
-  min-height: min(34rem, calc(100vh - var(--space-6)));
-  max-height: calc(100vh - var(--space-6));
+  min-height: min(34rem, calc(100vh - var(--window-titlebar-height) - var(--space-6)));
+  max-height: calc(100vh - var(--window-titlebar-height) - var(--space-6));
   overflow: hidden;
   background:
     radial-gradient(circle at 50% 48%, color-mix(in srgb, var(--color-accent) 12%, transparent), transparent 42%),
@@ -4299,7 +4348,7 @@ kbd {
   .character-panel {
     position: fixed;
     z-index: var(--z-index-overlay);
-    top: 0;
+    top: var(--window-titlebar-height);
     right: 0;
     bottom: 0;
     width: min(var(--layout-character-panel-width), calc(100vw - var(--space-8)));
@@ -4307,9 +4356,9 @@ kbd {
   }
 }
 
-/* At high zoom or on a narrow window, navigation becomes a modal drawer. */
-
-@media (max-width: 52rem) {
+/* Settings need room for fields before the global sidebar becomes a drawer.
+   Switch only category navigation here, preserving its existing focus and order. */
+@media (max-width: 70rem) {
   .settings-layout {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr);
@@ -4321,11 +4370,19 @@ kbd {
     overflow-x: auto;
     overflow-y: hidden;
     border-right: 0;
-    border-bottom: 1px solid var(--color-border);
+    border-bottom: 0;
   }
 
   .settings-category-button {
     white-space: nowrap;
+  }
+}
+
+/* At high zoom or on a narrow window, navigation becomes a modal drawer. */
+@media (max-width: 52rem) {
+  .workspace-surface {
+    margin-left: var(--space-2);
+    border-radius: var(--shell-corner-radius);
   }
 
   .app-shell,
@@ -4338,7 +4395,7 @@ kbd {
   .sidebar {
     position: fixed;
     z-index: var(--z-index-modal);
-    top: 0;
+    top: var(--window-titlebar-height);
     bottom: 0;
     left: 0;
     width: min(var(--layout-sidebar-width), calc(100vw - var(--space-8)));
@@ -4352,11 +4409,11 @@ kbd {
   .sidebar-scrim {
     position: fixed;
     z-index: calc(var(--z-index-modal) - 1);
-    inset: 0;
+    inset: var(--window-titlebar-height) 0 0;
     display: block;
     visibility: hidden;
     width: 100%;
-    height: 100%;
+    height: auto;
     background: var(--color-bg-overlay);
     border-radius: 0;
     opacity: 0;
@@ -4376,10 +4433,10 @@ kbd {
   .app-shell.panel-modal .panel-scrim {
     position: fixed;
     z-index: calc(var(--z-index-overlay) - 1);
-    inset: 0;
+    inset: var(--window-titlebar-height) 0 0;
     display: block;
     width: 100%;
-    height: 100%;
+    height: auto;
     background: var(--color-bg-overlay);
     border-radius: 0;
   }
@@ -4477,10 +4534,10 @@ kbd {
 
   .settings-header {
     gap: var(--space-3);
-    padding: var(--space-4);
+    padding: var(--space-2) var(--space-3);
   }
 
-  .settings-content {
+  .settings-scroll {
     padding: var(--space-4);
   }
 
@@ -4519,20 +4576,12 @@ kbd {
   }
 
   .settings-save-bar {
-    bottom: calc(var(--space-4) * -1);
-    flex-direction: column;
-    align-items: stretch;
-    margin: var(--space-4) calc(var(--space-4) * -1) calc(var(--space-4) * -1);
     padding: var(--space-4);
   }
 
   .settings-save-actions {
     justify-content: flex-end;
     flex-wrap: wrap;
-  }
-
-  .placeholder-content {
-    padding: var(--space-4);
   }
 
   .call-header {
@@ -4594,6 +4643,13 @@ kbd {
   }
 }
 
+@media (max-width: 30rem) {
+  .settings-save-bar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
 @media (max-width: 34rem) {
   /* A long title and mode selector can otherwise push the panel control out of
      narrow windows. Keep the live status name accessible beside its dot. */
@@ -4608,10 +4664,6 @@ kbd {
 
   .composer-note {
     display: none;
-  }
-
-  .settings-header {
-    grid-template-columns: 1fr;
   }
 
   .settings-back {
@@ -4643,10 +4695,6 @@ kbd {
      entire drawer scroll so Chat actions remain reachable below navigation. */
   .sidebar {
     overflow-y: auto;
-  }
-
-  .sidebar > :is(.brand-row, .sidebar-quick-actions, .primary-nav, .sidebar-divider, .sidebar-settings) {
-    flex-shrink: 0;
   }
 
   .chat-section {
@@ -4693,9 +4741,13 @@ kbd {
     display: none;
   }
 
+  .call-dialog {
+    max-height: calc(100vh - var(--window-titlebar-height) - var(--space-4));
+  }
+
   .call-card {
-    min-height: calc(100vh - var(--space-4));
-    max-height: calc(100vh - var(--space-4));
+    min-height: calc(100vh - var(--window-titlebar-height) - var(--space-4));
+    max-height: calc(100vh - var(--window-titlebar-height) - var(--space-4));
   }
 
   .call-card .call-header {

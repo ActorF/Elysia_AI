@@ -34,7 +34,7 @@ async function reviewWindow(): Promise<void> {
   await openVision(page, true)
   const capture = page.getByRole('region', { name: 'Screenshot permission', exact: true })
   await capture.getByRole('button', { name: 'List displays and windows', exact: true }).click()
-  await capture.getByRole('combobox', { name: 'Capture source', exact: true }).selectOption({ label: 'window · Synthetic window' })
+  await capture.getByRole('combobox', { name: 'Capture source', exact: true }).selectOption({ label: 'Window · Synthetic window' })
   await capture.getByRole('button', { name: 'Review capture scope', exact: true }).click()
 }
 
@@ -73,7 +73,7 @@ test('lists metadata only on a click and imports one selected window frame only 
 test('reviews exact normalized display crop parameters and editing revokes the previous receipt', async () => {
   const capture = page.getByRole('region', { name: 'Screenshot permission', exact: true })
   await capture.getByRole('button', { name: 'List displays and windows', exact: true }).click()
-  await capture.getByRole('combobox', { name: 'Capture source', exact: true }).selectOption({ label: 'display · Synthetic display' })
+  await capture.getByRole('combobox', { name: 'Capture source', exact: true }).selectOption({ label: 'Display · Synthetic display' })
   await capture.getByRole('combobox', { name: 'Capture scope', exact: true }).selectOption('region')
   await capture.getByRole('spinbutton', { name: 'Left (%)', exact: true }).fill('10')
   await capture.getByRole('spinbutton', { name: 'Top (%)', exact: true }).fill('20')
@@ -91,12 +91,42 @@ test('reviews exact normalized display crop parameters and editing revokes the p
   await capture.getByRole('spinbutton', { name: 'Left (%)', exact: true }).fill('90')
   await expect(capture.getByRole('button', { name: 'Review capture scope', exact: true })).toBeDisabled()
   await expect(capture.getByRole('alert')).toContainText('must stay inside this selected display')
-  await capture.getByRole('combobox', { name: 'Capture source', exact: true }).selectOption({ label: 'window · Synthetic window' })
+  await capture.getByRole('combobox', { name: 'Capture source', exact: true }).selectOption({ label: 'Window · Synthetic window' })
   await expect(capture.getByRole('combobox', { name: 'Capture scope', exact: true })).toHaveValue('full')
   await capture.getByRole('button', { name: 'Review capture scope', exact: true }).click()
   await capture.getByRole('button', { name: 'Deny capture', exact: true }).click()
   expect(await page.evaluate(() => (window as CaptureTestWindow).elysiaDesktopTest.getCalls().filter((call) => call.method === 'cancelVisionCapture'))).toHaveLength(1)
   expect(await page.evaluate(() => (window as CaptureTestWindow).elysiaDesktopTest.getCalls().filter((call) => call.method === 'captureVision').map((call) => (call.args[0] as { granted: boolean }).granted))).toEqual([false])
+})
+
+test('requires explicit crop coordinates instead of converting erased left or top fields to zero', async () => {
+  const capture = page.getByRole('region', { name: 'Screenshot permission', exact: true })
+  await capture.getByRole('button', { name: 'List displays and windows', exact: true }).click()
+  await capture.getByRole('combobox', { name: 'Capture source', exact: true }).selectOption({ label: 'Display · Synthetic display' })
+  await capture.getByRole('combobox', { name: 'Capture scope', exact: true }).selectOption('region')
+  const review = capture.getByRole('button', { name: 'Review capture scope', exact: true })
+  for (const name of ['Left (%)', 'Top (%)']) {
+    await capture.getByRole('spinbutton', { name, exact: true }).fill('')
+    await expect(review).toBeDisabled()
+    await expect(capture.getByRole('alert')).toContainText('must stay inside this selected display')
+    await capture.getByRole('spinbutton', { name, exact: true }).fill('0')
+    await expect(review).toBeEnabled()
+  }
+  expect(await page.evaluate(() => (window as CaptureTestWindow).elysiaDesktopTest.getCalls()
+    .filter((call) => call.method === 'prepareVisionCapture'))).toHaveLength(0)
+})
+
+test('opens optional capture help and dismisses it before closing the Vision dialog', async () => {
+  const dialog = page.getByRole('dialog', { name: 'Vision', exact: true })
+  const help = dialog.getByRole('button', { name: 'Help: Capture a screenshot', exact: true })
+  await expect(dialog.getByRole('tooltip')).toBeHidden()
+  await help.focus()
+  await expect(dialog.getByRole('tooltip')).toContainText('Listing sources does not capture pixels.')
+  await page.keyboard.press('Escape')
+  await expect(dialog).toBeVisible()
+  await expect(dialog.getByRole('tooltip')).toBeHidden()
+  await page.keyboard.press('Escape')
+  await expect(dialog).toBeHidden()
 })
 
 test('cancelling and collapsing capture retains all physical action locks until the helper callback drains', async () => {

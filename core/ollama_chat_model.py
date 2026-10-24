@@ -11,10 +11,11 @@ from contextlib import nullcontext
 
 from typing import Any, cast
 from gpu_admission import GpuAdmissionError, gpu_lease, using_desktop_gpu
-from .chat_model import ChatMessage
+from .chat_model import ChatMessage, normalize_chat_messages
 from .local_ollama import (
     LOCAL_OLLAMA_MODEL_ERROR,
     is_cloud_ollama_model_name,
+    model_name_with_default_tag,
     normalize_local_ollama_origin,
 )
 
@@ -35,6 +36,32 @@ from .exceptions import (
 logger = logging.getLogger(__name__)
 
 JsonObject = dict[str, object]
+
+
+def _validate_ollama_completion(metadata: object) -> None:
+    """Require an actual completed Ollama response and reject truncated output.
+
+    Both adapters consume Ollama's terminal ``done`` marker. Older servers may
+    omit ``done_reason``, so ``done=True`` alone remains compatible; an explicit
+    length limit, load-only result, or unknown terminal reason is not a finished
+    answer. Diagnostics retain only reviewed reasons and numeric token counts,
+    never model content, prompt text, or arbitrary provider metadata.
+    """
+
+    details = metadata if isinstance(metadata, dict) else {}
+    reason = details.get("done_reason")
+    safe_reason = reason if reason in ("stop", "length", "load", "unload") else "unspecified" if reason is None else "unknown"
+    counts = [value if type(value) is int and 0 <= value <= 1_000_000_000 else None
+              for value in (details.get("prompt_eval_count"), details.get("eval_count"))]
+    completed = details.get("done") is True
+    logger.info("Ollama completion: done=%s, reason=%s, prompt_tokens=%s, output_tokens=%s.",
+                completed, safe_reason, counts[0], counts[1])
+    if reason == "length":
+        raise ChatModelResponseError("Ollama reply reached its output limit before completion. Please retry with a shorter request.")
+    if not completed:
+        raise ChatModelResponseError("Ollama reply ended without a complete response. Please retry.")
+    if reason is not None and reason != "stop":
+        raise ChatModelResponseError("Ollama did not finish generating the reply. Please retry.")
 
 
 class OllamaChatModel:
@@ -83,6 +110,7 @@ class OllamaChatModel:
                 "Ollama returned an invalid model list."
             )
 
+        requested_name = model_name_with_default_tag(self._model_name)
         # Ollama versions may expose the identifier under either key.
         for model_data in models_data:
             if not isinstance(model_data, dict):
@@ -91,9 +119,10 @@ class OllamaChatModel:
             model_name = model_data.get("name")
             model_identifier = model_data.get("model")
 
-            if self._model_name in (
-                model_name,
-                model_identifier,
+            if any(
+                isinstance(candidate, str)
+                and model_name_with_default_tag(candidate) == requested_name
+                for candidate in (model_name, model_identifier)
             ):
                 logger.info(
                     "Verified Ollama model: %s",
@@ -115,28 +144,7 @@ class OllamaChatModel:
         """Generate one non-streaming Ollama reply."""
         if type(thinking) is not bool:
             raise ValueError("Thinking must be a boolean.")
-        if not messages:
-            raise ValueError(
-                "Chat messages cannot be empty."
-            )
-
-        # Normalize content before any untrusted text reaches the HTTP payload.
-        cleaned_messages: list[ChatMessage] = []
-
-        for message in messages:
-            message_content = message["content"].strip()
-
-            if not message_content:
-                raise ValueError(
-                    "Chat message content cannot be empty."
-                )
-
-            cleaned_messages.append(
-                {
-                    "role": message["role"],
-                    "content": message_content,
-                }
-            )
+        cleaned_messages = normalize_chat_messages(messages)
 
         payload: JsonObject = {
             "model": self._model_name,
@@ -177,6 +185,7 @@ class OllamaChatModel:
                 "Ollama returned an empty reply."
             )
 
+        _validate_ollama_completion(response_data)
         return cleaned_reply
 
     def stream_work_reply(self, messages: list[ChatMessage], *, thinking: bool) -> Iterator[str]:

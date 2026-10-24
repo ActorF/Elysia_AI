@@ -215,6 +215,39 @@ def test_launch_passes_quoted_arguments_and_only_the_closed_environment() -> Non
     assert process.close() is True
 
 
+@pytest.mark.parametrize("raw", ["", "command\0tail", "\ud800", "x" * 32767], ids=["empty", "nul", "surrogate", "too-long"])
+def test_raw_interpreter_command_line_rejects_malformed_input(raw: str) -> None:
+    """Reject invalid explicit command lines before acquiring any native Job."""
+    handles = _open_standard_handles()
+    stdin_fd, stdout_read_fd, stdout_write_fd, stderr_fd = handles
+    try:
+        with pytest.raises(WindowsManagedProcessValidationError):
+            launch_windows_managed_process(
+                [_PYTHON_EXECUTABLE], raw_command_line=raw,
+                stdin_handle=_native_handle(stdin_fd), stdout_handle=_native_handle(stdout_write_fd),
+                stderr_handle=_native_handle(stderr_fd), cwd=str(Path.cwd().resolve()), environment={},
+            )
+    finally:
+        for descriptor in handles:
+            os.close(descriptor)
+
+
+def test_raw_command_line_cannot_be_combined_with_argv_arguments() -> None:
+    """Keep one explicit quoting authority rather than accepting contradictory inputs."""
+    handles = _open_standard_handles()
+    stdin_fd, stdout_read_fd, stdout_write_fd, stderr_fd = handles
+    try:
+        with pytest.raises(WindowsManagedProcessValidationError):
+            launch_windows_managed_process(
+                [_PYTHON_EXECUTABLE, "-V"], raw_command_line='"python.exe" -V',
+                stdin_handle=_native_handle(stdin_fd), stdout_handle=_native_handle(stdout_write_fd),
+                stderr_handle=_native_handle(stderr_fd), cwd=str(Path.cwd().resolve()), environment={},
+            )
+    finally:
+        for descriptor in handles:
+            os.close(descriptor)
+
+
 def test_launch_guarded_volume_python_keeps_imports_and_file_identity() -> None:
     """Run the real interpreter through a pinned volume without a drive fallback."""
 

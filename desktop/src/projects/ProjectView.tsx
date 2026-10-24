@@ -7,6 +7,9 @@
  * persisted workspace until the canonical callback completes.
  */
 
+import { t, useTranslation, getDateLocale } from '../i18n/LocaleProvider.tsx'
+import { formatUiError } from '../i18n/ui-error.ts'
+import { HelpHint } from '../design-system/HelpHint.tsx'
 import {
   useCallback,
   useId,
@@ -41,6 +44,9 @@ import './ProjectView.css'
 
 const MAX_PROJECT_NAME_LENGTH = 200
 const MAX_PROJECT_INSTRUCTIONS_LENGTH = 1_000_000
+
+// Keep named status substitutions separate so changing language preserves user names.
+type ProjectUiMessage = string | { source: string; values: Record<string, string | number> }
 
 type ProjectSection = 'chats' | 'sources' | 'memory' | 'settings'
 
@@ -135,7 +141,7 @@ function formattedTimestamp(value: string): string {
   if (!Number.isFinite(timestamp)) {
     return value
   }
-  return new Intl.DateTimeFormat('en', {
+  return new Intl.DateTimeFormat(getDateLocale(), {
     dateStyle: 'medium',
     timeStyle: 'short',
   }).format(timestamp)
@@ -151,19 +157,20 @@ function ProjectChatRow({
   onAction,
   onOpen,
 }: ProjectChatRowProps) {
+  useTranslation()
   return (
     <li className={'project-chat-row' + (chat.archived ? ' archived' : '')}>
       <div className="project-chat-copy">
         <div className="project-chat-title-line">
           <strong title={chat.title}>{chat.title}</strong>
-          {active && <span className="project-chip accent">Current</span>}
-          {chat.archived && <span className="project-chip">Archived</span>}
+          {active && <span className="project-chip accent">{t("Current")}</span>}
+          {chat.archived && <span className="project-chip">{t("Archived")}</span>}
         </div>
         <div className="project-chat-meta">
           <span className={`mode-badge mode-badge-${chat.mode}`}>
-            {chat.mode === 'work' ? 'Work' : 'Chat'}
+            {chat.mode === 'work' ? t("Work") : t("Chat")}
           </span>
-          <span>{chat.messageCount} messages</span>
+          <span>{t("{count} messages", { count: chat.messageCount })}</span>
           <span aria-hidden="true">·</span>
           <time dateTime={chat.updatedAt} title={formattedTimestamp(chat.updatedAt)}>
             {formattedTimestamp(chat.updatedAt)}
@@ -175,19 +182,18 @@ function ProjectChatRow({
           type="button"
           className="project-secondary-button"
           disabled={openDisabled}
-          aria-label={`Open Chat ${chat.title}`}
-          title={chat.archived ? 'Archived chats are read-only' : undefined}
+          aria-label={t("Open Chat {title}", { title: chat.title })}
+          title={chat.archived ? t("Archived chats are read-only") : undefined}
           onClick={onOpen}
         >
-          Open
-        </button>
+          {t("Open")}</button>
         <button
           type="button"
           className="project-secondary-button"
           disabled={actionDisabled}
           title={
             chat.archived
-              ? 'Archived chats are read-only'
+              ? t("Archived chats are read-only")
               : undefined
           }
           aria-label={`${actionLabel} ${chat.title}`}
@@ -208,6 +214,7 @@ function ProjectSettingsPanel({
   onRequestUnbind,
   onSave,
 }: ProjectSettingsPanelProps) {
+  useTranslation()
   const [nameDraft, setNameDraft] = useState(project.name)
   const [instructionsDraft, setInstructionsDraft] = useState(
     project.customInstructions ?? '',
@@ -237,8 +244,8 @@ function ProjectSettingsPanel({
       <div className="project-card project-settings-card">
         <div className="project-card-heading">
           <div>
-            <h3 id={settingsHeadingId}>Project Settings</h3>
-            <p>Name and instructions are shared by every Chat in this Project.</p>
+            <h3 id={settingsHeadingId}>{t("Project Settings")}</h3>
+            <HelpHint label={t("Project Settings")}>{t("Name and instructions are shared by every Chat in this Project.")}</HelpHint>
           </div>
         </div>
 
@@ -256,7 +263,7 @@ function ProjectSettingsPanel({
           }}
         >
           <label className="project-field">
-            <span>Project name</span>
+            <span>{t("Project name")}</span>
             <input
               value={nameDraft}
               disabled={pending || project.archived}
@@ -268,25 +275,22 @@ function ProjectSettingsPanel({
               onChange={(event) => { setNameDraft(event.target.value) }}
             />
             <small id={nameHelpId}>
-              {nameLength.toLocaleString()}/{MAX_PROJECT_NAME_LENGTH} characters
-            </small>
+              {nameLength.toLocaleString(getDateLocale())}/{MAX_PROJECT_NAME_LENGTH} {t(" characters")}</small>
           </label>
 
           <label className="project-field">
-            <span>Custom instructions</span>
+            <span>{t("Custom instructions")}</span>
             <textarea
               value={instructionsDraft}
               rows={8}
               disabled={pending || project.archived}
               aria-describedby={instructionsHelpId}
               aria-invalid={instructionsLength > MAX_PROJECT_INSTRUCTIONS_LENGTH}
-              placeholder="How should Elysia work inside this Project?"
+              placeholder={t("How should Elysia work inside this Project?")}
               onChange={(event) => { setInstructionsDraft(event.target.value) }}
             />
             <small id={instructionsHelpId}>
-              Applied on future turns. Leave blank to clear.
-              {' '}{instructionsLength.toLocaleString()}/{MAX_PROJECT_INSTRUCTIONS_LENGTH.toLocaleString()} characters
-            </small>
+              {t("Applied on future turns. Leave blank to clear.")}{' '}{instructionsLength.toLocaleString(getDateLocale())}/{MAX_PROJECT_INSTRUCTIONS_LENGTH.toLocaleString(getDateLocale())} {t(" characters")}</small>
           </label>
 
           <div className="project-form-actions">
@@ -300,8 +304,7 @@ function ProjectSettingsPanel({
                 || !settingsDirty
               }
             >
-              Save Settings
-            </button>
+              {t("Save Settings")}</button>
           </div>
         </form>
       </div>
@@ -309,12 +312,12 @@ function ProjectSettingsPanel({
       <div className="project-card project-workspace-card">
         <div className="project-card-heading">
           <div>
-            <h3>Workspace</h3>
-            <p>Bind one directory for future Project-aware Work tools.</p>
+            <h3>{t("Workspace")}</h3>
+            <HelpHint label={t("Workspace")}>{t("Bind one directory for future Project-aware Work tools.")}</HelpHint>
           </div>
         </div>
         {project.workspacePath === null ? (
-          <p className="project-workspace-empty">No workspace is bound.</p>
+          <p className="project-workspace-empty">{t("No workspace is bound.")}</p>
         ) : (
           <code className="project-workspace-path" title={project.workspacePath}>
             {project.workspacePath}
@@ -330,8 +333,8 @@ function ProjectSettingsPanel({
             <Icon name="folder" />
             <span>
               {project.workspacePath === null
-                ? 'Bind Workspace'
-                : 'Replace Workspace'}
+                ? t("Bind Workspace")
+                : t("Replace Workspace")}
             </span>
           </button>
           {project.workspacePath !== null && (
@@ -342,8 +345,7 @@ function ProjectSettingsPanel({
               disabled={pending || project.archived}
               onClick={onRequestUnbind}
             >
-              Unbind Workspace
-            </button>
+              {t("Unbind Workspace")}</button>
           )}
         </div>
       </div>
@@ -384,6 +386,7 @@ export function ProjectView({
   onUnbindWorkspace,
   onUpdate,
 }: ProjectViewProps) {
+  useTranslation()
   const [section, setSection] = useState<ProjectSection>('chats')
   const [dialogState, setDialogState] = useState<ProjectDialogState | null>(null)
   const [createName, setCreateName] = useState('')
@@ -392,8 +395,8 @@ export function ProjectView({
   const [openingProjectId, setOpeningProjectId] = useState<string | null>(null)
   const [chatActionId, setChatActionId] = useState<string | null>(null)
   const [pageError, setPageError] = useState<string | null>(null)
-  const [dialogError, setDialogError] = useState<string | null>(null)
-  const [statusMessage, setStatusMessage] = useState<string | null>(null)
+  const [dialogError, setDialogError] = useState<ProjectUiMessage | null>(null)
+  const [statusMessage, setStatusMessage] = useState<ProjectUiMessage | null>(null)
   const pendingRef = useRef(false)
   const createButtonRef = useRef<HTMLButtonElement | null>(null)
   const detailActionRef = useRef<HTMLButtonElement | null>(null)
@@ -439,7 +442,7 @@ export function ProjectView({
     }
   }, [dialogState, mutationPending, restoreDialogFocus])
 
-  function beginAction(status: string): boolean {
+  function beginAction(status: ProjectUiMessage): boolean {
     if (mutationPending || pendingRef.current) {
       return false
     }
@@ -456,8 +459,8 @@ export function ProjectView({
   }
 
   async function runPageAction(
-    pendingStatus: string,
-    successStatus: string,
+    pendingStatus: ProjectUiMessage,
+    successStatus: ProjectUiMessage,
     fallbackError: string,
     action: () => Promise<void>,
   ): Promise<void> {
@@ -498,18 +501,18 @@ export function ProjectView({
       const name = trimProtocolBlankCharacters(createName)
       const customInstructions = normalizeInstructions(createInstructions)
       if (!hasNonBlankCodePoint(name)) {
-        setDialogError('Enter a name for this Project.')
+        setDialogError(t("Enter a name for this Project."))
         return
       }
       if (codePointLength(name) > MAX_PROJECT_NAME_LENGTH) {
-        setDialogError(`Project names can use at most ${MAX_PROJECT_NAME_LENGTH} characters.`)
+        setDialogError({ source: "Project names can use at most {MAX_PROJECT_NAME_LENGTH} characters.", values: { MAX_PROJECT_NAME_LENGTH } })
         return
       }
       if (
         customInstructions !== null
         && codePointLength(customInstructions) > MAX_PROJECT_INSTRUCTIONS_LENGTH
       ) {
-        setDialogError('Project instructions are too long to save.')
+        setDialogError(t("Project instructions are too long to save."))
         return
       }
 
@@ -518,14 +521,14 @@ export function ProjectView({
       try {
         await onCreate({ name, customInstructions })
         setDialogState(null)
-        setStatusMessage(`Created Project ${name}.`)
+        setStatusMessage({ source: "Created Project {name}.", values: { name } })
         window.requestAnimationFrame(() => {
           window.requestAnimationFrame(() => {
             detailHeadingRef.current?.focus({ preventScroll: true })
           })
         })
       } catch (error) {
-        setDialogError(actionError(error, 'Could not create the Project.'))
+        setDialogError(actionError(error, t("Could not create the Project.")))
       } finally {
         finishAction()
       }
@@ -540,10 +543,10 @@ export function ProjectView({
           projectId: dialogState.project.projectId,
           archived: true,
         })
-        setStatusMessage(`Archived Project ${dialogState.project.name}.`)
+        setStatusMessage({ source: "Archived Project {name}.", values: { name: dialogState.project.name } })
       } else {
         await onUnbindWorkspace(dialogState.project.projectId)
-        setStatusMessage(`Unbound the workspace from ${dialogState.project.name}.`)
+        setStatusMessage({ source: "Unbound the workspace from {name}.", values: { name: dialogState.project.name } })
       }
       const completedDialog = dialogState
       setDialogState(null)
@@ -558,8 +561,8 @@ export function ProjectView({
       setDialogError(actionError(
         error,
         dialogState.kind === 'archive'
-          ? 'Could not archive the Project.'
-          : 'Could not unbind the workspace.',
+          ? t("Could not archive the Project.")
+          : t("Could not unbind the workspace."),
       ))
     } finally {
       finishAction()
@@ -579,9 +582,9 @@ export function ProjectView({
     setStatusMessage(null)
     setOpeningProjectId(projectId)
     await runPageAction(
-      'Opening Project…',
-      'Project opened.',
-      'Could not open the Project.',
+      t("Opening Project…"),
+      t("Project opened."),
+      t("Could not open the Project."),
       () => onOpenProject(projectId),
     )
     setOpeningProjectId(null)
@@ -592,9 +595,9 @@ export function ProjectView({
 
   async function saveSettings(request: UpdateProjectRequest): Promise<void> {
     await runPageAction(
-      'Saving Project settings…',
-      'Project settings saved.',
-      'Could not save the Project settings.',
+      t("Saving Project settings…"),
+      t("Project settings saved."),
+      t("Could not save the Project settings."),
       () => onUpdate(request),
     )
   }
@@ -603,23 +606,23 @@ export function ProjectView({
     if (activeProject === null || activeProject.archived) {
       return
     }
-    if (!beginAction('Choosing a workspace…')) {
+    if (!beginAction(t("Choosing a workspace…"))) {
       return
     }
     try {
       const changed = await onChooseWorkspace(activeProject.projectId)
       if (!changed) {
-        setStatusMessage('Workspace selection canceled. Nothing changed.')
+        setStatusMessage(t("Workspace selection canceled. Nothing changed."))
         return
       }
       setStatusMessage(
         activeProject.workspacePath === null
-          ? 'Workspace bound to the Project.'
-          : 'Project workspace replaced.',
+          ? t("Workspace bound to the Project.")
+          : t("Project workspace replaced."),
       )
     } catch (error) {
       setStatusMessage(null)
-      setPageError(actionError(error, 'Could not bind the workspace.'))
+      setPageError(actionError(error, t("Could not bind the workspace.")))
     } finally {
       finishAction()
     }
@@ -627,9 +630,9 @@ export function ProjectView({
 
   async function restoreProject(project: ProjectSummary): Promise<void> {
     await runPageAction(
-      'Restoring Project…',
-      `Restored Project ${project.name}.`,
-      'Could not restore the Project.',
+      t("Restoring Project…"),
+      { source: "Restored Project {name}.", values: { name: project.name } },
+      t("Could not restore the Project."),
       () => onArchive({ projectId: project.projectId, archived: false }),
     )
   }
@@ -643,9 +646,9 @@ export function ProjectView({
     }
     setChatActionId(chat.chatId)
     await runPageAction(
-      projectId === null ? 'Removing Chat from Project…' : 'Moving Chat into Project…',
-      projectId === null ? 'Chat removed from the Project.' : 'Chat moved into the Project.',
-      'Could not update the Chat Project.',
+      projectId === null ? t("Removing Chat from Project…") : t("Moving Chat into Project…"),
+      projectId === null ? t("Chat removed from the Project.") : t("Chat moved into the Project."),
+      t("Could not update the Chat Project."),
       () => onMoveChat({ chatId: chat.chatId, projectId }),
     )
     setChatActionId(null)
@@ -657,9 +660,9 @@ export function ProjectView({
     }
     setChatActionId(chat.chatId)
     await runPageAction(
-      'Opening Chat…',
-      'Chat opened.',
-      'Could not open the Chat.',
+      t("Opening Chat…"),
+      t("Chat opened."),
+      t("Could not open the Chat."),
       () => onOpenChat(chat.chatId),
     )
     setChatActionId(null)
@@ -669,27 +672,23 @@ export function ProjectView({
   let dialogDescription = null
   let dialogConfirmLabel = ''
   if (dialogState?.kind === 'create') {
-    dialogTitle = 'Create Project'
-    dialogDescription = 'Give the Project a stable name and optional shared instructions.'
-    dialogConfirmLabel = 'Create Project'
+    dialogTitle = t("Create Project")
+    dialogDescription = t("Give the Project a stable name and optional shared instructions.")
+    dialogConfirmLabel = t("Create Project")
   } else if (dialogState?.kind === 'archive') {
-    dialogTitle = `Archive “${dialogState.project.name}”?`
+    dialogTitle = t("Archive “{name}”?", { name: dialogState.project.name })
     dialogDescription = (
       <p>
-        The Project and its Chats stay stored, but the Project becomes read-only
-        until it is restored.
-      </p>
+        {t("The Project and its Chats stay stored, but the Project becomes read-only until it is restored.")}</p>
     )
-    dialogConfirmLabel = 'Archive Project'
+    dialogConfirmLabel = t("Archive Project")
   } else if (dialogState?.kind === 'unbind') {
-    dialogTitle = `Unbind workspace from “${dialogState.project.name}”?`
+    dialogTitle = t("Unbind workspace from “{name}”?", { name: dialogState.project.name })
     dialogDescription = (
       <p>
-        This removes only the Project association. Files in the directory are
-        not changed or deleted.
-      </p>
+        {t("This removes only the Project association. Files in the directory are not changed or deleted.")}</p>
     )
-    dialogConfirmLabel = 'Unbind Workspace'
+    dialogConfirmLabel = t("Unbind Workspace")
   }
 
   return (
@@ -699,18 +698,18 @@ export function ProjectView({
           <button
             type="button"
             className="icon-button sidebar-toggle"
-            aria-label={sidebarOpen ? 'Hide navigation' : 'Show navigation'}
+            aria-label={sidebarOpen ? t("Hide navigation") : t("Show navigation")}
             aria-controls="app-sidebar"
             aria-expanded={sidebarOpen}
             aria-keyshortcuts="Control+B Meta+B"
-            title="Toggle navigation (Ctrl+B)"
+            title={t("Toggle navigation (Ctrl+B)")}
             onClick={onToggleSidebar}
           >
             <Icon name="menu" />
           </button>
           <div className="project-page-heading">
-            <h1>Projects</h1>
-            <span>Shared context, Chats, and workspaces</span>
+            <h1>{t("Projects")}</h1>
+            <span>{t("Shared context, Chats, and workspaces")}</span>
           </div>
         </div>
         <button
@@ -722,7 +721,7 @@ export function ProjectView({
           onClick={openCreateDialog}
         >
           <Icon name="plus" />
-          <span>New Project</span>
+          <span>{t("New Project")}</span>
         </button>
       </header>
 
@@ -732,16 +731,16 @@ export function ProjectView({
             {pageError !== null && (
               <InlineAlert
                 tone="error"
-                title="Project action failed"
-                dismissLabel="Dismiss Project error"
+                title={t("Project action failed")}
+                dismissLabel={t("Dismiss Project error")}
                 onDismiss={() => { setPageError(null) }}
               >
-                {pageError}
+                {formatUiError(pageError)}
               </InlineAlert>
             )}
             {statusMessage !== null && pageError === null && (
               <p className="project-operation-status" role="status" aria-live="polite">
-                {statusMessage}
+                {typeof statusMessage === 'string' ? t(statusMessage) : t(statusMessage.source, statusMessage.values)}
               </p>
             )}
           </div>
@@ -750,26 +749,25 @@ export function ProjectView({
         {loading || projectState === null ? (
           <LoadingState
             className="project-loading"
-            title="Loading Projects"
-            description="Reading canonical Project and Chat relationships from the local Backend."
+            title={t("Loading Projects")}
           />
         ) : projects.length === 0 ? (
           <EmptyState
             className="project-empty"
             icon="folder"
-            title="No Projects yet"
-            description="Create a Project to share instructions and a workspace across multiple Chats."
+            title={t("No Projects yet")}
+            description={t("Create a Project to share instructions and a workspace across multiple Chats.")}
             action={{
-              label: 'Create Project',
+              label: t("Create Project"),
               disabled: pending,
               onClick: openCreateDialog,
             }}
           />
         ) : (
           <div className="project-split-view">
-            <nav className="project-list-panel" aria-label="Projects">
+            <nav className="project-list-panel" aria-label={t("Projects")}>
               <div className="project-list-heading">
-                <strong>All Projects</strong>
+                <strong>{t("All Projects")}</strong>
                 <span>{projects.length}</span>
               </div>
               <ul className="project-list">
@@ -781,7 +779,7 @@ export function ProjectView({
                         type="button"
                         className={'project-list-button' + (selected ? ' active' : '')}
                         aria-current={selected ? 'page' : undefined}
-                        aria-label={`Open project ${project.name}`}
+                        aria-label={t("Open project {name}", { name: project.name })}
                         disabled={pending || openingProjectId !== null}
                         onClick={() => { void openProject(project.projectId) }}
                       >
@@ -789,12 +787,12 @@ export function ProjectView({
                         <span className="project-list-copy">
                           <span className="project-list-title-line">
                             <strong title={project.name}>{project.name}</strong>
-                            {project.archived && <span className="project-chip">Archived</span>}
+                            {project.archived && <span className="project-chip">{t("Archived")}</span>}
                           </span>
                           <span className="project-list-meta">
-                            {project.chatCount} {project.chatCount === 1 ? 'Chat' : 'Chats'}
+                            {project.chatCount} {project.chatCount === 1 ? t("Chat") : t("Chats")}
                             <span aria-hidden="true">·</span>
-                            {project.workspacePath === null ? 'No workspace' : 'Workspace bound'}
+                            {project.workspacePath === null ? t("No workspace") : t("Workspace bound")}
                           </span>
                         </span>
                       </button>
@@ -808,8 +806,8 @@ export function ProjectView({
               <section className="project-detail project-detail-empty">
                 <EmptyState
                   icon="folder"
-                  title="Choose a Project"
-                  description="Select a Project from the list to see its Chats and shared context."
+                  title={t("Choose a Project")}
+                  description={t("Select a Project from the list to see its Chats and shared context.")}
                 />
               </section>
             ) : (
@@ -817,7 +815,7 @@ export function ProjectView({
                 <header className="project-detail-header">
                   <div className="project-detail-title">
                     <span className="eyebrow">
-                      {activeProject.archived ? 'Archived Project' : 'Active Project'}
+                      {activeProject.archived ? t("Archived Project") : t("Active Project")}
                     </span>
                     <h2
                       ref={detailHeadingRef}
@@ -828,9 +826,9 @@ export function ProjectView({
                       {activeProject.name}
                     </h2>
                     <p>
-                      {activeProject.chatCount} shared {activeProject.chatCount === 1 ? 'Chat' : 'Chats'}
+                      {t("{count} shared chats", { count: activeProject.chatCount })}
                       <span aria-hidden="true"> · </span>
-                      Updated {formattedTimestamp(activeProject.updatedAt)}
+                      {t("Updated ")}{formattedTimestamp(activeProject.updatedAt)}
                     </p>
                   </div>
                   {activeProject.archived ? (
@@ -842,7 +840,7 @@ export function ProjectView({
                       onClick={() => { void restoreProject(activeProject) }}
                     >
                       <Icon name="archive" />
-                      <span>Restore Project</span>
+                      <span>{t("Restore Project")}</span>
                     </button>
                   ) : (
                     <button
@@ -860,46 +858,44 @@ export function ProjectView({
                       }}
                     >
                       <Icon name="archive" />
-                      <span>Archive Project</span>
+                      <span>{t("Archive Project")}</span>
                     </button>
                   )}
                 </header>
 
                 {activeProject.archived && (
-                  <InlineAlert tone="warning" title="Read-only Project">
-                    Restore this Project before editing settings, changing its workspace,
-                    or moving Chats.
-                  </InlineAlert>
+                  <InlineAlert tone="warning" title={t("Read-only Project")}>
+                    {t("Restore this Project before editing settings, changing its workspace, or moving Chats.")}</InlineAlert>
                 )}
 
-                <nav className="project-section-nav" aria-label="Project sections">
+                <nav className="project-section-nav" aria-label={t("Project sections")}>
                   <button
                     type="button"
                     aria-current={section === 'chats' ? 'page' : undefined}
                     onClick={() => { setSection('chats') }}
                   >
-                    <Icon name="chat" /><span>Chats</span>
+                    <Icon name="chat" /><span>{t("Chats")}</span>
                   </button>
                   <button
                     type="button"
                     aria-current={section === 'sources' ? 'page' : undefined}
                     onClick={() => { setSection('sources') }}
                   >
-                    <Icon name="file" /><span>Sources</span>
+                    <Icon name="file" /><span>{t("Project Sources")}</span>
                   </button>
                   <button
                     type="button"
                     aria-current={section === 'memory' ? 'page' : undefined}
                     onClick={() => { setSection('memory') }}
                   >
-                    <Icon name="memory" /><span>Memory</span>
+                    <Icon name="memory" /><span>{t("Memory")}</span>
                   </button>
                   <button
                     type="button"
                     aria-current={section === 'settings' ? 'page' : undefined}
                     onClick={() => { setSection('settings') }}
                   >
-                    <Icon name="settings" /><span>Settings</span>
+                    <Icon name="settings" /><span>{t("Settings")}</span>
                   </button>
                 </nav>
 
@@ -909,8 +905,7 @@ export function ProjectView({
                       <section className="project-card" aria-labelledby="project-chats-heading">
                         <div className="project-card-heading">
                           <div>
-                            <h3 id="project-chats-heading">Project Chats</h3>
-                            <p>Chats that share this Project's context.</p>
+                            <h3 id="project-chats-heading">{t("Project Chats")}</h3>
                           </div>
                           <span className="project-count">{projectChats.length}</span>
                         </div>
@@ -918,8 +913,8 @@ export function ProjectView({
                           <EmptyState
                             className="project-card-empty"
                             icon="chat"
-                            title="No Project Chats"
-                            description="Move an unassigned Chat into this Project to start sharing context."
+                            title={t("No Project Chats")}
+                            description={t("Move an unassigned Chat into this Project to start sharing context.")}
                           />
                         ) : (
                           <ul className="project-chat-list">
@@ -930,7 +925,7 @@ export function ProjectView({
                                   key={chat.chatId}
                                   active={chat.chatId === activeChatId}
                                   chat={chat}
-                                  actionLabel="Remove"
+                                  actionLabel={t("Remove")}
                                   actionDisabled={
                                     pending
                                     || activeProject.archived
@@ -955,8 +950,8 @@ export function ProjectView({
                       <section className="project-card" aria-labelledby="unassigned-chats-heading">
                         <div className="project-card-heading">
                           <div>
-                            <h3 id="unassigned-chats-heading">Unassigned Chats</h3>
-                            <p>Move a Chat here without changing its messages.</p>
+                            <h3 id="unassigned-chats-heading">{t("Unassigned Chats")}</h3>
+                            <HelpHint label={t("Move Chat")}>{t("Move a Chat here without changing its messages.")}</HelpHint>
                           </div>
                           <span className="project-count">{unassignedChats.length}</span>
                         </div>
@@ -964,8 +959,8 @@ export function ProjectView({
                           <EmptyState
                             className="project-card-empty"
                             icon="chat"
-                            title="No Unassigned Chats"
-                            description="Every active Chat already belongs to a Project."
+                            title={t("No Unassigned Chats")}
+                            description={t("Every active Chat already belongs to a Project.")}
                           />
                         ) : (
                           <ul className="project-chat-list">
@@ -976,7 +971,7 @@ export function ProjectView({
                                   key={chat.chatId}
                                   active={chat.chatId === activeChatId}
                                   chat={chat}
-                                  actionLabel="Move here"
+                                  actionLabel={t("Move here")}
                                   actionDisabled={pending || activeProject.archived || chatBusy}
                                   openDisabled={pending || busyChatId !== undefined}
                                   onAction={() => {
@@ -1046,8 +1041,7 @@ export function ProjectView({
                     <section className="project-card project-feature-placeholder">
                       <EmptyState
                         icon="memory"
-                        title="Project Memory isn't connected yet"
-                        description="This entry will show only memory scoped to this Project. No global or other-Project memory is exposed here."
+                        title={t("Project Memory isn't connected yet")}
                       />
                     </section>
                   )}
@@ -1082,14 +1076,14 @@ export function ProjectView({
         confirmLabel={dialogConfirmLabel}
         danger={dialogState?.kind === 'archive' || dialogState?.kind === 'unbind'}
         pending={pending}
-        error={dialogError}
+        error={dialogError === null ? null : typeof dialogError === 'string' ? formatUiError(dialogError) : t(dialogError.source, dialogError.values)}
         onCancel={closeDialog}
         onConfirm={() => { void confirmDialog() }}
       >
         {dialogState?.kind === 'create' ? (
           <div className="project-dialog-fields">
             <label className="project-field">
-              <span>Project name</span>
+              <span>{t("Project name")}</span>
               <input
                 data-dialog-initial-focus
                 value={createName}
@@ -1101,24 +1095,22 @@ export function ProjectView({
                 onChange={(event) => { setCreateName(event.target.value) }}
               />
               <small>
-                {codePointLength(createName).toLocaleString()}/{MAX_PROJECT_NAME_LENGTH} characters
-              </small>
+                {codePointLength(createName).toLocaleString(getDateLocale())}/{MAX_PROJECT_NAME_LENGTH} {t(" characters")}</small>
             </label>
             <label className="project-field">
-              <span>Custom instructions <span className="project-optional">Optional</span></span>
+              <span>{t("Custom instructions ")}<span className="project-optional">{t("Optional")}</span></span>
               <textarea
                 value={createInstructions}
                 rows={5}
                 disabled={pending}
-                placeholder="Shared guidance for Chats in this Project"
+                placeholder={t("Shared guidance for Chats in this Project")}
                 aria-invalid={
                   codePointLength(createInstructions) > MAX_PROJECT_INSTRUCTIONS_LENGTH
                 }
                 onChange={(event) => { setCreateInstructions(event.target.value) }}
               />
               <small>
-                {codePointLength(createInstructions).toLocaleString()}/{MAX_PROJECT_INSTRUCTIONS_LENGTH.toLocaleString()} characters
-              </small>
+                {codePointLength(createInstructions).toLocaleString(getDateLocale())}/{MAX_PROJECT_INSTRUCTIONS_LENGTH.toLocaleString(getDateLocale())} {t(" characters")}</small>
             </label>
           </div>
         ) : undefined}

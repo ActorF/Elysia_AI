@@ -12,7 +12,7 @@ import pytest
 
 import desktop_backend as backend_module
 from attachments import AttachmentScope
-from desktop_protocol import ProtocolValidationError, build_request
+from desktop_protocol import ProtocolValidationError, build_event, build_request
 from tests.test_brain import _active_brain
 from tests.test_desktop_backend import _initialized_backend, _output_messages, _request, _success_result
 from tests.test_internet_assistant import _Model, _evidence
@@ -35,11 +35,11 @@ def _send(backend, request_id, method, params):
     assert backend._handle_line(json.dumps(_request(request_id, method, params)))
 
 
-def _search_event(output):
+def _search_event(output, request_id=None):
     deadline = monotonic() + 3
     while monotonic() < deadline:
         found = next((message for message in _output_messages(output)
-                      if message.get("event") == "chat.internet.request"), None)
+                      if message.get("event") == "chat.internet.request" and (request_id is None or message.get("requestId") == request_id)), None)
         if found is not None:
             return found
         Event().wait(0.01)
@@ -97,6 +97,40 @@ def test_cancel_waiting_search_ignores_late_result_and_does_not_commit(tmp_path:
         assert _success_result(_output_messages(output), "late")["accepted"] is False
         assert brain.get_chat(chat.chat_id).messages == ()
         assert len(model.prompts) == 1
+    finally:
+        backend._require_attachment_store().close()
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+def test_retry_research_uses_a_fresh_owned_receipt_and_preserves_history_on_stop(tmp_path: Path, cancel: bool) -> None:
+    """Retry traverses the real private research protocol, including its cancellation fence."""
+    backend, brain, chat, output, model = _backend(tmp_path, plan="Original answer")
+    try:
+        list(brain.stream_chat(chat.chat_id, "Original question"))
+        before = brain.get_chat(chat.chat_id).messages
+        model.responses = ['{"action":"search","query":"replacement fact","language":"en"}', "Replacement answer"]
+        _send(backend, "retry-research", "chat.retry", {
+            "chatId": str(chat.chat_id), "userMessageId": str(before[-2].message_id),
+            "assistantMessageId": str(before[-1].message_id), "speakReply": False,
+            "message": "Please verify a replacement fact", "automaticInternet": True,
+        })
+        event = _search_event(output, "retry-research")
+        assert event["data"]["query"] == "replacement fact"
+        assert brain.get_chat(chat.chat_id).messages == before
+        if cancel:
+            _send(backend, "cancel-retry", "request.cancel", {"requestId": "retry-research"})
+            assert backend._wait_for_generation(timeout=3)
+        _send(backend, "retry-evidence", "chat.internet.resolve", _resolve_params(event))
+        assert backend._wait_for_generation(timeout=3)
+        assert _success_result(_output_messages(output), "retry-evidence")["accepted"] is not cancel
+        after = brain.get_chat(chat.chat_id).messages
+        if cancel:
+            assert after == before
+        else:
+            assert len(after) == 2
+            assert after[-2].message_id == before[-2].message_id
+            assert after[-2].content == "Please verify a replacement fact"
+            assert "Replacement answer" in after[-1].content and "Retrieved sources" in after[-1].content
     finally:
         backend._require_attachment_store().close()
 
@@ -223,3 +257,98 @@ def test_work_mode_native_image_export_remains_available(tmp_path: Path) -> None
         assert _success_result(_output_messages(output), "work-image")["mediaType"] == "image/png"
     finally:
         store.close()
+
+
+def test_weather_request_preserves_period_and_emits_scoped_research_phases(tmp_path: Path) -> None:
+    """Main receives a typed forecast request and UI phases under the same generation identity."""
+
+    backend, brain, chat, output, _ = _backend(tmp_path, plan='{"action":"weather","query":"上海","language":"zh"}')
+    try:
+        _send(backend, "generation", "chat.stream", {
+            "chatId": str(chat.chat_id), "message": "上海明天天气如何？", "speakReply": False, "automaticInternet": True,
+        })
+        event = _search_event(output)
+        assert event["data"]["kind"] == "weather" and event["data"]["when"] == "tomorrow"
+        params = _resolve_params(event)
+        params["sources"] = _evidence("weather")["sources"]
+        _send(backend, "resolved", "chat.internet.resolve", params)
+        assert backend._wait_for_generation(timeout=3)
+        phases = [item for item in _output_messages(output) if item.get("event") == "chat.research.status"]
+        assert [item["data"]["stage"] for item in phases] == ["planning", "weather", "answering"]
+        assert all(item["requestId"] == "generation" and item["data"]["chatId"] == str(chat.chat_id) for item in phases)
+        assert len(brain.get_chat(chat.chat_id).messages) == 2
+    finally:
+        backend._require_attachment_store().close()
+
+
+@pytest.mark.parametrize("extra", [{"kind": "shell"}, {"when": "tomorrow"}, {"kind": "search", "when": "now"}, {"kind": "weather", "when": "yesterday"}])
+def test_internet_event_rejects_unknown_capabilities_and_weather_period_on_search(extra: dict) -> None:
+    """Optional weather routing does not open generic tools or unrelated search parameters."""
+
+    with pytest.raises(ProtocolValidationError):
+        build_event("chat.internet.request", request_id="generation", data={
+            "chatId": "chat_fixture", "searchId": "internet_search_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "query": "Shanghai", "language": "en", **extra,
+        })
+
+
+def test_research_status_rejects_provider_text_in_the_fixed_phase_contract() -> None:
+    """The UI phase wire cannot carry a query, raw error or arbitrary model output."""
+
+    with pytest.raises(ProtocolValidationError):
+        build_event("chat.research.status", request_id="generation", data={"chatId": "chat_fixture", "stage": "run shell"})
+    with pytest.raises(ProtocolValidationError):
+        build_event("chat.research.status", request_id="generation", data={"chatId": "chat_fixture", "stage": "planning", "query": "private"})
+
+
+@pytest.mark.parametrize("automatic", [{}, {"automaticInternet": False}])
+@pytest.mark.parametrize("question", ["请查询上海现在的天气。", "请上网查询Python最新版本"])
+def test_real_backend_offline_chat_instructs_enabling_internet_without_model_generation(tmp_path: Path, automatic: dict, question: str) -> None:
+    """An omitted or false native capability follows the actual offline desktop path safely."""
+
+    backend, brain, chat, output, model = _backend(tmp_path, plan="Should not generate or plan")
+    try:
+        _send(backend, "offline-generation", "chat.stream", {
+            "chatId": str(chat.chat_id), "message": question, "speakReply": False, **automatic,
+        })
+        assert backend._wait_for_generation(timeout=3)
+        messages = _output_messages(output)
+        reply = _success_result(messages, "offline-generation")["reply"]
+        assert "允许联网" in reply
+        assert not any(item.get("event") in ("chat.internet.request", "chat.research.status") for item in messages)
+        assert model.prompts == []
+        assert brain.get_chat(chat.chat_id).messages[-1].content == reply
+    finally:
+        backend._require_attachment_store().close()
+
+
+def test_real_backend_preserves_user_weather_qualifiers_after_geocoder_clarification(tmp_path: Path) -> None:
+    """Three actual NDJSON turns retain the full user tuple even when the model repeats a city-only query."""
+
+    backend, brain, chat, output, model = _backend(tmp_path, plan='{"action":"clarify","query":null,"language":"zh"}')
+    try:
+        _send(backend, "weather-question", "chat.stream", {"chatId": str(chat.chat_id), "message": "现在天气怎么样？", "speakReply": False, "automaticInternet": True})
+        assert backend._wait_for_generation(timeout=3)
+        model.responses = ['{"action":"weather","query":"上海","language":"zh"}']
+        _send(backend, "weather-city", "chat.stream", {"chatId": str(chat.chat_id), "message": "上海", "speakReply": False, "automaticInternet": True})
+        city_event = _search_event(output, "weather-city")
+        city_result = _resolve_params(city_event)
+        city_result["sources"] = _evidence("weather")["sources"]
+        city_result["sources"][0]["url"] = "https://geocoding-api.open-meteo.com/v1/search?name=Shanghai"
+        city_result["sources"][0]["snippet"] = "多个地点匹配；未取得天气数据。"
+        _send(backend, "city-result", "chat.internet.resolve", city_result)
+        assert backend._wait_for_generation(timeout=3)
+        assert brain.get_chat(chat.chat_id).messages[-1].content.startswith("这个地点名称尚未能唯一确定。")
+        model.responses = ['{"action":"weather","query":"上海","language":"zh"}', "上海天气结果"]
+        _send(backend, "weather-qualified", "chat.stream", {"chatId": str(chat.chat_id), "message": "上海，上海市，CN", "speakReply": False, "automaticInternet": True})
+        qualified = _search_event(output, "weather-qualified")
+        assert qualified["data"]["query"] == "上海，上海市，CN"
+        result = _resolve_params(qualified)
+        result["sources"] = _evidence("weather")["sources"]
+        _send(backend, "qualified-result", "chat.internet.resolve", result)
+        assert backend._wait_for_generation(timeout=3)
+        assert model.closed == 4
+        assert "上海天气结果" in _success_result(_output_messages(output), "weather-qualified")["reply"]
+        assert len(brain.get_chat(chat.chat_id).messages) == 6
+    finally:
+        backend._require_attachment_store().close()

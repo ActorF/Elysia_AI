@@ -1,6 +1,9 @@
 /** Present redacted Work decisions, conditional Undo, and verified recovery disclosures. */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { getDateLocale, useTranslation } from '../i18n/LocaleProvider.tsx'
+import { HelpHint } from '../design-system/HelpHint.tsx'
+import { formatUiError } from '../i18n/ui-error.ts'
 import type { WorkAuditClient, WorkAuditEntry, WorkAuditState } from '../../electron/work-audit-protocol.ts'
 import type { WorkToolResult } from '../../electron/work-tool-protocol.ts'
 import './WorkHistory.css'
@@ -22,6 +25,7 @@ interface WorkHistoryProps {
 /** Read bounded owner history and require explicit consent for each conditional inverse write. */
 export function WorkHistory({ api, chatId, ready, disabled, workspacePath, undoAvailable,
   refreshKey, onBusyChange, onHistoryChange }: WorkHistoryProps) {
+  const { t } = useTranslation()
   const [history, setHistory] = useState<WorkAuditState | null>(null)
   const [selection, setSelection] = useState<WorkAuditEntry | null>(null)
   const [loading, setLoading] = useState(false)
@@ -69,6 +73,17 @@ export function WorkHistory({ api, chatId, ready, disabled, workspacePath, undoA
   }, [api, chatId, ready, onHistoryChange])
 
   useEffect(() => {
+    let current = true
+    // Folder hydration is independent of Chat audit loading. Revoke only the
+    // old Undo review; clearing history here could discard a valid in-flight
+    // audit response without scheduling another refresh after navigation.
+    queueMicrotask(() => {
+      if (current) { setSelection(null); setResult(null) }
+    })
+    return () => { current = false }
+  }, [workspacePath])
+
+  useEffect(() => {
     // Refresh only after the producer releases its lease. Reading while the
     // writer is running could display an older Undo eligibility snapshot.
     if (!ready || disabled || pending) return
@@ -105,52 +120,51 @@ export function WorkHistory({ api, chatId, ready, disabled, workspacePath, undoA
   const blocked = disabled || pending || loading || !ready
 
   return (
-    <section className="work-history" aria-label="Work history" aria-busy={loading || pending}>
-      <div className="work-history-heading"><div className="work-section-heading"><h3>Activity</h3>
-        <p>A record of your actions and approvals.</p></div>
-        <button type="button" className="tool-quiet" disabled={blocked} onClick={() => { void refresh() }}>Refresh history</button>
+    <section className="work-history" aria-label={t("Work history")} aria-busy={loading || pending}>
+      <div className="work-history-heading"><div className="work-section-heading"><h3>{t("Activity")}</h3>
+        <HelpHint label={t("Activity")}>{t("File contents and search terms are never shown in history.")}</HelpHint></div>
+        <button type="button" className="tool-quiet" disabled={blocked} onClick={() => { void refresh() }}>{t("Refresh history")}</button>
       </div>
-      {history?.entries.length === 0 && <div className="work-history-empty"><h3>No activity yet</h3>
-        <p>No recorded actions for this Chat.</p></div>}
-      {history?.truncated && <p>Showing the newest available records. Older history exceeds this view’s limit.</p>}
+      {history?.entries.length === 0 && <div className="work-history-empty"><h3>{t("No activity yet")}</h3>
+        <p>{t("No recorded actions for this Chat.")}</p></div>}
+      {history?.truncated && <p>{t("Showing the newest available records. Older history exceeds this view’s limit.")}</p>}
       {history !== null && <ol className="work-history-entries">
         {history.entries.map((entry, index) => (
           <li key={`${entry.timestamp}:${entry.toolId}:${index}`}>
-            <strong>{entry.toolId} · {entry.parameters.path || 'Workspace root'}</strong>
-            <span data-work-audit-outcome>{entry.result}{entry.error === null ? '' : ` · ${entry.error}`}</span>
-            <time dateTime={entry.timestamp}>{entry.timestamp}</time>
-            <small>Decision: {entry.decision === 'approve' ? 'Approved' : entry.decision === 'reject' ? 'Rejected'
-                : entry.decision === 'modify' ? 'Modification requested' : entry.decision === 'timeout' ? 'Approval expired'
-                  : ['list_directory', 'read_text', 'search_files', 'metadata'].includes(entry.toolId) ? 'Explicit read' : 'Not recorded'}</small>
-            <details><summary>Parameter summary</summary>
-              <small>Chat: {entry.chatId} · Project: {entry.projectId ?? 'None'}</small>
+            <strong>{t(entry.toolId)} · {entry.parameters.path || t('Workspace root')}</strong>
+            <span data-work-audit-outcome>{t(entry.result)}{entry.error === null ? '' : ` · ${t(entry.error)}`}</span>
+            <time dateTime={entry.timestamp}>{new Date(entry.timestamp).toLocaleString(getDateLocale())}</time>
+            <small>{t('Decision: {decision}', { decision: entry.decision === 'approve' ? t('Approved') : entry.decision === 'reject' ? t('Rejected')
+                : entry.decision === 'modify' ? t('Modification requested') : entry.decision === 'timeout' ? t('Approval expired')
+                  : ['list_directory', 'read_text', 'search_files', 'metadata'].includes(entry.toolId) ? t('Explicit read') : t('Not recorded') })}</small>
+            <details><summary>{t("Parameter summary")}</summary>
+              <small>{t('Chat: {chat} · Project: {project}', { chat: entry.chatId, project: entry.projectId ?? t('None') })}</small>
               <pre>{JSON.stringify(entry.parameters, null, 2)}</pre></details>
             {entry.undoId !== null && <button type="button" disabled={blocked || workspacePath === null || !undoAvailable}
-              onClick={() => { setSelection(entry); setResult(null) }}>Undo {entry.toolId}</button>}
+              onClick={() => { setSelection(entry); setResult(null) }}>{t('Undo {tool}', { tool: t(entry.toolId) })}</button>}
             {entry.recovery !== null && <div className="work-history-recovery">
-              <p>Interrupted operation. Review recovery files before changing the Workspace.</p>
-              <span>Transaction journal folder: <code>{entry.recovery.directory}</code></span>
+              <p>{t("Interrupted operation. Review recovery files before changing the Workspace.")}</p>
+              <span>{t("Transaction journal folder:")} <code>{entry.recovery.directory}</code></span>
               {entry.recovery.backupPath !== null && entry.recovery.beforeSha256 !== null
-                ? <><span>Verified recovery copy: <code>{entry.recovery.backupPath}</code></span>
+                ? <><span>{t("Verified recovery copy:")} <code>{entry.recovery.backupPath}</code></span>
                   <small>SHA-256: {entry.recovery.beforeSha256}</small></>
-                : <span>No verified recovery copy is available. The journal folder records the interruption.</span>}
-              <button type="button" disabled={pending} onClick={() => { void openData() }}>Open data folder</button>
+                : <span>{t("No verified recovery copy is available. The journal folder records the interruption.")}</span>}
+              <button type="button" disabled={pending} onClick={() => { void openData() }}>{t("Open data folder")}</button>
             </div>}
           </li>
         ))}
       </ol>}
-      {selection !== null && <div className="work-undo-decision" role="region" aria-label="Confirm Work Undo">
-        <strong>Undo {selection.toolId} · {selection.parameters.path}</strong>
-        <p>Restore the recorded previous state only if the current file still matches this action. External changes will be kept.</p>
+      {selection !== null && <div className="work-undo-decision" role="region" aria-label={t("Confirm Work Undo")}>
+        <strong>{t('Undo {tool}', { tool: t(selection.toolId) })} · {selection.parameters.path}</strong>
+        <p>{t("Restore the recorded previous state only if the current file still matches this action. External changes will be kept.")}</p>
         <pre>{JSON.stringify({ toolId: selection.toolId, parameters: selection.parameters, undoId: selection.undoId }, null, 2)}</pre>
-        <div><button type="button" disabled={blocked || workspacePath === null} onClick={() => { void undo() }}>Confirm Undo</button>
-          <button type="button" disabled={pending} onClick={() => { setSelection(null) }}>Cancel Undo</button></div>
+        <div><button type="button" disabled={blocked || workspacePath === null} onClick={() => { void undo() }}>{t("Confirm Undo")}</button>
+          <button type="button" disabled={pending} onClick={() => { setSelection(null) }}>{t("Cancel Undo")}</button></div>
       </div>}
       {result !== null && <div className="work-undo-result" role="status">
-        {result.status === 'succeeded' ? 'Undo completed and verified.' : `Undo ${result.status}: ${result.error?.message ?? 'No change was applied.'}`}
+        {result.status === 'succeeded' ? t("Undo completed and verified.") : t('Undo {status}: {message}', { status: t(result.status), message: t(result.error?.message ?? 'No change was applied.') })}
       </div>}
-      {error !== null && <p role="alert">{error}</p>}
-      <small className="work-history-privacy">File contents and search terms are never shown in history.</small>
+      {error !== null && <p role="alert">{formatUiError(error)}</p>}
     </section>
   )
 }

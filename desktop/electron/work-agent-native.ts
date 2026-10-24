@@ -1,10 +1,11 @@
-/** Execute bounded Work conversation tools through fixed Windows applications and a private Core Audio helper. */
+/** Admit Work desktop tools through native dialogs and CMD calls through inline, turn-bound approval. */
 
+import { localizeNativeDialog, nativeText } from './native-locale.js'
 import { dialog, type BrowserWindow, type MessageBoxOptions } from 'electron'
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
 import { lstat, realpath } from 'node:fs/promises'
 import path from 'node:path'
-import type { WorkToolCall, WorkToolResult } from './work-agent-protocol.js'
+import { parseWorkCommandArguments, type WorkCommandArguments, type WorkCommandApprovalOutcome, type WorkToolCall, type WorkToolResult } from './work-agent-protocol.js'
 
 /** Main retains canonical ownership of the originating conversation and its turn. */
 export interface WorkAgentNativeHost {
@@ -12,6 +13,12 @@ export interface WorkAgentNativeHost {
   isCurrent(request: WorkToolCall): boolean
   /** Return the trusted application window that owns a native approval dialog. */
   getWindow(): BrowserWindow
+  /** Supply Main's user-home default rather than inheriting an application's installation directory. */
+  defaultCommandCwd?: string
+  /** Run a reviewed CMD request and settle only after its managed process tree has closed. */
+  runCommand?(request: WorkToolCall, signal: AbortSignal): Promise<WorkToolResult>
+  /** Publish the detached CMD request inline and wait for Main to validate the user's exact decision. */
+  approveCommand?(request: WorkToolCall, signal: AbortSignal): Promise<WorkCommandApprovalOutcome>
 }
 
 /** Replace disk, dialogs, and child processes without changing real applications or audio in tests. */
@@ -179,10 +186,14 @@ async function systemFile(
   return path.win32.join(root, ...parts)
 }
 
-function parseArguments(request: WorkToolCall): ApplicationId | number | null {
+function parseArguments(request: WorkToolCall): ApplicationId | number | WorkCommandArguments | null {
   const args = request.arguments
   if (args === null || typeof args !== 'object' || Array.isArray(args)) throw new NativeFailure('invalid_request', 'Invalid tool arguments.')
   const keys = Object.keys(args)
+  if (request.tool === 'run_command') {
+    try { return parseWorkCommandArguments(args) }
+    catch { throw new NativeFailure('invalid_request', 'Use a nonempty single-line CMD command; join operations with & or &&. Supply a drive-qualified absolute working directory and a timeout from 1000 to 120000 milliseconds.') }
+  }
   if ((request.tool === 'list_apps' || request.tool === 'get_volume') && keys.length === 0) return null
   if (request.tool === 'open_app' && keys.length === 1 && keys[0] === 'application'
     && typeof args.application === 'string' && Object.hasOwn(APPLICATIONS, args.application)) return args.application as ApplicationId
@@ -296,10 +307,10 @@ export function createWorkAgentNativeTools(
     const approve = async (message: string, detail: string) => {
       check()
       if (request.options.permission !== 'ask') return
-      const response = await dependencies.confirm(host.getWindow(), {
+      const response = await dependencies.confirm(host.getWindow(), localizeNativeDialog({
         type: 'question', title: 'Allow Work action?', message, detail,
         buttons: ['Cancel', 'Allow'], defaultId: 0, cancelId: 0, noLink: true, signal,
-      })
+      }))
       check()
       if (response.response !== 1) throw new NativeFailure('permission_denied', 'The action was not approved.')
     }
@@ -308,10 +319,36 @@ export function createWorkAgentNativeTools(
       const argument = parseArguments(request)
       const permission = request.options?.permission
       const writing = request.tool === 'open_app' || request.tool === 'set_volume'
-      if (!['none', 'read', 'ask', 'auto'].includes(permission) || permission === 'none' || (permission === 'read' && writing)) {
+      if (!['none', 'read', 'ask', 'auto', 'full'].includes(permission) || permission === 'none' || (permission === 'read' && writing)
+        || request.tool === 'run_command' && permission !== 'ask' && permission !== 'full') {
         return result('denied', 'The selected Work permission does not allow this tool.', 'permission_denied')
       }
       systemRoot(dependencies)
+      if (request.tool === 'run_command') {
+        if (host.runCommand === undefined) throw new NativeFailure('unavailable', 'CMD execution is unavailable.')
+        const args = argument as WorkCommandArguments
+        let reviewed: WorkCommandArguments
+        try { reviewed = parseWorkCommandArguments({ ...args, cwd: args.cwd ?? host.defaultCommandCwd }) }
+        catch { throw new NativeFailure('invalid_request', 'The CMD working directory is unavailable.') }
+        // Review and execute one detached copy. A mutation during the inline
+        // question must not replace the command or its working directory.
+        const admitted: WorkToolCall = { ...request, arguments: { ...reviewed }, options: { ...request.options } }
+        if (permission === 'ask') {
+          if (host.approveCommand === undefined) throw new NativeFailure('unavailable', 'CMD approval is unavailable.')
+          const decision = await host.approveCommand(structuredClone(admitted), signal)
+          check()
+          if (decision === 'timeout') throw new NativeFailure('timeout', 'CMD approval expired. The command was not run.')
+          if (decision === 'cancelled') throw new NativeFailure('cancelled', 'CMD approval was cancelled. The command was not run.')
+          // Keep app consent distinct from an operating-system denial. The
+          // shared permission_denied code must not prompt administrator advice
+          // when the user deliberately stopped execution before CMD started.
+          if (decision !== 'approved') throw new NativeFailure('permission_denied',
+            'The user selected No in the app approval. The CMD command was never started. Windows permissions were not tested; this is a user consent decision, not a Windows or UAC error.')
+        }
+        check()
+        dispatched = true
+        return await host.runCommand(admitted, signal)
+      }
       if (request.tool === 'list_apps') {
         const available: string[] = []
         for (const id of Object.keys(APPLICATIONS) as ApplicationId[]) {
@@ -326,7 +363,7 @@ export function createWorkAgentNativeTools(
       if (request.tool === 'open_app') {
         const application = APPLICATIONS[argument as ApplicationId]
         let executable = await systemFile(dependencies, application.parts, check)
-        await approve(`Open ${application.name}?`, `Work will launch this application without arguments:\n${executable}`)
+        await approve(nativeText('Open {application}?', { application: nativeText(application.name) }), nativeText('Work will launch this application without arguments:\n{executable}', { executable }))
         // A dialog can remain open while an application is updated or replaced.
         executable = await systemFile(dependencies, application.parts, check)
         check()
@@ -345,7 +382,7 @@ export function createWorkAgentNativeTools(
       check()
       if (request.tool === 'get_volume') return result('succeeded', `Default output volume: ${current.level}%. ${current.muted ? 'Muted.' : 'Not muted.'}`)
       const level = argument as number
-      await approve(`Set volume to ${level}%?`, `Default multimedia output: ${current.level}% → ${level}%. ${current.muted ? 'The output will stay muted.' : 'The mute setting will stay unchanged.'}`)
+      await approve(nativeText('Set volume to {level}%?', { level }), nativeText('Default multimedia output: {current}% → {level}%. {mute}', { current: current.level, level, mute: nativeText(current.muted ? 'The output will stay muted.' : 'The mute setting will stay unchanged.') }))
       check()
       const updated = await runAudio(dependencies, { level, endpointId: current.endpointId }, signal, check, () => { dispatched = true })
       check()

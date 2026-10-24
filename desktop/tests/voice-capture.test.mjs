@@ -5,6 +5,8 @@ import test from 'node:test'
 
 import {
   AudioCaptureController,
+  floatToPcm16,
+  StreamingLinearResampler,
 } from '../src/voice/audio-capture.ts'
 import {
   AdaptiveEnergyVoiceActivityDetector,
@@ -40,9 +42,9 @@ function toneFrame(frameIndex, frequency = 440, amplitude = 0.22) {
   ))
 }
 
-function speechLikeFrame(frameIndex) {
+function speechLikeFrame(frameIndex, gain = 1) {
   const envelope = 0.72 + 0.2 * Math.sin(frameIndex * 0.73)
-  return signalFrame(frameIndex, (sampleIndex) => envelope * (
+  return signalFrame(frameIndex, (sampleIndex) => gain * envelope * (
     0.1 * Math.sin(2 * Math.PI * 120 * sampleIndex / VOICE_SAMPLE_RATE)
     + 0.07 * Math.sin(2 * Math.PI * 240 * sampleIndex / VOICE_SAMPLE_RATE)
     + 0.05 * Math.sin(2 * Math.PI * 720 * sampleIndex / VOICE_SAMPLE_RATE)
@@ -165,6 +167,53 @@ test('modulated multi-frequency speech-like input still completes normally', () 
   assert.ok(completed.segment.speechStartSample >= VOICE_PRE_ROLL_SAMPLE_COUNT)
   assert.ok(completed.segment.speechEndSample > completed.segment.speechStartSample)
   assert.ok(completed.segment.sampleCount <= VOICE_MAXIMUM_BUFFER_SAMPLE_COUNT)
+})
+
+test('quiet modulated speech starts immediately without needing a loud calibration phrase', () => {
+  const detector = new AdaptiveEnergyVoiceActivityDetector('voice_quiet')
+  // The same speech-like fixture at 15% gain has RMS around 0.008–0.014.
+  // It previously never opened a segment: sub-threshold syllables raised the
+  // adaptive floor until even subsequent louder syllables were rejected.
+  const speech = Array.from({ length: 30 }, (_, index) => speechLikeFrame(index, 0.15))
+  const results = speech.map((frame) => detector.processFrame(frame))
+  assert.equal(results.findIndex((result) => result.event === 'speech-started'), 3)
+  const segment = detector.stop()
+  assert.ok(segment)
+  assert.deepEqual(segment.pcm, joinedFrames(speech))
+})
+
+test('quiet broadband background still cannot open speech at the normal capture sensitivity', () => {
+  const detector = new AdaptiveEnergyVoiceActivityDetector('voice_quiet_noise')
+  const results = deterministicNoiseFrames(100, 0.02).map((frame) => detector.processFrame(frame))
+  assert.equal(results.some((result) => result.event === 'speech-started'), false)
+  assert.equal(detector.stop(), null)
+})
+
+test('48 kHz filtered speech completes after its finite tail and the full silence interval', () => {
+  const detector = new AdaptiveEnergyVoiceActivityDetector('voice_filtered_endpoint')
+  const resampler = new StreamingLinearResampler(48_000)
+  let completed
+  for (let frame = 0; frame <= 40; frame += 1) {
+    const input = Float32Array.from({ length: 960 }, (_, index) => {
+      if (frame >= 10) return 0
+      const sample = frame * 960 + index
+      const envelope = 0.75 + 0.2 * Math.sin(frame * 0.73)
+      return 0.08 * envelope * (
+        0.4 * Math.sin(2 * Math.PI * 120 * sample / 48_000)
+        + 0.28 * Math.sin(2 * Math.PI * 240 * sample / 48_000)
+        + 0.2 * Math.sin(2 * Math.PI * 720 * sample / 48_000)
+        + 0.12 * Math.sin(2 * Math.PI * 1_450 * sample / 48_000)
+      )
+    })
+    completed = detector.processFrame(floatToPcm16(resampler.process(input)))
+    if (frame < 40) assert.equal(completed.segment, null)
+  }
+  // The filter carries a fraction of a millisecond into one more 20 ms frame;
+  // endpoint timing is still exactly 600 ms after that last voiced frame.
+  assert.equal(completed.event, 'speech-completed')
+  assert.equal(completed.segment.sampleCount - completed.segment.speechEndSample,
+    VOICE_TRAILING_SILENCE_SAMPLE_COUNT)
+  assert.equal(completed.segment.sampleCount, 41 * VOICE_FRAME_SAMPLE_COUNT)
 })
 
 function captureHarness({
@@ -412,6 +461,103 @@ test('explicit dictation Stop flushes valid unfinished speech and its partial VA
   assert.equal(harness.context.state, 'closed')
   await harness.controller.stop()
   assert.equal(segments.length, 1)
+})
+
+for (const purpose of ['dictation', 'voice-call']) {
+  test(`${purpose} captures a quiet sentence through the actual PCM path`, async () => {
+    const segments = []
+    const harness = dictationHarness({ onComplete: (segment) => { segments.push(segment) } })
+    await harness.controller.start(null, { purpose })
+    const speech = joinedFrames(Array.from({ length: 30 }, (_, index) => speechLikeFrame(index, 0.15)))
+    emitPcmChunk(harness.processor, speech)
+    emitPcmChunk(harness.processor, new Int16Array(VOICE_TRAILING_SILENCE_SAMPLE_COUNT))
+    assert.equal(segments.length, 1)
+    assert.deepEqual(segments[0].pcm.subarray(0, speech.length), speech)
+    await harness.controller.stop()
+    assert.equal(segments.length, 1)
+  })
+}
+
+test('barge-in keeps its stricter onset gate for quiet playback residue', async () => {
+  const confirmations = []
+  const harness = dictationHarness({
+    echoCancellation: true,
+    onSpeechConfirmed: (value) => { confirmations.push(value) },
+  })
+  await harness.controller.start(null, { purpose: 'barge-in', sessionId: 'voice_quiet_echo' })
+  emitPcmChunk(harness.processor, joinedFrames(
+    Array.from({ length: 30 }, (_, index) => speechLikeFrame(index, 0.15)),
+  ))
+  assert.equal(harness.controller.getSnapshot().status, 'waiting')
+  assert.equal(confirmations.length, 0)
+  await harness.controller.cancel()
+})
+
+for (const purpose of ['utterance', 'voice-call', 'barge-in']) {
+  test(`${purpose} explicit Stop retains the last partial audio frame`, async () => {
+    const segments = []
+    const harness = dictationHarness({
+      echoCancellation: true,
+      onComplete: (segment) => { segments.push(segment) },
+    })
+    await harness.controller.start(null, purpose === 'barge-in'
+      ? { purpose, sessionId: 'voice_stop_tail' }
+      : { purpose })
+    const input = joinedFrames(Array.from({ length: 19 }, (_, index) => speechLikeFrame(index)))
+      .slice(0, 18 * VOICE_FRAME_SAMPLE_COUNT + 100)
+    emitPcmChunk(harness.processor, input)
+    await harness.controller.stop()
+    assert.equal(segments.length, 1)
+    assert.deepEqual(segments[0].pcm.subarray(0, input.length), input)
+    await harness.controller.stop()
+    assert.equal(segments.length, 1)
+  })
+}
+
+test('draining a filtered stop cannot stop the replacement capture started by its final consumer', async () => {
+  let processedFrames = 0
+  let completed = 0
+  let replacement
+  const pcm = new Int16Array(VOICE_MINIMUM_SPEECH_SAMPLE_COUNT)
+  const detector = {
+    getSnapshot: () => detectorSnapshot({ voicedSampleCount: pcm.length }),
+    processFrame: () => {
+      processedFrames += 1
+      return detectorSnapshot({
+        state: processedFrames === 2 ? 'complete' : 'speaking',
+        voicedSampleCount: pcm.length,
+        segment: processedFrames === 2 ? {
+          sessionId: 'voice_flush_1', sampleRate: VOICE_SAMPLE_RATE, channelCount: 1,
+          sampleFormat: 's16le', sampleCount: pcm.length, speechStartSample: 0,
+          speechEndSample: pcm.length, pcm,
+        } : null,
+      })
+    },
+    stop: () => null,
+    cancel: () => undefined,
+  }
+  const harness = captureHarness({
+    detector, audioSampleRate: 48_000,
+    generatedSessionId: (index) => `voice_flush_${index}`,
+    onComplete: () => {
+      completed += 1
+      replacement = harness.controller.start(null, { purpose: 'voice-call' })
+    },
+  })
+  await harness.controller.start(null)
+  // 1,917 input samples yield 639 canonical samples. The filter's finite tail
+  // crosses the next 320-sample frame boundary only during explicit Stop.
+  emitPcmChunk(harness.processor, new Int16Array(1_917))
+  assert.equal(processedFrames, 1)
+  await harness.controller.stop()
+  await replacement
+  assert.equal(completed, 1)
+  assert.equal(processedFrames, 2)
+  assert.equal(harness.controller.getSnapshot().sessionId, 'voice_flush_2')
+  assert.equal(harness.controller.getSnapshot().status, 'waiting')
+  assert.equal(harness.microphoneStarts(), 2)
+  assert.equal(harness.stopped(), 1)
+  await harness.controller.cancel()
 })
 
 test('dictation cancellation wipes retained PCM without completing its valid speech', async () => {

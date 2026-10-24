@@ -285,6 +285,9 @@ def test_chat_returns_reply_and_saves_messages(
     """Verify that chat returns reply and saves messages."""
     chat_model = FakeChatModel("Hello, Ying!")
     brain, memory, chat = _active_brain(tmp_path, chat_model)
+    profile = memory.load_profile()
+    profile["user_name"] = "Ying"
+    memory.save_profile(profile)
 
     reply = brain.chat(chat.chat_id, "  Hello, Elysia!  ")
 
@@ -484,7 +487,7 @@ def test_build_recent_context_maps_message_roles(
         memory,
     )
 
-    memory.save_message("Ying", "First message")
+    memory.save_message(memory.load_profile()["user_name"], "First message")
     memory.save_message("Elysia", "Second message")
     memory.save_message("Unknown", "Ignored message")
 
@@ -516,9 +519,9 @@ def test_build_recent_context_respects_limit(
         memory,
     )
 
-    memory.save_message("Ying", "First")
+    memory.save_message(memory.load_profile()["user_name"], "First")
     memory.save_message("Elysia", "Second")
-    memory.save_message("Ying", "Third")
+    memory.save_message(memory.load_profile()["user_name"], "Third")
     memory.save_message("Elysia", "Fourth")
 
     profile = memory.load_profile()
@@ -549,7 +552,7 @@ def test_build_chat_messages_orders_context(
         memory,
     )
 
-    memory.save_message("Ying", "Previous question")
+    memory.save_message(memory.load_profile()["user_name"], "Previous question")
     memory.save_message("Elysia", "Previous answer")
 
     profile = memory.load_profile()

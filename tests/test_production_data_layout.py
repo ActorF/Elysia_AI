@@ -8,6 +8,7 @@ from typing import Any, cast
 
 import pytest
 
+import desktop_backend
 import desktop_knowledge
 import start
 from attachments import AttachmentService, JsonAttachmentStore
@@ -60,6 +61,7 @@ def test_layout_maps_every_declared_category_below_the_exact_root(
     assert layout.attachments == root / "workspace" / "attachments"
     assert layout.knowledge == root / "workspace" / "knowledge"
     assert layout.gallery == root / "workspace" / "gallery"
+    assert layout.models == root / "models"
     assert layout.audio == root / "audio"
     assert layout.cache == root / "cache"
     assert layout.logs == root / "logs"
@@ -221,23 +223,81 @@ def test_knowledge_runtime_owns_sources_indexes_and_intents_below_data_root(
         runtime.close()
 
 
-def test_speech_config_keeps_assets_read_only_and_catalog_in_data_root(
+def test_speech_config_keeps_optional_assets_and_catalog_in_data_root(
     tmp_path: Path,
 ) -> None:
-    """Separate install-owned speech code and models from writable profiles."""
+    """Keep speech worker code install-owned without losing assets on upgrade."""
 
     resource_root = (tmp_path / "installed-backend").resolve()
     data_root = (tmp_path / "user-data").resolve()
+    resource_root.mkdir()
+    (resource_root / "distribution-manifest.json").write_text("{}", encoding="utf-8")
     settings = _settings(resource_root, data_root)
 
     config = DesktopSpeechConfig.from_app_settings(settings)
 
     assert config.worker_script == resource_root / "scripts" / "gpt_sovits_worker.py"
     assert config.runtime_root == (
-        resource_root / "models" / "cache" / "GPT-SoVITS-v2-240821"
+        data_root / "models" / "cache" / "GPT-SoVITS-v2-240821"
     )
-    assert config.asset_root == resource_root / "models" / "weights" / "gpt-sovits"
+    assert config.asset_root == data_root / "models" / "weights" / "gpt-sovits"
     assert config.catalog_path == (
         data_root / "workspace" / "settings" / "voice-profiles.json"
     )
     assert not (resource_root / "workspace").exists()
+
+
+def test_transcription_uses_durable_data_root_without_loading_optional_models(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A packaged read-only resource directory must never own STT downloads."""
+    resource_root = tmp_path / "installed-backend"
+    data_root = tmp_path / "user-data"
+    resource_root.mkdir()
+    (resource_root / "distribution-manifest.json").write_text("{}", encoding="utf-8")
+    settings = _settings(resource_root, data_root)
+    constructed: list[Any] = []
+    monkeypatch.setattr(
+        desktop_backend,
+        "FasterWhisperTranscriber",
+        lambda config: constructed.append(config),
+    )
+
+    desktop_backend._create_transcriber(settings)
+
+    assert len(constructed) == 1
+    assert constructed[0].model_path == (
+        data_root / "models" / "weights" / "faster-whisper" / "small"
+    )
+    assert tuple(resource_root.iterdir()) == (
+        resource_root / "distribution-manifest.json",
+    )
+    assert not data_root.exists()
+
+
+def test_source_desktop_keeps_existing_model_paths_with_separate_data_root(
+    tmp_path: Path,
+) -> None:
+    """Electron's development data root must not hide existing local models."""
+    checkout = tmp_path / "checkout"
+    settings = _settings(checkout, tmp_path / "private-data")
+
+    assert settings.model_assets_root == checkout / "models"
+    speech = DesktopSpeechConfig.from_app_settings(settings)
+    assert speech.asset_root == checkout / "models" / "weights" / "gpt-sovits"
+    assert speech.runtime_root == checkout / "models" / "cache" / "GPT-SoVITS-v2-240821"
+
+
+def test_packaged_upgrade_preserves_the_same_model_assets_root(tmp_path: Path) -> None:
+    """Replacing application resources must not change the user's model location."""
+    data_root = tmp_path / "private-data"
+    settings_by_version: list[AppSettings] = []
+    for version in ("old", "new"):
+        resources = tmp_path / version
+        resources.mkdir()
+        (resources / "distribution-manifest.json").write_text("{}", encoding="utf-8")
+        settings_by_version.append(_settings(resources, data_root))
+
+    assert settings_by_version[0].model_assets_root == data_root / "models"
+    assert settings_by_version[1].model_assets_root == data_root / "models"

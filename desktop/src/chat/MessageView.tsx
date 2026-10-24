@@ -6,6 +6,8 @@
  * their source. Navigation and clipboard writes always cross DesktopApi.
  */
 
+import { t, useLocale } from '../i18n/LocaleProvider.tsx'
+
 import {
   isValidElement,
   useEffect,
@@ -101,21 +103,21 @@ function statementKindLabel(kind: GroundedAnswer['statements'][number]['kind']):
 function citationLocationLabel(citation: GroundedCitation): string {
   const labels: string[] = []
   if (citation.pageNumber !== null) {
-    labels.push(`Page ${citation.pageNumber}`)
+    labels.push(t('Page {page}', { page: citation.pageNumber }))
   }
   for (const [index, location] of citation.locations.entries()) {
-    const locationLabels = [`Block ${location.blockOrdinal + 1}`]
+    const locationLabels = [t('Block {block}', { block: location.blockOrdinal + 1 })]
     if (location.kind === 'table') {
       locationLabels.push(
-        `Row ${location.rowIndex + 1}, column ${location.columnIndex + 1}`,
+        t('Row {row}, column {column}', { row: location.rowIndex + 1, column: location.columnIndex + 1 }),
       )
     }
     locationLabels.push(
-      `Characters ${location.sourceStartCodePoint}–${location.sourceEndCodePoint}`,
+      t('Characters {start}–{end}', { start: location.sourceStartCodePoint, end: location.sourceEndCodePoint }),
     )
     labels.push(
       citation.locations.length > 1
-        ? `Location ${index + 1}: ${locationLabels.join(' · ')}`
+        ? t('Location {index}: {location}', { index: index + 1, location: locationLabels.join(' · ') })
         : locationLabels.join(' · '),
     )
   }
@@ -128,6 +130,7 @@ interface GroundedAnswerViewProps {
 
 /** Render a closed grounded answer without converting citations into web links. */
 function GroundedAnswerView({ answer }: GroundedAnswerViewProps) {
+  useLocale()
   const [activeCitationId, setActiveCitationId] = useState<string | null>(null)
   const detailRef = useRef<HTMLElement | null>(null)
   const detailId = useId()
@@ -147,11 +150,11 @@ function GroundedAnswerView({ answer }: GroundedAnswerViewProps) {
   if (answer.status === 'insufficient_evidence') {
     return (
       <div className="grounded-answer grounded-answer-insufficient" role="status">
-        <strong>Project Sources did not produce an answer.</strong>
+        <strong>{t("Project Sources did not produce an answer.")}</strong>
         <span>
           {answer.contextPassageCount === 0
-            ? 'No relevant passages were found in the current Project corpus.'
-            : 'Relevant passages were found, but they did not support a reliable answer.'}
+            ? t("No relevant passages were found in the current Project corpus.")
+            : t("Relevant passages were found, but they did not support a reliable answer.")}
         </span>
       </div>
     )
@@ -159,14 +162,14 @@ function GroundedAnswerView({ answer }: GroundedAnswerViewProps) {
 
   return (
     <div className="grounded-answer">
-      <ol className="grounded-statement-list" aria-label="Grounded answer statements">
+      <ol className="grounded-statement-list" aria-label={t("Grounded answer statements")}>
         {answer.statements.map((statement) => (
           <li key={statement.statementId} className="grounded-statement">
             <span className={`grounded-kind grounded-kind-${statement.kind}`}>
-              {statementKindLabel(statement.kind)}
+              {t(statementKindLabel(statement.kind))}
             </span>
             <p>{statement.text}</p>
-            <div className="grounded-citation-buttons" aria-label="Citations">
+            <div className="grounded-citation-buttons" aria-label={t("Citations")}>
               {statement.citationIds.map((citationId) => {
                 const citation = citationById.get(citationId)
                 if (citation === undefined) {
@@ -186,7 +189,7 @@ function GroundedAnswerView({ answer }: GroundedAnswerViewProps) {
                       setActiveCitationId(citationId)
                     }}
                   >
-                    [{citationNumber}] {citation.fileName}
+                    {t("[")}{citationNumber}{t("]")} {citation.fileName}
                   </button>
                 )
               })}
@@ -200,7 +203,7 @@ function GroundedAnswerView({ answer }: GroundedAnswerViewProps) {
           ref={detailRef}
           id={detailId}
           className="grounded-citation-detail"
-          aria-label={`Citation from ${activeCitation.fileName}`}
+          aria-label={t("Citation from {v0}", { v0: activeCitation.fileName })}
           tabIndex={-1}
         >
           <div className="grounded-citation-heading">
@@ -211,14 +214,14 @@ function GroundedAnswerView({ answer }: GroundedAnswerViewProps) {
             <button
               type="button"
               className="grounded-citation-close"
-              aria-label="Close citation details"
+              aria-label={t("Close citation details")}
               onClick={() => { setActiveCitationId(null) }}
             >
               <Icon name="close" />
             </button>
           </div>
           <p className="grounded-citation-location">
-            {citationLocationLabel(activeCitation)}
+            {t(citationLocationLabel(activeCitation))}
           </p>
           <blockquote>{activeCitation.excerpt}</blockquote>
         </section>
@@ -240,6 +243,7 @@ function CopyButton({
   text,
   onCopy,
 }: CopyButtonProps) {
+  useLocale()
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle')
   const resetTimerRef = useRef<number | null>(null)
 
@@ -266,9 +270,9 @@ function CopyButton({
   }
 
   const buttonLabel = copyState === 'copied'
-    ? `${label} copied`
+    ? t('{label} copied', { label: t(label) })
     : copyState === 'error'
-      ? `${label} failed`
+      ? t('{label} failed', { label: t(label) })
       : label
   const titleLabel = copyState === 'copied'
     ? 'Copied'
@@ -280,12 +284,12 @@ function CopyButton({
     <button
       type="button"
       className="message-action"
-      aria-label={buttonLabel}
-      title={titleLabel}
+      aria-label={t(buttonLabel)}
+      title={t(titleLabel)}
       onClick={() => { void copy() }}
     >
       <Icon name={copyState === 'copied' ? 'check' : 'copy'} />
-      {!iconOnly && <span>{titleLabel}</span>}
+      {!iconOnly && <span>{t(titleLabel)}</span>}
     </button>
   )
 }
@@ -301,6 +305,7 @@ function AssistantMarkdown({
   onCopy,
   onOpenExternalUrl,
 }: AssistantMarkdownProps) {
+  useLocale()
   const [linkError, setLinkError] = useState(false)
 
   return (
@@ -332,7 +337,7 @@ function AssistantMarkdown({
           img({ alt }) {
             return (
               <span className="blocked-markdown-image" role="note">
-                {alt ? `Image blocked: ${alt}` : 'Remote image blocked'}
+                {alt ? t("Image blocked: {v0}", { v0: alt }) : t("Remote image blocked")}
               </span>
             )
           },
@@ -341,9 +346,9 @@ function AssistantMarkdown({
             return (
               <div className="code-block">
                 <div className="code-block-toolbar">
-                  <span>Code</span>
+                  <span>{t("Code")}</span>
                   <CopyButton
-                    label="Copy code"
+                    label={t("Copy code")}
                     text={code}
                     onCopy={onCopy}
                   />
@@ -358,8 +363,7 @@ function AssistantMarkdown({
       </Markdown>
       {linkError && (
         <span className="message-action-error" role="status">
-          Could not open this link.
-        </span>
+          {t("Could not open this link.")}</span>
       )}
     </div>
   )
@@ -382,6 +386,7 @@ export function MessageView({
   onRetry,
   onRetryEditChange,
 }: MessageViewProps) {
+  useLocale()
   const editRef = useRef<HTMLTextAreaElement | null>(null)
   const activeEditDraft = retryPair !== null
     && message.role === 'user'
@@ -426,7 +431,7 @@ export function MessageView({
   return (
     <article
       className={`message ${message.role} message-${message.state}`}
-      aria-label={isAssistant ? 'Message from Elysia' : 'Message from you'}
+      aria-label={isAssistant ? t("Message from Elysia") : t("Message from you")}
       data-message-id={message.id}
     >
       <div className="message-body">
@@ -447,7 +452,7 @@ export function MessageView({
             <div className="message-attachments">
               <ul
                 className="message-attachment-list"
-                aria-label={`Attachments in ${isAssistant ? 'Elysia message' : 'your message'}`}
+                aria-label={t("Attachments in {v0}", { v0: isAssistant ? t('Elysia message') : t('your message') })}
               >
                 {message.attachments.map((attachment) => (
                   <li key={attachment.attachmentId}>
@@ -455,13 +460,12 @@ export function MessageView({
                     <span>
                       <strong title={attachment.fileName}>{attachment.fileName}</strong>
                       <small>
-                        {attachment.mediaType} · {formatAttachmentBytes(attachment.sizeBytes)}
+                        {attachment.mediaType} {t("·")} {formatAttachmentBytes(attachment.sizeBytes)}
                       </small>
                     </span>
                   </li>
                 ))}
               </ul>
-              <p>Stored locally · File contents are not read or indexed yet.</p>
             </div>
           )}
 
@@ -473,7 +477,7 @@ export function MessageView({
         <div className="message-actions">
           <CopyButton
             iconOnly
-            label="Copy message"
+            label={t("Copy message")}
             text={message.text}
             onCopy={onCopy}
           />
@@ -481,8 +485,8 @@ export function MessageView({
             <button
               type="button"
               className="message-action"
-              aria-label="Edit message"
-              title="Edit message"
+              aria-label={t("Edit message")}
+              title={t("Edit message")}
               disabled={retryDisabled || anotherEditDraftExists}
               onClick={() => {
                 onBeginRetryEdit(retryPair)
@@ -495,8 +499,8 @@ export function MessageView({
             <button
               type="button"
               className="message-action"
-              aria-label={readAloudLabel}
-              title={readAloudLabel}
+              aria-label={t(readAloudLabel)}
+              title={t(readAloudLabel)}
               aria-pressed={
                 messageReadAloudPhase === 'active'
                 || messageReadAloudPhase === 'stopping'
@@ -522,8 +526,8 @@ export function MessageView({
             <button
               type="button"
               className="message-action"
-              aria-label="Try again"
-              title="Try again"
+              aria-label={t("Try again")}
+              title={t("Try again")}
               disabled={retryDisabled || anotherEditDraftExists}
               onClick={() => { onRetry(retryPair) }}
             >
@@ -535,7 +539,7 @@ export function MessageView({
         {editing && retryPair !== null && (
           <form
             className="message-edit-form"
-            aria-label="Edit and retry message"
+            aria-label={t("Edit and retry message")}
             onSubmit={(event) => {
               event.preventDefault()
               if (activeEditDraft.text.trim() === '') {
@@ -545,8 +549,7 @@ export function MessageView({
             }}
           >
             <label htmlFor={`edit-message-${message.id}`}>
-              Edit your last message
-            </label>
+              {t("Edit your last message")}</label>
             <textarea
               ref={editRef}
               id={`edit-message-${message.id}`}
@@ -564,15 +567,13 @@ export function MessageView({
                 className="message-edit-button secondary"
                 onClick={onCancelRetryEdit}
               >
-                Cancel
-              </button>
+                {t("Cancel")}</button>
               <button
                 type="submit"
                 className="message-edit-button primary"
                 disabled={retryDisabled || activeEditDraft.text.trim() === ''}
               >
-                Retry edited message
-              </button>
+                {t("Retry edited message")}</button>
             </div>
           </form>
         )}

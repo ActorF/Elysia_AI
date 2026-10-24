@@ -1,9 +1,12 @@
 /** Review explicit local OCR and vision-model readiness with separate bounded evidence, without sending or executing it. */
 
+import { t, useTranslation } from '../i18n/LocaleProvider.tsx'
+import { formatUiError } from '../i18n/ui-error.ts'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { VisionImage } from '../../electron/vision-protocol.ts'
 import type { VisionAnalysisClient, VisionAnalysisState, VisionOcrLanguage } from '../../electron/vision-analysis-protocol.ts'
 import { ToolTabs, ToolTabPanel } from '../design-system/ToolPanel.tsx'
+import { HelpHint } from '../design-system/HelpHint.tsx'
 import './VisionAnalysisPanel.css'
 
 interface VisionAnalysisPanelProps {
@@ -22,11 +25,12 @@ const languageNames = { eng: 'English', chi_sim: 'Simplified Chinese', chi_tra: 
 
 /** Analyze one selected image through explicit local providers and keep cancellation independent of their physical drain. */
 export function VisionAnalysisPanel({ api, chatId, projectId, images, selectedImageId, ready, disabled, onBusyChange }: VisionAnalysisPanelProps) {
+  useTranslation()
   const [analysis, setAnalysis] = useState<VisionAnalysisState | null>(null)
   const [language, setLanguage] = useState<VisionOcrLanguage>('eng')
   const [operation, setOperation] = useState<'readiness' | 'ocr' | 'model-readiness' | 'model' | null>(null)
   const [modelName, setModelName] = useState('')
-  const [question, setQuestion] = useState('Describe this image.')
+  const [question, setQuestion] = useState(t("Describe this image."))
   const [cancelPending, setCancelPending] = useState(false)
   const [leased, setLeased] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -148,91 +152,87 @@ export function VisionAnalysisPanel({ api, chatId, projectId, images, selectedIm
     && visible.image.sha256 === selected.sha256 ? visible.model.result : null
   const phase = operation ?? visible?.phase
 
-  return <section className="vision-analysis" aria-label="Visual analysis" aria-busy={leased}>
+  return <section className="vision-analysis" aria-label={t("Visual analysis")} aria-busy={leased}>
     <div className="vision-analysis-heading">
-      <ToolTabs<'model' | 'ocr'> idPrefix="vision-analysis-kind" label="Image analysis" value={view} onValueChange={setView}
-        items={[{ value: 'model', label: 'Describe image' }, { value: 'ocr', label: 'Read text' }]} />
+      <ToolTabs<'model' | 'ocr'> idPrefix="vision-analysis-kind" label={t("Image analysis")} value={view} onValueChange={setView}
+        items={[{ value: 'model', label: t("Describe image") }, { value: 'ocr', label: t("Read text") }]} />
       {leased &&
       <button type="button" disabled={!ready || !leased || cancelPending || visible?.cancelRequested === true}
-        onClick={() => { void cancel() }}>Cancel analysis</button>}
+        onClick={() => { void cancel() }}>{t("Cancel analysis")}</button>}
     </div>
-    {leased && <p role="status">{visible?.cancelRequested ? 'Cancellation requested. Waiting for the local analysis operation to finish.'
-      : phase === 'model-readiness' ? 'Checking installed local vision models…'
-        : phase === 'model' ? 'The local vision model is analyzing the selected image…'
-          : phase === 'readiness' ? 'Checking local Tesseract and language data…' : 'Local OCR is running…'}</p>}
+    {leased && <p role="status">{visible?.cancelRequested ? t("Cancellation requested. Waiting for the local analysis operation to finish.")
+      : phase === 'model-readiness' ? t("Checking installed local vision models…")
+        : phase === 'model' ? t("The local vision model is analyzing the selected image…")
+          : phase === 'readiness' ? t("Checking local Tesseract and language data…") : t("Local OCR is running…")}</p>}
     {/* These providers share one physical request owner. Switching views only
         changes visibility; it cannot abandon the request or its cancellation. */}
     <ToolTabPanel idPrefix="vision-analysis-kind" value="ocr" activeValue={view}>
-    <section className="vision-provider" aria-label="Local OCR">
-      <p className="vision-provider-intro">Extract text from your image, locally.</p>
+    <section className="vision-provider" aria-label={t("Local OCR")}>
       <div className="vision-analysis-controls">
-      <button type="button" disabled={locked} onClick={() => { void run('readiness') }}>Check OCR</button>
-      <label>OCR language<select value={language} disabled={locked} onChange={(event) => { setLanguage(event.currentTarget.value as VisionOcrLanguage) }}>
-        <option value="eng">English</option>
-        <option value="chi_sim+eng">Simplified Chinese + English</option>
-        <option value="chi_tra+eng">Traditional Chinese + English</option>
+      <button type="button" disabled={locked} onClick={() => { void run('readiness') }}>{t("Check OCR")}</button>
+      <label>{t("OCR language")}<select value={language} disabled={locked} onChange={(event) => { setLanguage(event.currentTarget.value as VisionOcrLanguage) }}>
+        <option value="eng">{t("English")}</option>
+        <option value="chi_sim+eng">{t("Simplified Chinese + English")}</option>
+        <option value="chi_tra+eng">{t("Traditional Chinese + English")}</option>
       </select></label>
-      <button type="button" className="tool-primary" disabled={locked || selected === undefined || !available} onClick={() => { void run('ocr') }}>Run OCR</button>
+      <button type="button" className="tool-primary" disabled={locked || selected === undefined || !available} onClick={() => { void run('ocr') }}>{t("Run OCR")}</button>
       </div>
-    <p className="vision-provider-status" role="status">{readiness === null ? 'Check OCR to connect your local text reader.'
-        : readiness.status === 'ready' ? `Tesseract ${readiness.version ?? ''} is ready.`
-          : readiness.status === 'missing_engine' ? 'Tesseract is missing or not configured. Install a local engine before checking again.'
-            : readiness.status === 'missing_languages' ? 'Required Tesseract language data is missing. Install English and the Chinese data you need.'
-              : 'Local Tesseract is unavailable. Check the local installation before retrying.'}</p>
-    {readiness !== null && <details><summary>Language availability</summary><p>Installed language data: {readiness.languages.length === 0 ? 'none'
-      : readiness.languages.map((installed) => languageNames[installed]).join(', ')}.</p></details>}
-    {readiness?.status === 'ready' && !available && <p>The selected language requires additional local Tesseract language data.</p>}
-    {!leased && visible?.ocr.error !== null && visible?.ocr.error !== undefined && <p role="alert">Local OCR ended: {visible.ocr.error.code}.</p>}
-    {evidence !== null && evidence !== undefined && selected !== undefined && <div className="vision-ocr-result" role="region" aria-label="OCR evidence">
-      <strong>OCR extraction · {selected.fileName}</strong>
-      <pre aria-label="Extracted OCR text">{evidence.text || 'No text was recognized.'}</pre>
+    <p className="vision-provider-status" role="status">{readiness === null ? t("Check OCR to connect your local text reader.")
+        : readiness.status === 'ready' ? t("Tesseract {value1} is ready.", { value1: readiness.version ?? '' })
+          : readiness.status === 'missing_engine' ? t("Tesseract is missing or not configured. Install a local engine before checking again.")
+            : readiness.status === 'missing_languages' ? t("Required Tesseract language data is missing. Install English and the Chinese data you need.")
+              : t("Local Tesseract is unavailable. Check the local installation before retrying.")}</p>
+    {readiness !== null && <details><summary>{t("Language availability")}</summary><p>{t("Installed language data: ")}{readiness.languages.length === 0 ? t("None")
+      : readiness.languages.map((installed) => t(languageNames[installed])).join(', ')}.</p></details>}
+    {readiness?.status === 'ready' && !available && <p>{t("The selected language requires additional local Tesseract language data.")}</p>}
+    {!leased && visible?.ocr.error !== null && visible?.ocr.error !== undefined && <p role="alert">{t("Local OCR ended: ")}{formatUiError(visible.ocr.error.message)}.</p>}
+    {evidence !== null && evidence !== undefined && selected !== undefined && <div className="vision-ocr-result" role="region" aria-label={t("OCR evidence")}>
+      <strong>{t("OCR extraction · ")}{selected.fileName}</strong>
+      <pre aria-label={t("Extracted OCR text")}>{evidence.text || t("No text was recognized.")}</pre>
       {/* Bound both dimensions while preserving the original aspect ratio; a
           valid narrow/tall image must not produce a million-pixel review row. */}
       <div className="vision-ocr-positions" style={{ aspectRatio: `${selected.width} / ${selected.height}`,
-        width: `min(100%, ${Math.min(20, 12 * selected.width / selected.height)}rem)` }} aria-label="OCR word positions">
-        <img src={selected.previewDataUrl} alt={`OCR positions in ${selected.fileName}`} />
+        width: `min(100%, ${Math.min(20, 12 * selected.width / selected.height)}rem)` }} aria-label={t("OCR word positions")}>
+        <img src={selected.previewDataUrl} alt={t("OCR positions in {fileName}", { fileName: selected.fileName })} />
         {evidence.words.map((word, index) => <span key={index} title={`${word.text} · ${Math.round(word.confidence * 100)}%`}
           style={{ left: `${word.x / evidence.width * 100}%`, top: `${word.y / evidence.height * 100}%`,
             width: `${word.width / evidence.width * 100}%`, height: `${word.height / evidence.height * 100}%` }} />)}
       </div>
-      <details><summary>Word positions and confidence ({evidence.words.length})</summary><ol className="vision-ocr-words">
-        {evidence.words.map((word, index) => <li key={index}>{word.text} · {Math.round(word.confidence * 100)}% ·
-          x {word.x}, y {word.y}, width {word.width}, height {word.height}</li>)}
+      <details><summary>{t("Word positions and confidence (")}{evidence.words.length})</summary><ol className="vision-ocr-words">
+        {evidence.words.map((word, index) => <li key={index}>{word.text} · {Math.round(word.confidence * 100)}{t("% · x ")}{word.x}{t(", y ")}{word.y}{t(", width ")}{word.width}{t(", height ")}{word.height}</li>)}
       </ol></details>
     </div>}
     </section>
     </ToolTabPanel>
     <ToolTabPanel idPrefix="vision-analysis-kind" value="model" activeValue={view}>
-    <section className="vision-provider" aria-label="Local vision model">
-      <p className="vision-provider-intro">Ask a question. Explore the details.</p>
+    <section className="vision-provider" aria-label={t("Local vision model")}>
       <div className="vision-analysis-controls">
-        <button type="button" disabled={locked} onClick={() => { void run('model-readiness') }}>Check vision models</button>
-        <label>Vision model<select value={selectedModel} disabled={locked} onChange={(event) => { setModelName(event.currentTarget.value) }}>
-          <option value="">Select a vision model</option>
+        <button type="button" disabled={locked} onClick={() => { void run('model-readiness') }}>{t("Check vision models")}</button>
+        <label>{t("Vision model")}<select value={selectedModel} disabled={locked} onChange={(event) => { setModelName(event.currentTarget.value) }}>
+          <option value="">{t("Select a vision model")}</option>
           {(modelReadiness?.models ?? []).map((model) => <option key={model} value={model}>{model}</option>)}
         </select></label>
       </div>
-      <p className="vision-provider-status" role="status">{modelReadiness === null ? 'Check vision models to get started.'
-        : modelReadiness.status === 'ready' ? `${modelReadiness.models.length} installed vision model${modelReadiness.models.length === 1 ? '' : 's'} available.`
-          : modelReadiness.status === 'no_vision_model' ? 'No installed model advertises vision support. Configure a local Ollama vision model and check again.'
-            : 'Local vision models are unavailable. Start local Ollama and check again.'}</p>
-      <label className="vision-model-question">Question about image<textarea rows={4} maxLength={4096} value={question}
+      <p className="vision-provider-status" role="status">{modelReadiness === null ? t("Check vision models to get started.")
+        : modelReadiness.status === 'ready' ? modelReadiness.models.length === 1 ? t("One installed vision model is available.") : t("{count} installed vision models are available.", { count: modelReadiness.models.length })
+          : modelReadiness.status === 'no_vision_model' ? t("No installed model advertises vision support. Configure a local Ollama vision model and check again.")
+            : t("Local vision models are unavailable. Start local Ollama and check again.")}</p>
+      <label className="vision-model-question">{t("Question about image")}<textarea rows={4} maxLength={4096} value={question}
         disabled={locked} onChange={(event) => { setQuestion(event.currentTarget.value) }} /></label>
-      {questionBytes > 3500 && <p>{questionBytes} / 4096 UTF-8 bytes.</p>}
-      {!questionValid && <p>Enter a question within the byte limit before asking.</p>}
+      {questionBytes > 3500 && <p>{questionBytes} {t(" / 4096 UTF-8 bytes.")}</p>}
+      {!questionValid && <p>{t("Enter a question within the byte limit before asking.")}</p>}
       <button type="button" className="tool-primary" disabled={locked || selected === undefined || !modelAvailable || !questionValid}
-        onClick={() => { void run('model') }}>Ask about image</button>
-      <p className="vision-provider-note">Runs locally. Review model answers for accuracy.</p>
-      {!leased && visible?.model.error !== null && visible?.model.error !== undefined && <p role="alert">Local vision model ended: {visible.model.error.code}.</p>}
-      {inference !== null && inference !== undefined && <div className="vision-ocr-result" role="region" aria-label="Model inference">
-        <strong>Model inference · {inference.model}</strong>
-        <p>Question: {inference.question}</p>
-        <pre aria-label="Local model inference">{inference.text || 'The local model returned no description.'}</pre>
-        <p>Review this interpretation against the selected image and OCR evidence.</p>
-        {inference.truncated && <p role="alert">The model response was truncated. Review it as incomplete.</p>}
+        onClick={() => { void run('model') }}>{t("Ask about image")}</button>
+      <HelpHint label={t("Local vision model")}>{t("Runs locally. Review model answers for accuracy.")}</HelpHint>
+      {!leased && visible?.model.error !== null && visible?.model.error !== undefined && <p role="alert">{t("Local vision model ended: ")}{formatUiError(visible.model.error.message)}.</p>}
+      {inference !== null && inference !== undefined && <div className="vision-ocr-result" role="region" aria-label={t("Model inference")}>
+        <strong>{t("Model inference · ")}{inference.model}</strong>
+        <p>{t("Question: ")}{inference.question}</p>
+        <pre aria-label={t("Local model inference")}>{inference.text || t("The local model returned no description.")}</pre>
+        {inference.truncated && <p role="alert">{t("The model response was truncated. Review it as incomplete.")}</p>}
       </div>}
     </section>
     </ToolTabPanel>
-    {error !== null && <p role="alert">{error}</p>}
+    {error !== null && <p role="alert">{formatUiError(error)}</p>}
   </section>
 }

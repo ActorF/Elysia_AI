@@ -1336,6 +1336,7 @@ def launch_windows_managed_process(
     stderr_handle: int,
     cwd: str,
     environment: dict[str, str] | None = None,
+    raw_command_line: str | None = None,
 ) -> WindowsManagedProcess:
     """Launch one suspended child and bind it to a kill-on-close Job Object.
 
@@ -1344,6 +1345,12 @@ def launch_windows_managed_process(
     an empty environment.  The caller retains its stream handles.  Private
     inheritable duplicates are the only handles placed in the child attribute
     list and are closed in the parent before this function returns.
+
+    ``raw_command_line`` is reserved for an explicitly authorized interpreter
+    such as CMD whose grammar differs from the C-runtime argv quoting rules.
+    When supplied, ``argv`` must contain only the fixed absolute executable;
+    CreateProcess still uses that executable as lpApplicationName. This is a
+    process-lifecycle boundary, not a shell, filesystem, or network sandbox.
 
     Every parent-side inheritable duplicate is confirmed closed before
     ``ResumeThread``.  A cleanup ambiguity retains its exact native owner and
@@ -1360,6 +1367,13 @@ def launch_windows_managed_process(
             {} if environment is None else environment,
         )
     )
+    if raw_command_line is not None:
+        if (len(frozen_argv) != 1 or not isinstance(raw_command_line, str)
+                or not raw_command_line or "\x00" in raw_command_line
+                or any(0xD800 <= ord(character) <= 0xDFFF for character in raw_command_line)
+                or _utf16_code_units(raw_command_line) + 1 > _MAX_WINDOWS_COMMAND_LINE_CODE_UNITS):
+            raise WindowsManagedProcessValidationError("The explicit interpreter command line is invalid.")
+        command_line = raw_command_line
     source_handles = (
         _validate_native_handle(stdin_handle),
         _validate_native_handle(stdout_handle),

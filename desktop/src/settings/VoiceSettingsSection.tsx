@@ -20,7 +20,11 @@ import type {
   AudioDevice,
   AudioDeviceSnapshot,
 } from '../voice/audio-devices.ts'
+import { t, useLocale } from '../i18n/LocaleProvider.tsx'
+import { audioDeviceLabel } from '../i18n/settings-copy.ts'
+import { formatUiError } from '../i18n/ui-error.ts'
 import { InlineAlert, LoadingState } from '../design-system/Feedback.tsx'
+import { HelpHint } from '../design-system/HelpHint.tsx'
 
 export interface VoiceSettingsDraft {
   inputDeviceId: string | null
@@ -135,16 +139,17 @@ function DeviceOptions({
   selectedDeviceId: string | null
   unavailableLabel: string
 }) {
+  useLocale()
   const missing = selectedDeviceIsMissing(selectedDeviceId, devices)
   return (
     <>
-      <option value="">System default</option>
+      <option value="">{t("System default")}</option>
       {missing && selectedDeviceId !== null && (
         <option value={selectedDeviceId}>{unavailableLabel}</option>
       )}
       {devices.map((device, index) => (
         <option key={device.deviceId} value={device.deviceId}>
-          {device.label || `Device ${index + 1}`}
+          {audioDeviceLabel(device, index)}
         </option>
       ))}
     </>
@@ -169,6 +174,7 @@ export function VoiceSettingsSection({
   onStopSpeakerTest,
   onOpenMicrophonePrivacySettings,
 }: VoiceSettingsSectionProps) {
+  useLocale()
   const [draft, setDraft] = useState<VoiceSettingsDraft | null>(null)
   const [clientError, setClientError] = useState<string | null>(null)
   const persistedIdentityRef = useRef<string | null>(null)
@@ -250,8 +256,7 @@ export function VoiceSettingsSection({
     <section className="settings-section" aria-labelledby="audio-device-settings-heading">
       <div className="settings-section-heading voice-settings-heading">
         <div>
-          <h2 id="audio-device-settings-heading">Audio devices</h2>
-          <p>Select device-local defaults and run short tests before starting a voice capture.</p>
+          <h2 id="audio-device-settings-heading">{t("Audio devices")}</h2>
         </div>
         <button
           type="button"
@@ -259,53 +264,54 @@ export function VoiceSettingsSection({
           disabled={devices.refreshing}
           onClick={() => { void onRefreshDevices() }}
         >
-          {devices.refreshing ? 'Refreshing…' : 'Refresh devices'}
+          {devices.refreshing ? t("Refreshing…") : t("Refresh devices")}
         </button>
       </div>
 
       {loading && state === null ? (
         <LoadingState
-          title="Loading voice devices"
-          description="Reading saved choices without opening the microphone."
+          title={t("Loading voice devices")}
         />
       ) : state === null || draft === null ? (
         <InlineAlert
           tone="error"
-          title="Voice settings are unavailable"
-          action={{ label: 'Try again', onClick: onReload }}
+          title={t("Voice settings are unavailable")}
+          action={{ label: t('Try again'), onClick: onReload }}
         >
-          {error ?? 'The local Backend has not returned voice settings yet.'}
+          {error === null ? t("The local Backend has not returned voice settings yet.") : formatUiError(error)}
         </InlineAlert>
       ) : (
         <>
           {state.warning !== null && (
-            <InlineAlert tone="warning" title="Voice defaults restored">
-              {state.warning}
+            <InlineAlert tone="warning" title={t("Voice defaults restored")}>
+              {t(state.warning)}
             </InlineAlert>
           )}
           {(error !== null || clientError !== null) && (
             <InlineAlert
               tone="error"
-              title="Voice settings need attention"
+              title={t("Voice settings need attention")}
               action={{
-                label: 'Reload saved choices',
+                label: t('Reload saved choices'),
                 onClick: reloadSavedChoices,
               }}
             >
-              {clientError ?? error}
+              {formatUiError(clientError ?? error ?? '')}
             </InlineAlert>
           )}
           {devices.deviceError !== null && (
-            <InlineAlert tone="error" title="Audio devices are unavailable">
-              {devices.deviceError.message}
+            <InlineAlert tone="error" title={t("Audio devices are unavailable")}>
+              {formatUiError(devices.deviceError.message)}
             </InlineAlert>
           )}
 
           <div className={`voice-permission voice-permission-${permission.tone}`}>
             <span aria-hidden="true" className="voice-permission-dot" />
             <div role="status" aria-live="polite">
-              <strong>{permission.label}</strong>
-              <span>{permission.detail}</span>
+              <strong>{t(permission.label)}</strong>
+              {permissionStatus === 'granted' || permissionStatus === 'not-determined'
+                ? <HelpHint label={t(permission.label)}>{t(permission.detail)}</HelpHint>
+                : <span>{t(permission.detail)}</span>}
             </div>
             {(permissionStatus === 'denied' || permissionStatus === 'restricted') && (
               <button
@@ -313,15 +319,15 @@ export function VoiceSettingsSection({
                 className="secondary-button"
                 onClick={() => { void onOpenMicrophonePrivacySettings() }}
               >
-                Open Windows settings
-              </button>
+                {t("Open Windows settings")}</button>
             )}
           </div>
 
           <div className="settings-field-grid voice-device-grid">
             <label className="settings-field">
-              <span>Microphone</span>
+              <span>{t("Microphone")}</span>
               <select
+                aria-label={t("Microphone")}
                 value={draft.inputDeviceId ?? ''}
                 disabled={controlsDisabled || inputTesting}
                 onChange={(event) => {
@@ -340,21 +346,22 @@ export function VoiceSettingsSection({
                 <DeviceOptions
                   devices={devices.inputs}
                   selectedDeviceId={draft.inputDeviceId}
-                  unavailableLabel="Previously selected microphone (unavailable)"
+                  unavailableLabel={t("Previously selected microphone (unavailable)")}
                 />
               </select>
               <small id="voice-input-help">
                 {inputMissing
-                  ? 'The saved microphone is disconnected. System default is used safely until it returns or you save another choice.'
+                  ? t("The saved microphone is disconnected. System default is used safely until it returns or you save another choice.")
                   : devices.inputs.length === 0
-                    ? 'No physical microphone is currently visible. Windows may reveal labels after permission is granted.'
-                    : `${devices.inputs.length} microphone${devices.inputs.length === 1 ? '' : 's'} available.`}
+                    ? t("No physical microphone is currently visible. Windows may reveal labels after permission is granted.")
+                    : t(devices.inputs.length === 1 ? '{count} microphone available.' : '{count} microphones available.', { count: devices.inputs.length })}
               </small>
             </label>
 
             <label className="settings-field">
-              <span>Speaker</span>
+              <span>{t("Speaker")}</span>
               <select
+                aria-label={t("Speaker")}
                 value={draft.outputDeviceId ?? ''}
                 disabled={controlsDisabled || outputTesting}
                 onChange={(event) => {
@@ -373,15 +380,15 @@ export function VoiceSettingsSection({
                 <DeviceOptions
                   devices={devices.outputs}
                   selectedDeviceId={draft.outputDeviceId}
-                  unavailableLabel="Previously selected speaker (unavailable)"
+                  unavailableLabel={t("Previously selected speaker (unavailable)")}
                 />
               </select>
               <small id="voice-output-help">
                 {outputMissing
-                  ? 'The saved speaker is disconnected. System default is used safely until it returns or you save another choice.'
+                  ? t("The saved speaker is disconnected. System default is used safely until it returns or you save another choice.")
                   : devices.outputs.length === 0
-                    ? 'No physical speaker is currently visible.'
-                    : `${devices.outputs.length} speaker${devices.outputs.length === 1 ? '' : 's'} available.`}
+                    ? t("No physical speaker is currently visible.")
+                    : t(devices.outputs.length === 1 ? '{count} speaker available.' : '{count} speakers available.', { count: devices.outputs.length })}
               </small>
             </label>
           </div>
@@ -389,18 +396,19 @@ export function VoiceSettingsSection({
           <div className="voice-test-grid">
             <article className="voice-test-card">
               <div>
-                <strong>Microphone test</strong>
-                <span>Samples only a live level meter, stores no audio, and stops automatically.</span>
+                <strong>{t("Microphone test")}</strong>
+                <HelpHint label={t("Microphone test")}>
+                  {t("Samples only a live level meter, stores no audio, and stops automatically.")}</HelpHint>
               </div>
               {devices.inputTest.error !== null && (
                 <p className="voice-test-error" role="alert">
-                  {devices.inputTest.error.message}
+                  {formatUiError(devices.inputTest.error.message)}
                 </p>
               )}
               <div
                 className="voice-level"
                 role="meter"
-                aria-label="Microphone input level"
+                aria-label={t("Microphone input level")}
                 aria-valuemin={0}
                 aria-valuemax={100}
                 aria-valuenow={Math.round(devices.inputTest.level * 100)}
@@ -410,7 +418,8 @@ export function VoiceSettingsSection({
               <button
                 type="button"
                 className={inputTesting ? 'secondary-button' : 'primary-button'}
-                disabled={controlsDisabled}
+                // Stopping capture must remain available while preferences are being saved.
+                disabled={controlsDisabled && !inputTesting}
                 onClick={() => {
                   if (inputTesting) {
                     onStopMicrophoneTest()
@@ -422,21 +431,22 @@ export function VoiceSettingsSection({
                 }}
               >
                 {devices.inputTest.status === 'starting'
-                  ? 'Cancel microphone test'
+                  ? t("Cancel microphone test")
                   : devices.inputTest.status === 'running'
-                    ? 'Stop microphone test'
-                    : 'Test microphone'}
+                    ? t("Stop microphone test")
+                    : t("Test microphone")}
               </button>
             </article>
 
             <article className="voice-test-card">
               <div>
-                <strong>Speaker test</strong>
-                <span>Plays one brief, low-volume local tone and sends nothing to the Backend.</span>
+                <strong>{t("Speaker test")}</strong>
+                <HelpHint label={t("Speaker test")}>
+                  {t("Plays one brief, low-volume local tone and sends nothing to the Backend.")}</HelpHint>
               </div>
               {devices.outputTest.error !== null && (
                 <p className="voice-test-error" role="alert">
-                  {devices.outputTest.error.message}
+                  {formatUiError(devices.outputTest.error.message)}
                 </p>
               )}
               <div className="voice-output-indicator" aria-hidden="true">
@@ -447,7 +457,7 @@ export function VoiceSettingsSection({
               <button
                 type="button"
                 className={outputTesting ? 'secondary-button' : 'primary-button'}
-                disabled={controlsDisabled}
+                disabled={controlsDisabled && !outputTesting}
                 onClick={() => {
                   if (outputTesting) {
                     onStopSpeakerTest()
@@ -459,18 +469,17 @@ export function VoiceSettingsSection({
                 }}
               >
                 {devices.outputTest.status === 'starting'
-                  ? 'Cancel speaker test'
+                  ? t("Cancel speaker test")
                   : devices.outputTest.status === 'running'
-                    ? 'Stop speaker test'
-                    : 'Test speaker'}
+                    ? t("Stop speaker test")
+                    : t("Test speaker")}
               </button>
             </article>
           </div>
 
           <div className="voice-settings-actions">
-            <p>
-              Revision {state.revision}. Device IDs stay local; labels, permission state, and live availability are never saved.
-            </p>
+            <HelpHint label={t("Audio devices")}>
+              {t("Device IDs stay local; labels, permission state, and live availability are never saved.")}</HelpHint>
             <div>
               <button
                 type="button"
@@ -483,15 +492,14 @@ export function VoiceSettingsSection({
                   onStopSpeakerTest()
                 }}
               >
-                Discard device changes
-              </button>
+                {t("Discard device changes")}</button>
               <button
                 type="button"
                 className="primary-button"
                 disabled={!dirty || loading || pending}
                 onClick={() => { void save() }}
               >
-                {pending ? 'Saving devices…' : 'Save devices'}
+                {pending ? t("Saving devices…") : t("Save devices")}
               </button>
             </div>
           </div>

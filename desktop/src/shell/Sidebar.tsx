@@ -1,10 +1,13 @@
 /**
- * Render independent Chat and Work navigation with mode-scoped session history.
+ * Render an icon navigation rail beside mode-scoped, project-grouped history.
  *
  * Chat callbacks cross the DesktopApi boundary in the parent. This component
  * waits for those promises and never fabricates IDs, metadata, or successful
  * mutations while a request is still pending.
  */
+
+import { t, useLocale, getDateLocale } from '../i18n/LocaleProvider.tsx'
+import { formatUiError } from '../i18n/ui-error.ts'
 
 import {
   useCallback,
@@ -16,7 +19,7 @@ import {
   type ReactNode,
 } from 'react'
 
-import type { ChatSessionSummary } from '../../electron/contracts.ts'
+import type { ChatSessionSummary, ProjectSummary } from '../../electron/contracts.ts'
 import {
   codePointLength,
   hasNonBlankCodePoint,
@@ -28,8 +31,20 @@ import './Sidebar.css'
 
 const MAX_CHAT_TITLE_LENGTH = 200
 
+/** Reveal a popup or focused item inside its own scroll owner without moving the shell. */
+function revealWithinScrollport(element: HTMLElement, container: HTMLElement): void {
+  const bounds = container.getBoundingClientRect()
+  const item = element.getBoundingClientRect()
+  const padding = 4
+  if (item.bottom > bounds.bottom - padding) {
+    container.scrollTop += item.bottom - bounds.bottom + padding
+  } else if (item.top < bounds.top + padding) {
+    container.scrollTop -= bounds.top + padding - item.top
+  }
+}
+
 /** Identifies the renderer surface selected by primary navigation. */
-export type AppView = 'chat' | 'projects' | 'memory' | 'images' | 'settings'
+export type AppView = 'chat' | 'projects' | 'images' | 'settings'
 
 interface SidebarProps {
   activeChatId?: string
@@ -44,6 +59,8 @@ interface SidebarProps {
   mutationPending: boolean
   open: boolean
   projectCount: number
+  /** Supply canonical names for grouped sessions without making navigation depend on Project loading. */
+  projects?: Pick<ProjectSummary, 'projectId' | 'name' | 'archived'>[]
   searchOpen: boolean
   searchQuery: string
   showArchived: boolean
@@ -83,12 +100,9 @@ type DialogState =
       chatTitles: string[]
     }
 
-const relativeTimeFormatter = new Intl.RelativeTimeFormat('en', {
-  numeric: 'auto',
-})
-
 /** Format a trusted ISO timestamp without replacing an invalid value. */
 function relativeUpdatedAt(value: string): string {
+  const relativeTimeFormatter = new Intl.RelativeTimeFormat(getDateLocale(), { numeric: 'auto' })
   const timestamp = Date.parse(value)
   if (!Number.isFinite(timestamp)) {
     return value
@@ -123,7 +137,7 @@ function absoluteUpdatedAt(value: string): string {
   if (!Number.isFinite(timestamp)) {
     return value
   }
-  return new Intl.DateTimeFormat('en', {
+  return new Intl.DateTimeFormat(getDateLocale(), {
     dateStyle: 'medium',
     timeStyle: 'short',
   }).format(timestamp)
@@ -142,42 +156,42 @@ interface ChatSummaryCopyProps {
 
 /** Render compact Chat metadata while retaining canonical associations for assistive tools. */
 function ChatSummaryCopy({ busy, chat }: ChatSummaryCopyProps) {
+  useLocale()
   const relativeTime = relativeUpdatedAt(chat.updatedAt)
   return (
     <span className="chat-item-copy">
       <span className="chat-item-title-line">
         <strong title={chat.title}>{chat.title}</strong>
         {chat.pinned && (
-          <span className="chat-pin" title="Pinned">
+          <span className="chat-pin" title={t("Pinned")}>
             <Icon name="pin" />
-            <span className="visually-hidden">Pinned</span>
+            <span className="visually-hidden">{t("Pinned")}</span>
           </span>
         )}
       </span>
       <span className="chat-item-meta">
         {chat.mode === 'work' ? (
-          <span className="visually-hidden">Work</span>
+          <span className="visually-hidden">{t("Work")}</span>
         ) : (
-          <span className="visually-hidden">Chat</span>
+          <span className="visually-hidden">{t("Chat")}</span>
         )}
         {chat.projectId !== null ? (
           <span className="chat-project" title={chat.projectId}>
-            Project
-            {/* Session summaries carry IDs rather than project titles; retain
+            {t("Project")}{/* Session summaries carry IDs rather than project titles; retain
                 the association without putting protocol identifiers in the list. */}
             <span className="visually-hidden"> {chat.projectId}</span>
           </span>
         ) : (
-          <span className="visually-hidden">No project</span>
+          <span className="visually-hidden">{t("No project")}</span>
         )}
         {(chat.mode === 'work' || chat.projectId !== null) && (
-          <span className="chat-meta-separator" aria-hidden="true">·</span>
+          <span className="chat-meta-separator" aria-hidden="true">{t("·")}</span>
         )}
         <time
           className="chat-updated-at"
           dateTime={chat.updatedAt}
           title={absoluteUpdatedAt(chat.updatedAt)}
-          aria-label={`Updated ${relativeTime}`}
+          aria-label={t("Updated {v0}", { v0: relativeTime })}
         >
           {relativeTime}
         </time>
@@ -185,8 +199,7 @@ function ChatSummaryCopy({ busy, chat }: ChatSummaryCopyProps) {
       {busy && (
         <span className="chat-busy-label" role="status">
           <span className="chat-busy-dot" aria-hidden="true" />
-          Generating
-        </span>
+          {t("Generating")}</span>
       )}
     </span>
   )
@@ -202,7 +215,7 @@ function dialogChatNames(titles: string[]): ReactNode {
           <li key={`${title}-${index}`} title={title}>{title}</li>
         ))}
       </ul>
-      {remaining > 0 && <p>And {remaining} more.</p>}
+      {remaining > 0 && <p>{t('And {count} more.', { count: remaining })}</p>}
     </>
   )
 }
@@ -219,6 +232,7 @@ export function Sidebar({
   mutationPending,
   open,
   projectCount,
+  projects,
   searchOpen,
   searchQuery,
   showArchived,
@@ -236,6 +250,7 @@ export function Sidebar({
   onSearchQueryChange,
   onShowArchivedChange,
 }: SidebarProps) {
+  useLocale()
   const [selectionMode, setSelectionMode] = useState(false)
   const [selectedChatIds, setSelectedChatIds] = useState<Set<string>>(
     () => new Set(),
@@ -247,6 +262,7 @@ export function Sidebar({
   const [openingChatId, setOpeningChatId] = useState<string | null>(null)
   const [sidebarError, setSidebarError] = useState<string | null>(null)
   const [dialogError, setDialogError] = useState<string | null>(null)
+  const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(() => new Set())
   const searchTriggerRef = useRef<HTMLButtonElement | null>(null)
   const searchInputRef = useRef<HTMLInputElement | null>(null)
   const createButtonRef = useRef<HTMLButtonElement | null>(null)
@@ -259,6 +275,7 @@ export function Sidebar({
   const previousModeRef = useRef(activeMode)
   const pending = mutationPending || localPending
   const taskMode = activeMode === 'work'
+  const projectNames = useMemo(() => new Map((projects ?? []).map((project) => [project.projectId, project.name])), [projects])
 
   const visibleChats = useMemo(() => {
     const query = searchQuery.trim().toLocaleLowerCase()
@@ -271,11 +288,24 @@ export function Sidebar({
       }
       return [
         chat.title,
+        projectNames.get(chat.projectId ?? '') ?? '',
         chat.projectId ?? 'No project',
         chat.mode,
       ].some((value) => value.toLocaleLowerCase().includes(query))
     })
-  }, [activeMode, chats, searchQuery, showArchived])
+  }, [activeMode, chats, projectNames, searchQuery, showArchived])
+
+  const projectGroups = useMemo(() => {
+    const groups = new Map<string, ChatSessionSummary[]>()
+    for (const chat of visibleChats) {
+      if (chat.projectId === null) continue
+      const items = groups.get(chat.projectId) ?? []
+      items.push(chat)
+      groups.set(chat.projectId, items)
+    }
+    return [...groups].map(([projectId, items]) => ({ projectId, items }))
+  }, [visibleChats])
+  const ungroupedChats = visibleChats.filter((chat) => chat.projectId === null)
 
   const selectableChats = useMemo(() => (
     visibleChats.filter((chat) => chat.chatId !== busyChatId)
@@ -330,12 +360,27 @@ export function Sidebar({
     if (openMenuId === null) {
       return
     }
+    const menu = menuRefs.current.get(openMenuId)
+    const section = menu?.closest<HTMLElement>('.chat-section')
+    const sidebar = menu?.closest<HTMLElement>('.sidebar-sessions')
+    const fitMenu = (): void => {
+      if (menu === undefined || section === null || section === undefined) return
+      // Short windows let the whole session column scroll instead of history.
+      // Follow that existing CSS owner so zoom cannot leave the menu below the
+      // viewport while attempts to scroll the non-scrolling section do nothing.
+      const scrollport = getComputedStyle(section).overflowY === 'visible' ? sidebar : section
+      if (scrollport === null || scrollport === undefined) return
+      menu.style.maxHeight = `${Math.max(0, Math.min(scrollport.clientHeight, window.innerHeight) - 8)}px`
+      revealWithinScrollport(menu, scrollport)
+    }
     const focusFrame = window.requestAnimationFrame(() => {
-      menuRefs.current
-        .get(openMenuId)
-        ?.querySelector<HTMLElement>('[role="menuitem"]')
-        ?.focus({ preventScroll: true })
+      fitMenu()
+      menu?.querySelector<HTMLElement>('[role="menuitem"]')?.focus({ preventScroll: true })
     })
+    const menuResize = new ResizeObserver(fitMenu)
+    if (menu !== undefined) menuResize.observe(menu)
+    if (section !== null && section !== undefined) menuResize.observe(section)
+    if (sidebar !== null && sidebar !== undefined) menuResize.observe(sidebar)
 
     const closeOnOutsidePointer = (event: PointerEvent): void => {
       const target = event.target
@@ -352,6 +397,7 @@ export function Sidebar({
     window.addEventListener('pointerdown', closeOnOutsidePointer, true)
     return () => {
       window.cancelAnimationFrame(focusFrame)
+      menuResize.disconnect()
       window.removeEventListener('pointerdown', closeOnOutsidePointer, true)
     }
   }, [openMenuId])
@@ -426,7 +472,7 @@ export function Sidebar({
         onShowArchivedChange(false)
       }
     } catch (error) {
-      setSidebarError(actionError(error, `Could not open ${mode === 'work' ? 'Work' : 'Chat'}.`))
+      setSidebarError(actionError(error, mode === 'work' ? 'Could not open Work.' : 'Could not open Chat.'))
     } finally {
       setLocalPending(false)
     }
@@ -445,6 +491,16 @@ export function Sidebar({
   function focusAfterRemoval(removedChatIds: string[]): void {
     const removed = new Set(removedChatIds)
     const nextChat = visibleChats.find((chat) => !removed.has(chat.chatId))
+    // Removing a row can make a collapsed folder the next focus target. Reveal
+    // that canonical row before restoring focus so keyboard navigation survives.
+    if (nextChat !== undefined && nextChat.projectId !== null) {
+      const projectId = nextChat.projectId
+      setCollapsedProjects((current) => {
+        const next = new Set(current)
+        next.delete(projectId)
+        return next
+      })
+    }
     window.requestAnimationFrame(() => {
       window.requestAnimationFrame(() => {
         if (nextChat !== undefined) {
@@ -658,6 +714,7 @@ export function Sidebar({
     } else {
       nextIndex = currentIndex >= items.length - 1 ? 0 : currentIndex + 1
     }
+    revealWithinScrollport(items[nextIndex], event.currentTarget)
     items[nextIndex].focus({ preventScroll: true })
   }
 
@@ -670,10 +727,10 @@ export function Sidebar({
     dialogDescription = 'Choose a clear title for this conversation.'
     dialogConfirmLabel = 'Save'
   } else if (dialogState?.kind === 'bulk-archive') {
-    dialogTitle = `Archive ${dialogState.chatIds.length} selected chats?`
+    dialogTitle = t('Archive {count} selected chats?', { count: dialogState.chatIds.length })
     dialogDescription = (
       <>
-        <p>They will leave the active list and remain available under Archived.</p>
+        <p>{t("They will leave the active list and remain available under Archived.")}</p>
         {dialogChatNames(dialogState.chatTitles)}
       </>
     )
@@ -681,11 +738,11 @@ export function Sidebar({
   } else if (dialogState?.kind === 'delete') {
     const count = dialogState.chatIds.length
     dialogTitle = dialogState.bulk
-      ? `Delete ${count} selected ${count === 1 ? 'chat' : 'chats'}?`
-      : `Delete “${dialogState.chatTitles[0]}”?`
+      ? t('Delete {count} selected chats?', { count })
+      : t('Delete “{title}”?', { title: dialogState.chatTitles[0] })
     dialogDescription = (
       <>
-        <p>This permanently removes the selected conversation data and cannot be undone.</p>
+        <p>{t("This permanently removes the selected conversation data and cannot be undone.")}</p>
         {dialogState.bulk && dialogChatNames(dialogState.chatTitles)}
       </>
     )
@@ -693,50 +750,273 @@ export function Sidebar({
     dialogDanger = true
   }
 
+  function renderChat(chat: ChatSessionSummary): ReactNode {
+    const busy = chat.chatId === busyChatId
+    const selected = selectedChatIds.has(chat.chatId)
+    const mutationDisabled = busy || pending
+    const menuId = `chat-actions-${chat.chatId}`
+    return (
+      <li
+        className={'chat-session-row' + (busy ? ' busy' : '')}
+        key={chat.chatId}
+        aria-busy={busy}
+      >
+        {selectionMode ? (
+          <label className={'chat-select-row' + (selected ? ' selected' : '')}>
+            <input
+              type="checkbox"
+              checked={selected}
+              disabled={busy || pending}
+              aria-label={t("Select {v0}", { v0: chat.title })}
+              onChange={(event) => {
+                setSelectedChatIds((currentIds) => {
+                  const nextIds = new Set(currentIds)
+                  if (event.target.checked) {
+                    nextIds.add(chat.chatId)
+                  } else {
+                    nextIds.delete(chat.chatId)
+                  }
+                  return nextIds
+                })
+              }}
+            />
+            <ChatSummaryCopy busy={busy} chat={chat} />
+          </label>
+        ) : (
+          <>
+            <div className="chat-session-entry">
+              <button
+                ref={(element) => {
+                  if (element === null) {
+                    openButtonRefs.current.delete(chat.chatId)
+                  } else {
+                    openButtonRefs.current.set(chat.chatId, element)
+                  }
+                }}
+                type="button"
+                className={'chat-list-item chat-open-button' + (
+                  chat.chatId === activeChatId && activeView === 'chat'
+                    ? ' active'
+                    : ''
+                )}
+                aria-label={t("Open chat {v0}", { v0: chat.title })}
+                aria-current={
+                  chat.chatId === activeChatId && activeView === 'chat'
+                    ? 'page'
+                    : undefined
+                }
+                disabled={openingChatId !== null || pending || chat.archived}
+                onClick={() => { void openChat(chat.chatId) }}
+              >
+                <ChatSummaryCopy busy={busy} chat={chat} />
+              </button>
+              <button
+                ref={(element) => {
+                  if (element === null) {
+                    menuButtonRefs.current.delete(chat.chatId)
+                  } else {
+                    menuButtonRefs.current.set(chat.chatId, element)
+                  }
+                }}
+                type="button"
+                className="chat-more-button"
+                aria-label={t("More actions for {v0}", { v0: chat.title })}
+                aria-haspopup="menu"
+                aria-controls={menuId}
+                aria-expanded={openMenuId === chat.chatId}
+                onClick={() => {
+                  setSidebarError(null)
+                  setOpenMenuId((currentId) => (
+                    currentId === chat.chatId ? null : chat.chatId
+                  ))
+                }}
+              >
+                <Icon name="more" />
+              </button>
+            </div>
+
+            {openMenuId === chat.chatId && (
+              <div
+                ref={(element) => {
+                  if (element === null) {
+                    menuRefs.current.delete(chat.chatId)
+                  } else {
+                    menuRefs.current.set(chat.chatId, element)
+                  }
+                }}
+                className="chat-actions-menu"
+                id={menuId}
+                role="menu"
+                aria-label={t("Actions for {v0}", { v0: chat.title })}
+                onKeyDown={handleMenuKeyDown}
+                onBlur={() => {
+                  window.requestAnimationFrame(() => {
+                    const menu = menuRefs.current.get(chat.chatId)
+                    if (
+                      menu !== undefined
+                      && !menu.contains(document.activeElement)
+                      && document.activeElement !== menuButtonRefs.current.get(chat.chatId)
+                    ) {
+                      setOpenMenuId(null)
+                    }
+                  })
+                }}
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  tabIndex={-1}
+                  aria-disabled={mutationDisabled}
+                  title={busy ? t("Wait for this reply to finish") : undefined}
+                  onClick={() => { openRenameDialog(chat) }}
+                >
+                  <Icon name="edit" /><span>{t("Rename")}</span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  tabIndex={-1}
+                  aria-disabled={mutationDisabled}
+                  title={busy ? t("Wait for this reply to finish") : undefined}
+                  onClick={() => {
+                    if (!mutationDisabled) {
+                      void runMenuMutation(
+                        chat.pinned ? 'Could not unpin the Chat.' : 'Could not pin the Chat.',
+                        () => onPin(chat.chatId, !chat.pinned),
+                      )
+                    }
+                  }}
+                >
+                  <Icon name="pin" /><span>{chat.pinned ? t("Unpin") : t("Pin")}</span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  tabIndex={-1}
+                  aria-disabled={mutationDisabled}
+                  title={busy ? t("Wait for this reply to finish") : undefined}
+                  onClick={() => {
+                    if (!mutationDisabled) {
+                      void runMenuMutation(
+                        chat.archived ? 'Could not restore the Chat.' : 'Could not archive the Chat.',
+                        () => onArchive(chat.chatId, !chat.archived),
+                        [chat.chatId],
+                      )
+                    }
+                  }}
+                >
+                  <Icon name="archive" /><span>{chat.archived ? t("Restore") : t("Archive")}</span>
+                </button>
+                <button
+                  type="button"
+                  className="danger-action"
+                  role="menuitem"
+                  tabIndex={-1}
+                  aria-disabled={mutationDisabled}
+                  title={busy ? t("Wait for this reply to finish") : undefined}
+                  onClick={() => { openDeleteDialog(chat) }}
+                >
+                  <Icon name="trash" /><span>{t("Delete")}</span>
+                </button>
+              </div>
+            )}
+          </>
+        )}
+      </li>
+    )
+  }
+
   return (
     <aside
       className="sidebar"
       id="app-sidebar"
       data-mode={activeMode}
-      aria-label="Elysia navigation"
+      aria-label={t("Elysia navigation")}
       aria-modal={modal && open ? true : undefined}
       aria-hidden={!open}
       inert={!open}
       role={modal && open ? 'dialog' : undefined}
       tabIndex={-1}
     >
-      <div className="brand-row">
-        <div className="brand">
-          <span className="brand-mark" aria-hidden="true">
-            <img src="./elysia-icon.png" alt="" />
+      <div className="sidebar-rail">
+        <span className="brand-mark sidebar-rail-brand" aria-hidden="true"><img src="./elysia-icon.png" alt="" /></span>
+      <nav className="primary-nav" aria-label={t("Primary")}>
+        <button
+          type="button"
+          className={'nav-item nav-mode-entry' + (activeView === 'chat' && activeMode === 'chat' ? ' active' : '')}
+          title={t("Chat")}
+          aria-current={activeView === 'chat' && activeMode === 'chat' ? 'page' : undefined}
+          disabled={pending || (activeMode !== 'chat' && modeNavigationDisabled)}
+          onClick={() => { void navigateMode('chat') }}
+        >
+          <Icon name="chat" /><span>{t("Chat")}</span>
+        </button>
+        <button
+          type="button"
+          className={'nav-item nav-mode-entry' + (activeView === 'chat' && activeMode === 'work' ? ' active' : '')}
+          title={t("Work")}
+          aria-current={activeView === 'chat' && activeMode === 'work' ? 'page' : undefined}
+          disabled={pending || (activeMode !== 'work' && modeNavigationDisabled)}
+          onClick={() => { void navigateMode('work') }}
+        >
+          <Icon name="monitor" /><span>{t("Work")}</span>
+        </button>
+        <button
+          type="button"
+          className={'nav-item nav-library-entry' + (activeView === 'projects' ? ' active' : '')}
+          title={t("Projects")}
+          aria-current={activeView === 'projects' ? 'page' : undefined}
+          onClick={() => { navigate('projects') }}
+        >
+          <Icon name="folder" /><span>{t("Projects")}</span>
+          <span className="nav-count" aria-label={t('{count} projects', { count: projectCount })}>
+            {projectCount}
           </span>
-          <span>Elysia AI</span>
-        </div>
+        </button>
+        <button type="button" className={'nav-item' + (activeView === 'images' ? ' active' : '')}
+          title={t("图片生成")}
+          aria-current={activeView === 'images' ? 'page' : undefined}
+          onClick={() => { navigate('images') }}>
+          <Icon name="image" /><span>{t("图片生成")}</span>
+        </button>
+      </nav>
+      <button
+        type="button"
+        className={'sidebar-settings' + (activeView === 'settings' ? ' active' : '')}
+        aria-current={activeView === 'settings' ? 'page' : undefined}
+        aria-keyshortcuts="Control+, Meta+,"
+        title={t("Settings (Ctrl+,)")}
+        onClick={() => { navigate('settings') }}
+      >
+        <Icon name="settings" /><span>{t("Settings")}</span>
+      </button>
       </div>
-
+      <div className="sidebar-sessions">
       <div className="sidebar-quick-actions">
         <button
           ref={createButtonRef}
           type="button"
           className="sidebar-new-chat"
-          aria-label="Create chat"
-          title={taskMode ? 'Create task' : 'Create chat'}
+          aria-label={t("Create chat")}
+          title={taskMode ? t("Create task") : t("Create chat")}
           disabled={pending}
           onClick={() => { void createChat() }}
         >
-          <Icon name="plus" /><span>{taskMode ? 'New task' : 'New chat'}</span>
+          <Icon name="plus" /><span>{taskMode ? t("New task") : t("New chat")}</span>
         </button>
         <button
           ref={searchTriggerRef}
           type="button"
           className="icon-button"
-          aria-label="Search chats"
+          aria-label={t("Search chats")}
           aria-controls="chat-search"
           aria-expanded={searchOpen}
           aria-keyshortcuts="Control+K Meta+K"
-          title={taskMode ? 'Search tasks (Ctrl+K)' : 'Search chats (Ctrl+K)'}
+          title={taskMode ? t("Search tasks (Ctrl+K)") : t("Search chats (Ctrl+K)")}
           onClick={() => {
-            if (!navigate('chat')) {
+            // Closing search stays within navigation; navigating again would
+            // dismiss the compact drawer along with its search field.
+            if (!searchOpen && !navigate('chat')) {
               return
             }
             onSearchOpenChange(!searchOpen)
@@ -752,73 +1032,27 @@ export function Sidebar({
       {searchOpen && (
         <label className="search-box" id="chat-search">
           <Icon name="search" />
-          <span className="visually-hidden">Search chats</span>
+          <span className="visually-hidden">{t("Search chats")}</span>
           <input
             ref={searchInputRef}
             value={searchQuery}
             onChange={(event) => { onSearchQueryChange(event.target.value) }}
-            placeholder={taskMode ? 'Search tasks' : 'Search chats'}
+            placeholder={taskMode ? t("Search tasks") : t("Search chats")}
           />
         </label>
       )}
 
-      <nav className="primary-nav" aria-label="Primary">
-        <button
-          type="button"
-          className={'nav-item nav-mode-entry' + (activeView === 'chat' && activeMode === 'chat' ? ' active' : '')}
-          aria-current={activeView === 'chat' && activeMode === 'chat' ? 'page' : undefined}
-          disabled={pending || (activeMode !== 'chat' && modeNavigationDisabled)}
-          onClick={() => { void navigateMode('chat') }}
-        >
-          <Icon name="chat" /><span>Chat</span>
-        </button>
-        <button
-          type="button"
-          className={'nav-item nav-mode-entry' + (activeView === 'chat' && activeMode === 'work' ? ' active' : '')}
-          aria-current={activeView === 'chat' && activeMode === 'work' ? 'page' : undefined}
-          disabled={pending || (activeMode !== 'work' && modeNavigationDisabled)}
-          onClick={() => { void navigateMode('work') }}
-        >
-          <Icon name="monitor" /><span>Work</span>
-        </button>
-        <button
-          type="button"
-          className={'nav-item nav-library-entry' + (activeView === 'projects' ? ' active' : '')}
-          aria-current={activeView === 'projects' ? 'page' : undefined}
-          onClick={() => { navigate('projects') }}
-        >
-          <Icon name="folder" /><span>Projects</span>
-          <span className="nav-count" aria-label={`${projectCount} projects`}>
-            {projectCount}
-          </span>
-        </button>
-        <button
-          type="button"
-          className={'nav-item' + (activeView === 'memory' ? ' active' : '')}
-          aria-current={activeView === 'memory' ? 'page' : undefined}
-          onClick={() => { navigate('memory') }}
-        >
-          <Icon name="memory" /><span>Memory</span>
-        </button>
-        <button type="button" className={'nav-item' + (activeView === 'images' ? ' active' : '')}
-          aria-current={activeView === 'images' ? 'page' : undefined}
-          onClick={() => { navigate('images') }}>
-          <Icon name="image" /><span>图片生成</span>
-        </button>
-      </nav>
-
-      <div className="sidebar-divider" />
 
       <section className="chat-section" aria-labelledby="chat-section-title" aria-busy={pending}>
         <div className="section-heading">
-          <span id="chat-section-title">{showArchived ? taskMode ? 'Archived tasks' : 'Archived chats' : taskMode ? 'Tasks' : 'Recents'}</span>
+          <span id="chat-section-title">{showArchived ? taskMode ? t("Archived tasks") : t("Archived chats") : taskMode ? t("Tasks") : t("Recents")}</span>
           {!selectionMode && (
             <div className="chat-management-controls">
               <button
                 type="button"
                 className="icon-button chat-filter-button"
-                aria-label="Archived"
-                title={showArchived ? taskMode ? 'Show recent tasks' : 'Show recent chats' : taskMode ? 'Show archived tasks' : 'Show archived chats'}
+                aria-label={t("Archived")}
+                title={showArchived ? taskMode ? t("Show recent tasks") : t("Show recent chats") : taskMode ? t("Show archived tasks") : t("Show archived chats")}
                 aria-pressed={showArchived}
                 disabled={pending}
                 onClick={() => {
@@ -833,8 +1067,8 @@ export function Sidebar({
                 ref={selectionTriggerRef}
                 type="button"
                 className="icon-button chat-filter-button"
-                aria-label="Select chats"
-                title={taskMode ? 'Select tasks' : 'Select chats'}
+                aria-label={t("Select chats")}
+                title={taskMode ? t("Select tasks") : t("Select chats")}
                 disabled={pending || selectableChats.length === 0}
                 onClick={() => {
                   setSelectionMode(true)
@@ -851,14 +1085,14 @@ export function Sidebar({
         </div>
 
         {selectionMode && (
-          <div className="chat-selection-toolbar" role="toolbar" aria-label="Selected chats">
-            <strong aria-live="polite">{selectedSelectableCount} selected</strong>
+          <div className="chat-selection-toolbar" role="toolbar" aria-label={t("Selected chats")}>
+            <strong aria-live="polite">{t('{count} selected', { count: selectedSelectableCount })}</strong>
             <button
               type="button"
               disabled={pending || selectedSelectableCount === 0 || showArchived}
               onClick={() => { openBulkDialog('bulk-archive') }}
             >
-              <Icon name="archive" /><span>Archive</span>
+              <Icon name="archive" /><span>{t("Archive")}</span>
             </button>
             <button
               type="button"
@@ -866,7 +1100,7 @@ export function Sidebar({
               disabled={pending || selectedSelectableCount === 0}
               onClick={() => { openBulkDialog('delete') }}
             >
-              <Icon name="trash" /><span>Delete</span>
+              <Icon name="trash" /><span>{t("Delete")}</span>
             </button>
             <button
               type="button"
@@ -875,8 +1109,7 @@ export function Sidebar({
                 closeSelectionMode(true)
               }}
             >
-              Cancel
-            </button>
+              {t("Cancel")}</button>
           </div>
         )}
 
@@ -892,16 +1125,16 @@ export function Sidebar({
                   : new Set())
               }}
             />
-            <span>Select all visible</span>
+            <span>{t("Select all visible")}</span>
           </label>
         )}
 
         {sidebarError !== null && (
           <div className="sidebar-alert" role="alert">
-            <span>{sidebarError}</span>
+            <span>{formatUiError(sidebarError)}</span>
             <button
               type="button"
-              aria-label="Dismiss Chat error"
+              aria-label={t("Dismiss Chat error")}
               onClick={() => { setSidebarError(null) }}
             >
               <Icon name="close" />
@@ -911,218 +1144,60 @@ export function Sidebar({
 
         {pending && (
           <div className="sidebar-operation-status" role="status">
-            {taskMode ? 'Updating tasks…' : chats.length === 0 ? 'Loading chats…' : 'Updating chats…'}
+            {taskMode ? t("Updating tasks…") : chats.length === 0 ? t("Loading chats…") : t("Updating chats…")}
           </div>
         )}
 
         {visibleChats.length > 0 ? (
-          <ul className="chat-list" aria-label={showArchived ? taskMode ? 'Archived tasks' : 'Archived chats' : taskMode ? 'Active tasks' : 'Active chats'}>
-            {visibleChats.map((chat) => {
-              const busy = chat.chatId === busyChatId
-              const selected = selectedChatIds.has(chat.chatId)
-              const mutationDisabled = busy || pending
-              const menuId = `chat-actions-${chat.chatId}`
-              return (
-                <li
-                  className={'chat-session-row' + (busy ? ' busy' : '')}
-                  key={chat.chatId}
-                  aria-busy={busy}
-                >
-                  {selectionMode ? (
-                    <label className={'chat-select-row' + (selected ? ' selected' : '')}>
-                      <input
-                        type="checkbox"
-                        checked={selected}
-                        disabled={busy || pending}
-                        aria-label={`Select ${chat.title}`}
-                        onChange={(event) => {
-                          setSelectedChatIds((currentIds) => {
-                            const nextIds = new Set(currentIds)
-                            if (event.target.checked) {
-                              nextIds.add(chat.chatId)
-                            } else {
-                              nextIds.delete(chat.chatId)
-                            }
-                            return nextIds
-                          })
-                        }}
-                      />
-                      <ChatSummaryCopy busy={busy} chat={chat} />
-                    </label>
-                  ) : (
-                    <>
-                      <div className="chat-session-entry">
-                        <button
-                          ref={(element) => {
-                            if (element === null) {
-                              openButtonRefs.current.delete(chat.chatId)
-                            } else {
-                              openButtonRefs.current.set(chat.chatId, element)
-                            }
-                          }}
-                          type="button"
-                          className={'chat-list-item chat-open-button' + (
-                            chat.chatId === activeChatId && activeView === 'chat'
-                              ? ' active'
-                              : ''
-                          )}
-                          aria-label={`Open chat ${chat.title}`}
-                          aria-current={
-                            chat.chatId === activeChatId && activeView === 'chat'
-                              ? 'page'
-                              : undefined
-                          }
-                          disabled={openingChatId !== null || pending || chat.archived}
-                          onClick={() => { void openChat(chat.chatId) }}
-                        >
-                          <ChatSummaryCopy busy={busy} chat={chat} />
-                        </button>
-                        <button
-                          ref={(element) => {
-                            if (element === null) {
-                              menuButtonRefs.current.delete(chat.chatId)
-                            } else {
-                              menuButtonRefs.current.set(chat.chatId, element)
-                            }
-                          }}
-                          type="button"
-                          className="chat-more-button"
-                          aria-label={`More actions for ${chat.title}`}
-                          aria-haspopup="menu"
-                          aria-controls={menuId}
-                          aria-expanded={openMenuId === chat.chatId}
-                          onClick={() => {
-                            setSidebarError(null)
-                            setOpenMenuId((currentId) => (
-                              currentId === chat.chatId ? null : chat.chatId
-                            ))
-                          }}
-                        >
-                          <Icon name="more" />
-                        </button>
-                      </div>
-
-                      {openMenuId === chat.chatId && (
-                        <div
-                          ref={(element) => {
-                            if (element === null) {
-                              menuRefs.current.delete(chat.chatId)
-                            } else {
-                              menuRefs.current.set(chat.chatId, element)
-                            }
-                          }}
-                          className="chat-actions-menu"
-                          id={menuId}
-                          role="menu"
-                          aria-label={`Actions for ${chat.title}`}
-                          onKeyDown={handleMenuKeyDown}
-                          onBlur={() => {
-                            window.requestAnimationFrame(() => {
-                              const menu = menuRefs.current.get(chat.chatId)
-                              if (
-                                menu !== undefined
-                                && !menu.contains(document.activeElement)
-                                && document.activeElement !== menuButtonRefs.current.get(chat.chatId)
-                              ) {
-                                setOpenMenuId(null)
-                              }
-                            })
-                          }}
-                        >
-                          <button
-                            type="button"
-                            role="menuitem"
-                            tabIndex={-1}
-                            aria-disabled={mutationDisabled}
-                            title={busy ? 'Wait for this reply to finish' : undefined}
-                            onClick={() => { openRenameDialog(chat) }}
-                          >
-                            <Icon name="edit" /><span>Rename</span>
-                          </button>
-                          <button
-                            type="button"
-                            role="menuitem"
-                            tabIndex={-1}
-                            aria-disabled={mutationDisabled}
-                            title={busy ? 'Wait for this reply to finish' : undefined}
-                            onClick={() => {
-                              if (!mutationDisabled) {
-                                void runMenuMutation(
-                                  `Could not ${chat.pinned ? 'unpin' : 'pin'} the Chat.`,
-                                  () => onPin(chat.chatId, !chat.pinned),
-                                )
-                              }
-                            }}
-                          >
-                            <Icon name="pin" /><span>{chat.pinned ? 'Unpin' : 'Pin'}</span>
-                          </button>
-                          <button
-                            type="button"
-                            role="menuitem"
-                            tabIndex={-1}
-                            aria-disabled={mutationDisabled}
-                            title={busy ? 'Wait for this reply to finish' : undefined}
-                            onClick={() => {
-                              if (!mutationDisabled) {
-                                void runMenuMutation(
-                                  `Could not ${chat.archived ? 'restore' : 'archive'} the Chat.`,
-                                  () => onArchive(chat.chatId, !chat.archived),
-                                  [chat.chatId],
-                                )
-                              }
-                            }}
-                          >
-                            <Icon name="archive" /><span>{chat.archived ? 'Restore' : 'Archive'}</span>
-                          </button>
-                          <button
-                            type="button"
-                            className="danger-action"
-                            role="menuitem"
-                            tabIndex={-1}
-                            aria-disabled={mutationDisabled}
-                            title={busy ? 'Wait for this reply to finish' : undefined}
-                            onClick={() => { openDeleteDialog(chat) }}
-                          >
-                            <Icon name="trash" /><span>Delete</span>
-                          </button>
-                        </div>
-                      )}
-                    </>
-                  )}
-                </li>
-              )
+          <ul className="chat-list" aria-label={showArchived ? taskMode ? t("Archived tasks") : t("Archived chats") : taskMode ? t("Active tasks") : t("Active chats")}>
+            {projectGroups.length > 0 && <li className="sidebar-group-label">{t("Projects")}</li>}
+            {projectGroups.map((group) => {
+              // Search and bulk selection reveal every matching row, so a
+              // collapsed folder cannot conceal hits or a selected operation.
+              const expanded = selectionMode || searchQuery.trim() !== '' || !collapsedProjects.has(group.projectId)
+              const groupId = `sidebar-project-${group.projectId}`
+              const groupName = projectNames.get(group.projectId) ?? t('Project')
+              return <li className="sidebar-project-group" key={group.projectId} data-project-group={group.projectId}>
+                <button type="button" className="sidebar-project-toggle" aria-expanded={expanded} aria-controls={groupId}
+                  title={groupName} disabled={selectionMode || searchQuery.trim() !== ''} onClick={() => {
+                    setOpenMenuId(null)
+                    setCollapsedProjects((current) => {
+                      const next = new Set(current)
+                      if (next.has(group.projectId)) next.delete(group.projectId)
+                      else next.add(group.projectId)
+                      return next
+                    })
+                  }}>
+                  <Icon name="chevron" /><Icon name="folder" /><span>{groupName}</span>
+                </button>
+                <ul id={groupId} className="sidebar-project-chats" aria-label={groupName} hidden={!expanded}>
+                  {group.items.map(renderChat)}
+                </ul>
+              </li>
             })}
+            {projectGroups.length > 0 && ungroupedChats.length > 0 && <li className="sidebar-group-label">{t("Recents")}</li>}
+            {ungroupedChats.map(renderChat)}
           </ul>
         ) : (
           <div className="sidebar-empty" role="status">
             <Icon name={searchQuery.trim() ? 'search' : showArchived ? 'archive' : taskMode ? 'monitor' : 'chat'} />
             <span>
               {searchQuery.trim()
-                ? taskMode ? 'No matching tasks' : 'No matching chats'
+                ? taskMode ? t("No matching tasks") : t("No matching chats")
                 : showArchived
-                  ? taskMode ? 'No archived tasks' : 'No archived chats'
-                  : taskMode ? 'No tasks yet' : 'No chats yet'}
+                  ? taskMode ? t("No archived tasks") : t("No archived chats")
+                  : taskMode ? t("No tasks yet") : t("No chats yet")}
             </span>
           </div>
         )}
       </section>
-
-      <button
-        type="button"
-        className={'sidebar-settings' + (activeView === 'settings' ? ' active' : '')}
-        aria-current={activeView === 'settings' ? 'page' : undefined}
-        aria-keyshortcuts="Control+, Meta+,"
-        title="Settings (Ctrl+,)"
-        onClick={() => { navigate('settings') }}
-      >
-        <Icon name="settings" /><span>Settings</span>
-      </button>
+      </div>
 
       <ChatActionDialog
         open={dialogState !== null}
-        title={dialogTitle}
+        title={t(dialogTitle)}
         description={dialogDescription}
-        confirmLabel={dialogConfirmLabel}
+        confirmLabel={t(dialogConfirmLabel)}
         danger={dialogDanger}
         pending={pending}
         error={dialogError}
@@ -1131,7 +1206,7 @@ export function Sidebar({
       >
         {dialogState?.kind === 'rename' ? (
           <label className="chat-rename-field" htmlFor="chat-rename-title">
-            <span>Chat title</span>
+            <span>{t("Chat title")}</span>
             <input
               id="chat-rename-title"
               data-dialog-initial-focus
@@ -1148,7 +1223,7 @@ export function Sidebar({
               }}
             />
             <small id="chat-rename-title-count">
-              {codePointLength(renameDraft)}/{MAX_CHAT_TITLE_LENGTH}
+              {codePointLength(renameDraft)}{t("/")}{MAX_CHAT_TITLE_LENGTH}
             </small>
           </label>
         ) : undefined}

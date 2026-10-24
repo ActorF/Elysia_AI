@@ -1,5 +1,5 @@
 /**
- * A restrained rose-and-lilac music studio for Song Cover setup and playback.
+ * A quiet music studio for Song Cover setup and playback with one rose accent.
  * Styles are scoped to these surfaces so other dialogs and voice modes retain
  * their layout. Semantic palette tokens support both desktop themes.
  */
@@ -10,7 +10,6 @@
 
 .chat-action-dialog:has(.song-studio-options)::backdrop {
   background: var(--color-bg-overlay);
-  backdrop-filter: blur(0.35rem);
 }
 
 .chat-action-dialog-card:has(.song-studio-options) {
@@ -18,7 +17,7 @@
   padding: 0;
   background: var(--color-bg-canvas);
   border-color: var(--color-border);
-  border-radius: var(--radius-2xl);
+  border-radius: var(--radius-lg);
   box-shadow: var(--shadow-floating);
   scrollbar-gutter: stable;
   scroll-padding-block: var(--space-4) 5rem;
@@ -33,22 +32,6 @@
   font-size: var(--font-size-xl);
   font-weight: var(--font-weight-semibold);
   letter-spacing: var(--letter-spacing-tight);
-}
-
-.song-studio-intro {
-  display: flex;
-  gap: var(--space-2);
-  align-items: center;
-}
-
-.song-studio-intro-mark {
-  display: inline-flex;
-  color: var(--color-accent);
-}
-
-.song-studio-intro-mark svg {
-  width: 1rem;
-  height: 1rem;
 }
 
 .song-studio-options {
@@ -104,8 +87,8 @@
   position: relative;
   min-width: 0;
   color: var(--color-text-secondary);
-  background: var(--color-bg-surface);
-  border: 1px solid var(--color-border);
+  background: var(--color-bg-soft);
+  border: 1px solid transparent;
   cursor: pointer;
   transition: background var(--motion-duration-fast), border-color var(--motion-duration-fast);
 }
@@ -115,7 +98,7 @@
   align-content: start;
   gap: var(--space-3);
   padding: var(--space-4);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
 }
 
 .song-studio-choice:hover,
@@ -126,8 +109,8 @@
 
 .song-studio-choice.selected,
 .song-studio-source.selected {
-  background: color-mix(in srgb, var(--color-accent) 8%, var(--color-bg-surface));
-  border-color: color-mix(in srgb, var(--color-accent) 48%, var(--color-border));
+  background: var(--color-bg-active);
+  border-color: var(--color-border-strong);
 }
 
 .song-studio-choice:has(input:focus-visible),
@@ -154,7 +137,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  color: var(--color-accent);
+  color: var(--color-text-muted);
 }
 
 .song-studio-choice-heading > svg {
@@ -204,41 +187,19 @@
   line-height: var(--line-height-normal);
 }
 
-.song-studio-choice-copy small,
-.song-studio-hint,
-.song-studio-details,
-.song-studio-accompaniment small {
+.song-studio-hint {
   color: var(--color-text-muted);
   font-size: var(--font-size-xs);
   line-height: var(--line-height-normal);
 }
 
-.song-studio-hint,
-.song-studio-details p {
+.song-studio-hint {
   margin: 0;
   overflow-wrap: anywhere;
 }
 
-.song-studio-details summary {
-  width: fit-content;
-  color: var(--color-text-secondary);
-  cursor: pointer;
-}
-
-.song-studio-details summary:hover {
-  color: var(--color-accent);
-}
-
-.song-studio-details[open] p {
-  margin-top: var(--space-2);
-}
-
 .song-studio-sources {
   gap: var(--space-1);
-  padding: var(--space-1);
-  background: var(--color-bg-soft);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
 }
 
 .song-studio-source {
@@ -278,15 +239,15 @@
   gap: var(--space-3);
   align-items: center;
   padding: var(--space-3);
-  background: var(--color-bg-surface);
-  border: 1px solid var(--color-border);
+  background: var(--color-bg-soft);
+  border: 1px solid transparent;
   border-radius: var(--radius-md);
   cursor: pointer;
 }
 
 .song-studio-arrangement.selected {
-  background: var(--color-accent-soft);
-  border-color: color-mix(in srgb, var(--color-accent) 42%, var(--color-border));
+  background: var(--color-bg-active);
+  border-color: var(--color-border-strong);
 }
 
 .song-studio-arrangement input {
@@ -308,12 +269,6 @@
   font-weight: var(--font-weight-medium);
 }
 
-.song-studio-arrangement small {
-  color: var(--color-text-muted);
-  font-size: var(--font-size-xs);
-  line-height: var(--line-height-normal);
-}
-
 .song-studio-key-group {
   gap: var(--space-2);
 }
@@ -328,12 +283,12 @@
 .song-studio-key-step {
   display: grid;
   flex: 0 0 auto;
-  width: 2.25rem;
-  height: 2.25rem;
+  width: var(--control-height-md);
+  height: var(--control-height-md);
   color: var(--color-text-secondary);
-  background: var(--color-bg-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-full);
+  background: var(--color-bg-soft);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
   place-items: center;
 }
 
@@ -382,7 +337,7 @@
 
 .song-studio-key-slider::-webkit-slider-runnable-track {
   height: 0.3rem;
-  background: linear-gradient(90deg, var(--color-accent-secondary), var(--color-accent));
+  background: var(--color-bg-active);
   border-radius: var(--radius-full);
 }
 
@@ -393,7 +348,6 @@
   background: var(--color-bg-surface);
   border: 2px solid var(--color-accent);
   border-radius: var(--radius-full);
-  box-shadow: var(--shadow-sm);
   appearance: none;
 }
 
@@ -403,12 +357,12 @@
   justify-content: space-between;
   margin-top: -0.35rem;
   color: var(--color-text-muted);
-  font-size: 0.6875rem;
+  font-size: var(--font-size-xs);
   font-variant-numeric: tabular-nums;
 }
 
 .song-studio-key-scale button {
-  min-height: 1.5rem;
+  min-height: var(--control-height-sm);
   padding: 0 var(--space-2);
   color: var(--color-accent);
   background: transparent;
@@ -470,7 +424,6 @@
 
 .song-studio-metadata-fields input::placeholder {
   color: var(--color-text-muted);
-  opacity: 0.75;
 }
 
 .chat-action-dialog-card:has(.song-studio-options) > .chat-action-dialog-actions {
@@ -479,7 +432,6 @@
   z-index: 1;
   padding: var(--space-4) var(--space-6);
   background: var(--color-bg-canvas);
-  border-top: 1px solid var(--color-border);
 }
 
 .chat-action-dialog-card:has(.song-studio-options) > .chat-action-dialog-error {
@@ -491,10 +443,9 @@
   grid-template-columns: 3.5rem minmax(0, 1fr);
   gap: var(--space-3);
   padding: var(--space-4);
-  background: linear-gradient(120deg,
-    color-mix(in srgb, var(--color-accent) 6%, var(--color-bg-surface)),
-    color-mix(in srgb, var(--color-accent-secondary) 4%, var(--color-bg-surface)));
-  border-radius: var(--radius-xl);
+  background: var(--color-bg-soft);
+  border: 0;
+  border-radius: var(--radius-md);
 }
 
 .song-studio-record {
@@ -502,11 +453,8 @@
   width: 3.5rem;
   height: 3.5rem;
   overflow: hidden;
-  background: linear-gradient(140deg,
-    color-mix(in srgb, var(--color-accent) 30%, var(--color-bg-surface)),
-    color-mix(in srgb, var(--color-accent-secondary) 24%, var(--color-bg-surface)));
-  border: 1px solid color-mix(in srgb, var(--color-accent) 16%, transparent);
-  border-radius: var(--radius-lg);
+  background: var(--color-bg-active);
+  border-radius: var(--radius-md);
   place-items: center;
 }
 
@@ -514,11 +462,7 @@
   display: grid;
   width: 2.6rem;
   height: 2.6rem;
-  color: var(--color-accent);
-  background: repeating-radial-gradient(circle,
-    transparent 0 0.3rem,
-    color-mix(in srgb, var(--color-accent) 15%, transparent) 0.32rem 0.36rem);
-  border: 1px solid color-mix(in srgb, var(--color-accent) 24%, transparent);
+  color: var(--color-text-secondary);
   border-radius: var(--radius-full);
   place-items: center;
 }
@@ -542,7 +486,7 @@
   justify-content: space-between;
   min-width: 0;
   padding-right: 1.75rem;
-  font-size: 0.6875rem;
+  font-size: var(--font-size-xs);
 }
 
 .song-studio-eyebrow {
@@ -570,7 +514,7 @@
   flex-wrap: wrap;
   gap: var(--space-1) var(--space-2);
   color: var(--color-text-secondary);
-  font-size: 0.6875rem;
+  font-size: var(--font-size-xs);
 }
 
 .song-studio-track-settings > span + span::before {
@@ -582,7 +526,7 @@
 .song-studio-track-accompaniment {
   overflow: hidden;
   color: var(--color-text-muted);
-  font-size: 0.6875rem;
+  font-size: var(--font-size-xs);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -604,7 +548,7 @@
   flex-wrap: wrap;
   gap: var(--space-3);
   color: var(--color-text-muted);
-  font-size: 0.6875rem;
+  font-size: var(--font-size-xs);
 }
 
 .song-studio-steps > span {
@@ -648,16 +592,8 @@
 }
 
 .song-studio-job-progress progress::-webkit-progress-value {
-  background: linear-gradient(90deg, var(--color-accent-secondary), var(--color-accent), var(--color-accent-secondary));
-  background-size: 200% 100%;
+  background: var(--color-accent);
   border-radius: var(--radius-full);
-  animation: song-studio-processing 2s linear infinite;
-}
-
-/* Motion communicates ongoing work while the filled width stays tied to
-   completed work reported by the converter, never to an elapsed-time guess. */
-@keyframes song-studio-processing {
-  to { background-position: -200% 0; }
 }
 
 .song-studio-hide {
@@ -665,13 +601,13 @@
   top: var(--space-3);
   right: var(--space-3);
   display: grid;
-  width: 1.75rem;
-  height: 1.75rem;
+  width: var(--control-height-sm);
+  height: var(--control-height-sm);
   padding: 0;
   color: var(--color-text-muted);
   background: transparent;
   border: 0;
-  border-radius: var(--radius-full);
+  border-radius: var(--radius-md);
   place-items: center;
 }
 
@@ -704,6 +640,7 @@
 
 .song-studio-seek::-webkit-slider-runnable-track {
   height: 0.3rem;
+  /* The hard stop represents actual playback position rather than decoration. */
   background: linear-gradient(to right,
     var(--color-accent) 0 var(--song-played),
     var(--color-bg-active) var(--song-played) 100%);
@@ -717,7 +654,6 @@
   background: var(--color-accent);
   border: 2px solid var(--color-bg-surface);
   border-radius: var(--radius-full);
-  box-shadow: var(--shadow-sm);
   appearance: none;
 }
 
@@ -730,7 +666,7 @@
   display: flex;
   justify-content: space-between;
   color: var(--color-text-muted);
-  font-size: 0.6875rem;
+  font-size: var(--font-size-xs);
   font-variant-numeric: tabular-nums;
 }
 
@@ -769,12 +705,12 @@
   gap: var(--space-2);
   align-items: center;
   justify-content: center;
-  min-height: 2rem;
+  min-height: var(--control-height-sm);
   padding: var(--space-1) var(--space-3);
   color: var(--color-text-secondary);
   background: var(--color-bg-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-full);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
   font-size: var(--font-size-xs);
 }
 
@@ -831,9 +767,6 @@
     animation: none;
   }
 
-  .song-studio-job-progress progress::-webkit-progress-value {
-    animation: none;
-  }
 }
 
 @media (forced-colors: active) {

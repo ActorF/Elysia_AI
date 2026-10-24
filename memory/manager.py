@@ -1,12 +1,19 @@
 """Coordinate all file-backed profile, conversation, and memory stores."""
 
 from pathlib import Path
+import json
+import os
+from tempfile import mkstemp
+
+from config.desktop_settings import desktop_settings_file_lock
 from .json_store import load_json_or_default, write_json
 from .profile import (
     PROFILE_SCHEMA_VERSION,
     Profile,
+    ProfileConflictError,
     migrate_profile,
     validate_profile,
+    validate_user_name,
 )
 from .conversation import (
     ConversationData,
@@ -285,39 +292,75 @@ class Memory:
     def load_profile(self) -> Profile:
         """Load and migrate the profile, creating defaults on first use."""
 
+        with desktop_settings_file_lock(self._profile_file):
+            return self._load_profile_unlocked()
+
+    def _load_profile_unlocked(self) -> Profile:
+        """Read under the profile lock so first-use creation cannot erase an edit."""
+
+        # Shipped defaults describe no specific customer. Existing profiles
+        # retain their chosen name and project; only a new installation gets
+        # the neutral speaker label required by legacy conversation storage.
         default_profile: Profile = {
             "schema_version": PROFILE_SCHEMA_VERSION,
-            "user_name": "Ying",
+            "user_name": "User",
             "assistant_name": "Elysia",
             "languages": ["Chinese", "English"],
-            "project": "Elysia AI",
+            "project": "",
             "launch_count": 0,
         }
 
-        profile_data = load_json_or_default(
-            self._profile_file,
-            default_profile,
-        )
-
-        return migrate_profile(profile_data)
+        if not self._profile_file.exists():
+            self._save_profile_unlocked(default_profile)
+            return default_profile
+        with self._profile_file.open("r", encoding="utf-8") as stream:
+            return migrate_profile(json.load(stream))
 
     def save_profile(self, profile: Profile) -> None:
         """Validate and persist a complete profile."""
 
-        validated_profile = validate_profile(profile)
+        with desktop_settings_file_lock(self._profile_file):
+            self._save_profile_unlocked(validate_profile(profile))
 
-        write_json(
-            self._profile_file,
-            validated_profile,
+    def _save_profile_unlocked(self, profile: Profile) -> None:
+        """Flush a sibling file before replacement, preserving the last good profile."""
+
+        self._profile_file.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary = mkstemp(
+            prefix=".profile-", suffix=".tmp", dir=self._profile_file.parent,
         )
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                json.dump(profile, stream, ensure_ascii=False, indent=4)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, self._profile_file)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+
+    def update_user_name(self, user_name: str, *, expected_user_name: str) -> Profile:
+        """Replace only the name if it still matches the caller's displayed value.
+
+        Sharing the launch-counter lock prevents startup and Settings from
+        losing each other's changes. Other profile fields are always loaded
+        inside the transaction instead of accepting a renderer-owned profile.
+        """
+
+        validate_user_name(user_name)
+        with desktop_settings_file_lock(self._profile_file):
+            profile = self._load_profile_unlocked()
+            if profile["user_name"] != expected_user_name:
+                raise ProfileConflictError("Your name changed elsewhere. Reload it before saving.")
+            if profile["user_name"] != user_name:
+                profile["user_name"] = user_name
+                self._save_profile_unlocked(profile)
+            return profile
 
     def record_launch(self) -> Profile:
         """Increment, save, and return the profile's launch counter."""
 
-        profile = self.load_profile()
-
-        profile["launch_count"] += 1
-
-        self.save_profile(profile)
-
-        return profile
+        with desktop_settings_file_lock(self._profile_file):
+            profile = self._load_profile_unlocked()
+            profile["launch_count"] += 1
+            self._save_profile_unlocked(profile)
+            return profile

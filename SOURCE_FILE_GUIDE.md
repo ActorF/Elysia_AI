@@ -34,11 +34,13 @@ Domain 定义合法数据，Repository 隐藏存储方式，Service 协调跨对
 | --- | --- |
 | Chat 生命周期、重试与提交 | [core/active_conversation.py](./core/active_conversation.py)、[chats/](./chats/) |
 | 模型调用与本地连接策略 | [core/langchain_ollama_chat_model.py](./core/langchain_ollama_chat_model.py)、[core/local_ollama.py](./core/local_ollama.py) |
+| 桌面模型地址校验 | [local-ollama-origin.ts](./desktop/electron/local-ollama-origin.ts)，由设置、协议、GPU 与视觉调用共用 |
 | Prompt 组合 | [core/prompts.py](./core/prompts.py)；角色设定独立维护 |
 | 简繁转换与回复规范化 | [localization/chinese.py](./localization/chinese.py) |
 | Project 与 Chat 归属 | [projects/service.py](./projects/service.py)、[projects/repository.py](./projects/repository.py) |
 | 记忆范围、检索与摘要 | [memory/scope.py](./memory/scope.py)、[memory/retrieval.py](./memory/retrieval.py)、[memory/summarization.py](./memory/summarization.py) |
 | 默认配置与桌面设置 | [config/settings.py](./config/settings.py)、[config/desktop_settings.py](./config/desktop_settings.py) |
+| 用户称呼 | [ProfileSettingsSection.tsx](./desktop/src/settings/ProfileSettingsSection.tsx) 通过 `profile.get/update` 读写现有用户资料；[memory/manager.py](./memory/manager.py) 负责并发校验与原子保存，下一轮回复重新读取 |
 | 数据根与恢复 | [config/data_layout.py](./config/data_layout.py)、[recovery/service.py](./recovery/service.py)、[data-storage.ts](./desktop/electron/data-storage.ts) |
 
 `ChatSession.project_id` 是 Chat 归属的唯一事实来源。记忆使用前必须过滤 Scope；模型推测与用户确认事实不能混为一类。设置保留 Saved/Active 与重启生效边界。
@@ -86,12 +88,13 @@ TTS 通过私有二进制通道交付经过校验的 WAV；PCM、模型路径和
 | Work 请求与计划 | [desktop_work.py](./desktop_work.py)、[desktop_work_plans.py](./desktop_work_plans.py) |
 | 工作流、检查点与任务 | [agent/](./agent/) |
 | Workspace、工具、写入与审计 | [work_tools/](./work_tools/) |
+| Work 中的通用 CMD | [core/work_assistant.py](./core/work_assistant.py) 规划；[work-command-native.ts](./desktop/electron/work-command-native.ts) 管理原生执行；[command_runner.py](./work_tools/command_runner.py) 管理 Windows 命令与进程树 |
 | 视觉上下文 | [agent/vision_context.py](./agent/vision_context.py)、[desktop_work_context.py](./desktop_work_context.py) |
 | 图片、截图与 OCR | [desktop/electron/](./desktop/electron/) 下的 `vision-*` 模块 |
 | 网络策略与原生请求 | [internet-policy.ts](./desktop/electron/internet-policy.ts)、[internet-transport.ts](./desktop/electron/internet-transport.ts) |
 | 联网聊天组合 | [core/internet_assistant.py](./core/internet_assistant.py)、[internet-chat-search.ts](./desktop/electron/internet-chat-search.ts) |
 
-模型输出不能增加工具调用或批准操作。恢复任务需要重新验证权限和外部状态；网络读取与外部写入分别授权。操作路径见 [Work](./docs/17-WORKFLOW-AND-DESKTOP-AGENT.md)、[Vision](./docs/18-VISION-AND-SCREEN.md) 与 [Internet](./docs/19-INTERNET-AND-SERVICES.md)。
+模型可选择授权范围内的工具，不能自行增加权限或批准操作。恢复任务需要重新验证权限和外部状态；应用的网络读取与外部写入分别授权，通用 CMD 使用另外明确选择的 Windows 用户权限。操作路径见 [Work](./docs/17-WORKFLOW-AND-DESKTOP-AGENT.md)、[Vision](./docs/18-VISION-AND-SCREEN.md) 与 [Internet](./docs/19-INTERNET-AND-SERVICES.md)。
 
 ### 角色、桌宠与通知
 
@@ -106,7 +109,19 @@ TTS 通过私有二进制通道交付经过校验的 WAV；PCM、模型路径和
 
 [image_generation/](./image_generation/) 包含固定单图 Spec、审核 Profile、受管 ComfyUI、PNG 校验、持久 Gallery 与原子发布服务。[desktop_protocol/image_channel.py](./desktop_protocol/image_channel.py) 定义私有图片传输合同。
 
-核心与部分协议已实现，桌面生成入口、预览、导出和全局 GPU 协调仍待接入。不能把协议类型存在当成用户功能已可用；当前限制与后续工作见[图片生成指南](./docs/16-LOCAL-IMAGE-GENERATION.md)。
+桌面生成入口、私有预览、原生导出、持久画廊和全局 GPU 协调已接通；用户仍需配置自己的 ComfyUI 与兼容模型。使用合同见[图片生成指南](./docs/16-LOCAL-IMAGE-GENERATION.md)，历史真实硬件证据集中在[图片运行环境与验收](./docs/image-runtime-validation.md)。
+
+### 安装包与运行依赖
+
+| 内容 | 唯一入口 |
+| --- | --- |
+| Python 运行依赖 | [requirements-runtime.txt](./requirements-runtime.txt)，开发与旧语音安装入口均引用它 |
+| 内嵌 Python 与资源范围 | [backend-runtime.json](./desktop/backend-runtime.json) 固定官方来源、摘要与源码范围 |
+| 后端构建 | [package_backend.py](./scripts/package_backend.py) 组装隔离解释器、依赖与源文件并生成摘要清单 |
+| 安装包验证 | [smoke-packaged-backend.mjs](./desktop/scripts/smoke-packaged-backend.mjs)、[smoke-packaged-app.mjs](./desktop/scripts/smoke-packaged-app.mjs) |
+| GitHub 分发流程 | [release.yml](./.github/workflows/release.yml)，验证后保留制品并生成版本草稿 |
+
+安装版只使用随包解释器，用户无需 Python/Node 开发环境。Ollama 和大模型仍由用户准备；启动引导负责说明缺失项。安装目录与数据目录分开，安装版语音模型使用数据根下的 `models/`，源码模式继续兼容仓库模型目录。
 
 ## 修改与验证
 

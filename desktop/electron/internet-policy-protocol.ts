@@ -3,7 +3,7 @@
 /** Built-in public services need no user-authored domain rules; the Internet switch still gates every request. */
 export const BUILTIN_INTERNET_DOMAINS: readonly string[] = Object.freeze([
   'en.wikipedia.org', 'zh.wikipedia.org', 'lite.duckduckgo.com',
-  'api.github.com', 'github.com', 'api.open-meteo.com', 'lrclib.net',
+  'api.github.com', 'github.com', 'api.open-meteo.com', 'geocoding-api.open-meteo.com', 'lrclib.net',
 ])
 
 /** Combine validated custom domains with fixed providers without granting any discovered or model-proposed host. */

@@ -36,6 +36,17 @@ def is_cloud_ollama_model_name(value: str) -> bool:
     return value.strip().lower().endswith((":cloud", "-cloud"))
 
 
+def model_name_with_default_tag(name: str) -> str:
+    """Make only Ollama's omitted latest tag explicit for identity comparison.
+
+    A registry port belongs to a preceding slash-delimited component. Explicit
+    tags remain exact, so another quantization cannot satisfy the request.
+    Callers must validate names separately before treating them as identities.
+    """
+
+    return name if ":" in name.rsplit("/", 1)[-1] else f"{name}:latest"
+
+
 def normalize_local_ollama_origin(value: object) -> str:
     """Return a canonical loopback HTTP origin or raise a value-free error.
 

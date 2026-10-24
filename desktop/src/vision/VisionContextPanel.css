@@ -1,13 +1,13 @@
 /* Arrange reviewed image provenance as calm reading rows beside the source canvas, with explicit destination actions. */
 
-.vision-context { display: grid; gap: 1rem; min-width: 0; }
+.vision-context { display: grid; gap: var(--space-4); min-width: 0; }
 .vision-context h3 { margin: 0; font-size: var(--font-size-sm); }
 .vision-context label { display: grid; gap: var(--space-1); font-size: var(--font-size-sm); }
 .vision-context textarea { resize: vertical; max-height: 10rem; min-width: 0; width: 100%; color: var(--color-text-primary); background: var(--color-bg-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: var(--space-2); }
 .vision-context > button { justify-self: stretch; }
 .vision-context-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
-.vision-context-evidence { display: grid; gap: 1rem; min-width: 0; }
-.vision-context-evidence > div:not(.vision-context-actions) { padding: 1rem 0 0; border-top: 1px solid var(--color-border); }
+.vision-context-evidence { display: grid; gap: var(--space-4); min-width: 0; }
+.vision-context-evidence > div:not(.vision-context-actions) { padding: var(--space-3) 0 0; }
 .vision-context-evidence strong { font-size: var(--font-size-xs); font-weight: 500; }
 .vision-panel .vision-context-note { color: var(--color-text-muted); font-size: var(--font-size-xs); }
-.vision-context-evidence pre { margin: var(--space-1) 0; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 12rem; overflow: auto; font-size: var(--font-size-sm); }
+.vision-context-evidence pre { margin: var(--space-1) 0; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 12rem; overflow: auto; font-size: var(--font-size-sm); line-height: var(--line-height-relaxed); }

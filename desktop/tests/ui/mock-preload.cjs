@@ -2,6 +2,12 @@
 
 const { contextBridge, ipcRenderer } = require('electron')
 
+ipcRenderer.on('window:fullscreen-changed', (_event, fullscreen) => {
+  if (typeof fullscreen === 'boolean' && document.documentElement !== null) {
+    document.documentElement.dataset.windowFullscreen = String(fullscreen)
+  }
+})
+
 const RELOAD_STATE_KEY = 'elysia.ui-test.backend-state.v1'
 
 function takeReloadState() {
@@ -195,7 +201,7 @@ function defaultPresenceNotificationState() {
   }
 }
 
-const builtinInternetDomains = ['en.wikipedia.org', 'zh.wikipedia.org', 'lite.duckduckgo.com', 'api.github.com', 'github.com', 'api.open-meteo.com', 'lrclib.net']
+const builtinInternetDomains = ['en.wikipedia.org', 'zh.wikipedia.org', 'lite.duckduckgo.com', 'api.github.com', 'github.com', 'api.open-meteo.com', 'geocoding-api.open-meteo.com', 'lrclib.net']
 
 function defaultInternetPolicyState() {
   return { kind: 'internet.policy', revision: 0, enabled: false, allowedDomains: [...builtinInternetDomains],
@@ -411,6 +417,11 @@ let snapshot = clone(initialSnapshot)
 let chatState = defaultChatState()
 let projectState = defaultProjectState()
 let settingsState = defaultSettingsState()
+let profileState = { kind: 'profile', userName: 'User' }
+let nextProfileLoadError = null
+let nextProfileUpdateError = null
+let delayProfileUpdates = false
+let pendingProfileUpdates = []
 let dataStorageState = defaultDataStorageState()
 let desktopPetState = defaultDesktopPetState()
 let presenceNotificationState = defaultPresenceNotificationState()
@@ -474,6 +485,8 @@ let nextSettingsError = null
 let nextDesktopPetUpdateError = null
 let nextPresenceNotificationUpdateError = null
 let nextVoiceSettingsError = null
+let delayVoiceSettingsUpdates = false
+const pendingVoiceSettingsUpdates = []
 let nextVoiceCaptureError = null
 let nextVoiceTranscriptionError = null
 let nextVoiceTranscriptionResult = defaultVoiceTranscriptionResult()
@@ -790,6 +803,7 @@ if (reloadState !== null) {
   chatState = clone(reloadState.chatState)
   projectState = clone(reloadState.projectState)
   settingsState = clone(reloadState.settingsState)
+  profileState = clone(reloadState.profileState ?? { kind: 'profile', userName: 'User' })
   dataStorageState = clone(
     reloadState.dataStorageState ?? defaultDataStorageState(),
   )
@@ -2047,6 +2061,33 @@ const desktopApi = {
     record('openDataDirectory')
   },
 
+  /** Read the durable profile even when model initialization is unavailable. */
+  getProfile: async () => {
+    record('getProfile')
+    if (nextProfileLoadError !== null) {
+      const message = nextProfileLoadError; nextProfileLoadError = null
+      throw new Error(message)
+    }
+    return clone(profileState)
+  },
+
+  /** Simulate the real compare-and-set name boundary without altering chat text. */
+  updateProfile: async (request) => {
+    record('updateProfile', [request])
+    if (delayProfileUpdates) await new Promise((resolve, reject) => { pendingProfileUpdates.push({ resolve, reject }) })
+    if (nextProfileUpdateError !== null) {
+      const message = nextProfileUpdateError; nextProfileUpdateError = null
+      throw new Error(message)
+    }
+    if (request.expectedUserName !== profileState.userName) throw new Error('Your name changed elsewhere. Reload it before saving.')
+    if (typeof request.userName !== 'string' || !request.userName || request.userName !== request.userName.trim()
+      || [...request.userName].length > 80 || /[\u0000-\u001f\u007f-\u009f\u2028\u2029\ud800-\udfff]/u.test(request.userName)) {
+      throw new Error('Your name must contain 1–80 characters on one line.')
+    }
+    profileState = { kind: 'profile', userName: request.userName }
+    return clone(profileState)
+  },
+
   getSettings: async () => {
     record('getSettings')
     await waitForSettingsLoad()
@@ -2112,6 +2153,9 @@ const desktopApi = {
 
   updateVoiceSettings: async (request) => {
     record('updateVoiceSettings', [request])
+    if (delayVoiceSettingsUpdates) {
+      await new Promise(resolve => { pendingVoiceSettingsUpdates.push(resolve) })
+    }
     if (nextVoiceSettingsError !== null) {
       const message = nextVoiceSettingsError
       nextVoiceSettingsError = null
@@ -2263,6 +2307,7 @@ const desktopApi = {
 
   retryMessage: async (request) => {
     record('retryMessage', [request])
+    await waitForChatAction()
     const requestId = `test-request-${nextRequestNumber}`
     nextRequestNumber += 1
     pendingGenerations.set(requestId, {
@@ -2285,6 +2330,23 @@ const desktopApi = {
       },
     }
     return { requestId }
+  },
+
+  resolveWorkCommandApproval: async (request) => {
+    record('resolveWorkCommandApproval', [request])
+    await waitForChatAction()
+    const activity = snapshot.workActivity
+    const pending = activity?.commandApproval
+    if (snapshot.status !== 'ready' || snapshot.chatId !== request.chatId
+      || snapshot.activeGeneration?.requestId !== request.requestId || snapshot.activeGeneration.stopping
+      || activity?.status !== 'running' || pending?.requestId !== request.requestId
+      || pending.callId !== request.callId || pending.chatId !== request.chatId) return { ok: false }
+    const next = clone(activity)
+    delete next.commandApproval
+    next.revision = (activity.revision ?? 0) + 1
+    snapshot = { ...snapshot, workActivity: next }
+    for (const listener of backendListeners) listener({ type: 'work-progress', activity: clone(next) })
+    return { ok: true, activity: clone(next) }
   },
 
   stopGeneration: async (requestId) => {
@@ -3662,6 +3724,10 @@ const testControl = {
   getLatestVoiceCallState: () => clone(latestVoiceCallWindowState),
 
   reset: () => {
+    profileState = { kind: 'profile', userName: 'User' }
+    nextProfileLoadError = null; nextProfileUpdateError = null; delayProfileUpdates = false
+    for (const pending of pendingProfileUpdates) pending.reject(new Error('Profile test reset.'))
+    pendingProfileUpdates = []
     rejectImageGeneration('Image test reset.')
     imageSettings = defaultImageSettings(); imageGallery = []; delayImageGeneration = false; nextImageNumber = 1
     pendingImageConfiguration?.(); pendingImageConfiguration = null; delayImageConfiguration = false
@@ -3749,6 +3815,8 @@ const testControl = {
     songCoverReadiness = defaultSongCoverReadiness()
     songCoverState = defaultSongCoverState()
     voiceSettingsState = defaultVoiceSettingsState()
+    delayVoiceSettingsUpdates = false
+    while (pendingVoiceSettingsUpdates.length > 0) pendingVoiceSettingsUpdates.shift()()
     microphonePermissionStatus = 'granted'
     nextSettingsError = null
     nextDesktopPetUpdateError = null
@@ -3820,6 +3888,26 @@ const testControl = {
   setSettingsState: (nextSettingsState) => {
     settingsState = clone(nextSettingsState)
   },
+
+  /** Change only the backing name to reproduce compare-and-set conflicts. */
+  setProfileState: (nextProfileState) => { profileState = clone(nextProfileState) },
+  /** Reject the next profile read without damaging the stored fixture. */
+  failNextProfileLoad: (message) => { nextProfileLoadError = message },
+  /** Reject the next name update before persistence to exercise draft recovery. */
+  failNextProfileUpdate: (message) => { nextProfileUpdateError = message },
+  /** Hold name updates until explicit release so duplicate clicks and navigation can be tested. */
+  setProfileUpdateDelay: (delayed) => {
+    delayProfileUpdates = delayed
+    if (!delayed) while (pendingProfileUpdates.length > 0) pendingProfileUpdates.shift().resolve()
+  },
+  /** Settle one held name update while leaving unrelated requests queued. */
+  releaseNextProfileUpdate: () => {
+    const pending = pendingProfileUpdates.shift()
+    pending?.resolve()
+    return pending !== undefined
+  },
+  /** Count held profile updates without releasing their simulated native ownership. */
+  getPendingProfileUpdateCount: () => pendingProfileUpdates.length,
 
   setDataStorageState: (nextDataStorageState) => {
     dataStorageState = clone(nextDataStorageState)
@@ -4172,6 +4260,22 @@ const testControl = {
     }
   },
 
+  /** Hold device persistence so tests can exercise cancellation during an in-flight save. */
+  setVoiceSettingsUpdateDelay: (delayed) => {
+    delayVoiceSettingsUpdates = delayed
+    if (!delayed) {
+      while (pendingVoiceSettingsUpdates.length > 0) pendingVoiceSettingsUpdates.shift()()
+    }
+  },
+
+  /** Complete the next device save without releasing unrelated mocked requests. */
+  releaseVoiceSettingsUpdate: () => {
+    const release = pendingVoiceSettingsUpdates.shift()
+    if (!release) return false
+    release()
+    return true
+  },
+
   setSettingsLoadDelay: (delayed) => {
     delaySettingsLoads = delayed
     if (!delayed) {
@@ -4233,6 +4337,7 @@ const testControl = {
       chatState,
       projectState,
       settingsState,
+      profileState,
       dataStorageState,
       desktopPetState,
       presenceNotificationState,

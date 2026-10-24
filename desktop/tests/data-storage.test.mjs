@@ -377,6 +377,44 @@ test('image model pins, Gallery and recovery data move durably and survive tempo
   })
 })
 
+test('installed speech models migrate with data and their runtime cache survives cleanup', async () => {
+  await withTempDirectory(async (directory) => {
+    const storage = new ElectronDataStorage({
+      userDataDirectory: path.join(directory, 'user-data'),
+    })
+    const initial = await storage.initialize()
+    const source = initial.state.activeDataRoot
+    const durable = new Map([
+      ['models/weights/faster-whisper/small/model.bin', 'speech recognition weights'],
+      ['models/weights/gpt-sovits/voice.ckpt', 'speech synthesis weights'],
+      ['models/cache/GPT-SoVITS-v2-240821/runtime/python.exe', 'owned speech runtime'],
+    ])
+    for (const [relativePath, content] of durable) {
+      await writeDataFile(source, relativePath, content)
+    }
+    await writeDataFile(source, 'cache/temporary.bin', 'discardable preview')
+    const destination = path.join(directory, 'moved-speech-data')
+    await mkdir(destination)
+    const transaction = await storage.prepareMove(destination, initial.state.revision)
+    const committed = await storage.commitMove(transaction)
+    assert.equal(committed.oldRootRetained, false)
+    assert.equal(committed.warning, null)
+    await assert.rejects(readdir(source), { code: 'ENOENT' })
+
+    const inventory = await storage.scan()
+    assert.equal(usageByCategory(inventory).other.fileCount, durable.size)
+    await storage.cleanup({
+      expectedRevision: committed.state.revision,
+      token: inventory.token,
+      categories: ['audio', 'cache', 'logs'],
+    })
+    for (const [relativePath, content] of durable) {
+      assert.equal(await readFile(path.join(destination, relativePath), 'utf8'), content)
+    }
+    await assert.rejects(readFile(path.join(destination, 'cache/temporary.bin')), { code: 'ENOENT' })
+  })
+})
+
 test('image-data move rollback preserves the source and removes only the verified destination', async () => {
   await withTempDirectory(async (directory) => {
     const storage = new ElectronDataStorage({

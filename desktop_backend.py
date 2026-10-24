@@ -40,10 +40,10 @@ from attachments import (
     JsonAttachmentStore,
 )
 from core.local_ollama import is_cloud_ollama_model_name, open_local_ollama_tags
-from core.internet_assistant import InternetEvidence, InternetLanguage, validate_internet_evidence
+from core.internet_assistant import InternetEvidence, InternetKind, InternetLanguage, ResearchStage, WeatherWhen, validate_internet_evidence
 from core.work_assistant import (
-    FILE_TOOLS, WorkOptions, WorkPhase, WorkResult, validate_work_call, validate_work_options,
-    validate_work_result, work_call_allowed, WorkThinkingUnavailableError,
+    FILE_TOOLS, MAX_WORK_STEPS, WorkOptions, WorkPhase, WorkResult, validate_work_call, validate_work_options,
+    validate_work_result, work_call_allowed, work_result_matches_call, WorkThinkingUnavailableError,
 )
 from chats import (
     AttachmentId,
@@ -77,7 +77,11 @@ from config.settings import AppSettings, SETTINGS, VoiceEmotion
 from core import (
     Brain,
     ChatBusyError,
+    ChatModelConnectionError,
+    ChatModelError,
+    ChatModelNotFoundError,
     ChatRetryTargetError,
+    ConfigurationError,
     GenerationCancelledError,
 )
 from desktop_knowledge import (
@@ -144,6 +148,8 @@ from desktop_speech import (
     DesktopSpeechTurn,
 )
 from start import create_brain, validate_settings
+from memory import Memory
+from memory.profile import ProfileConflictError
 from desktop_work import DesktopWorkRuntime
 from desktop_images import DesktopImageCoordinator
 from desktop_protocol.image_channel import ImageChannelError, ImageChannelWriter
@@ -235,7 +241,7 @@ MAX_RECENT_REQUEST_IDS = 4096
 GENERATION_SHUTDOWN_TIMEOUT_SECONDS = 2.0
 TRANSCRIPTION_TIMEOUT_SECONDS = 120.0
 INTERNET_SEARCH_TIMEOUT_SECONDS = 60.0
-WORK_TOOL_TIMEOUT_SECONDS = 300.0
+WORK_TOOL_TIMEOUT_SECONDS = 240.0
 _NATIVE_IMAGE_MAX_BYTES = 8 * 1024 * 1024
 _WORK_PHYSICAL_BUSY_METHODS = frozenset({
     "chat.create", "chat.open", "chat.rename", "chat.mode", "chat.pin",
@@ -243,7 +249,7 @@ _WORK_PHYSICAL_BUSY_METHODS = frozenset({
     "project.create", "project.open", "project.update", "project.workspace",
     "project.archive", "project.chat.move", "attachment.add", "attachment.remove",
     "attachment.native_source",
-    "settings.update", "voice.settings.update", "voice.capture.complete",
+    "settings.update", "profile.update", "voice.settings.update", "voice.capture.complete",
     "voice.transcription.start", "voice.speech.start", "work.workspace.bind",
     "work.plan.create", "work.tool.run", "work.tool.preview", "work.tool.confirm",
     "knowledge.source.add", "knowledge.source.replace", "knowledge.source.reindex",
@@ -283,6 +289,8 @@ class _GenerationTask:
     work_sequence: int = 0
     work_calls: int = 0
     work_call_id: str | None = None
+    work_call_tool: str | None = None
+    work_call_arguments: dict[str, Any] | None = field(default=None, repr=False)
     work_ready: Event = field(default_factory=Event, repr=False)
     work_result: WorkResult | None = field(default=None, repr=False)
     work_waiting: bool = False
@@ -578,10 +586,10 @@ def _create_transcriber(settings: AppSettings) -> FasterWhisperTranscriber:
     )
     # The final segment is selected from a closed allowlist. No user-provided
     # path or model alias can cross this composition boundary and trigger an
-    # implicit Faster-Whisper download.
+    # implicit Faster-Whisper download. Keep separately installed weights in
+    # user data so desktop upgrades cannot remove them with program resources.
     model_path = (
-        settings.base_dir.resolve()
-        / "models"
+        settings.model_assets_root
         / "weights"
         / "faster-whisper"
         / model_name
@@ -904,6 +912,8 @@ class DesktopBackend:
                 self._get_settings(request_id)
             elif method == "settings.update":
                 self._update_settings(request_id, params)
+            elif method in {"profile.get", "profile.update"}:
+                self._profile_settings(request_id, method, params)
             elif method == "voice.settings.get":
                 self._get_voice_settings(request_id)
             elif method == "voice.settings.update":
@@ -1005,6 +1015,41 @@ class DesktopBackend:
                 )
         except ProtocolValidationError as error:
             self._emit_error(request_id, error.code, str(error))
+        except ChatModelConnectionError:
+            # First-run model setup is expected to be incomplete. Preserve a
+            # specific, recoverable UI signal without exposing raw endpoints,
+            # local paths, or model SDK diagnostics from the original error.
+            self._emit_error(
+                request_id,
+                "backend.ollama_unavailable",
+                "Could not connect to local Ollama. Install or start Ollama, "
+                "check its address in Settings, then retry.",
+                retryable=True,
+            )
+        except ChatModelNotFoundError:
+            self._emit_error(
+                request_id,
+                "backend.model_missing",
+                "The selected local Ollama model is not installed. Download "
+                "it in Ollama or select an installed model in Settings.",
+                retryable=True,
+            )
+        except ChatModelError:
+            self._emit_error(
+                request_id,
+                "backend.model_failed",
+                "Local Ollama could not prepare the selected model. Check "
+                "Ollama and the model in Settings, then retry.",
+                retryable=True,
+            )
+        except ConfigurationError:
+            self._emit_error(
+                request_id,
+                "backend.configuration_invalid",
+                "Startup configuration is invalid. Check the local Ollama "
+                "settings; reinstall Elysia if the problem persists.",
+                retryable=True,
+            )
         except DesktopSettingsConflictError as error:
             self._emit_error(
                 request_id,
@@ -1606,6 +1651,40 @@ class DesktopBackend:
 
         self._load_desired_settings()
         self._emit_response(request_id, self._settings_state_result())
+
+    def _profile_settings(self, request_id: str, method: str, params: JsonObject) -> None:
+        """Read or rename the canonical profile independently of model startup.
+
+        The same data-layout root used by Brain owns the profile. Keeping this
+        narrow operation independent lets users choose a name even while local
+        Ollama is unavailable; no duplicate identity is stored in app settings.
+        """
+
+        memory = Memory(self._runtime_settings.data_layout.root)
+        try:
+            with self._state_lock:
+                if method == "profile.update":
+                    if self._generation_task is not None:
+                        raise ProtocolValidationError(
+                            "profile.busy", "Wait for the current reply before changing your name.",
+                        )
+                    profile = memory.update_user_name(
+                        cast(str, params["userName"]),
+                        expected_user_name=cast(str, params["expectedUserName"]),
+                    )
+                else:
+                    profile = memory.load_profile()
+        except ProfileConflictError as error:
+            raise ProtocolValidationError("profile.conflict", str(error)) from None
+        except ProtocolValidationError:
+            raise
+        except (OSError, ValueError, TypeError, DesktopSettingsStorageError):
+            # Stored names and filesystem paths must not enter error messages.
+            # A damaged profile is preserved for repair instead of silently reset.
+            raise ProtocolValidationError(
+                "profile.storage_failed", "Your name could not be loaded or saved. Reload and try again.",
+            ) from None
+        self._emit_response(request_id, {"kind": "profile", "userName": profile["user_name"]})
 
     def _update_settings(
         self,
@@ -3757,7 +3836,8 @@ class DesktopBackend:
                     attachments=attachment_records,
                     should_cancel=active_task.should_cancel,
                     begin_commit=active_task.begin_commit,
-                    internet_research=lambda query, language: self._request_chat_internet(active_task, query, language),
+                    internet_research=lambda query, language, kind="search", when="now": self._request_chat_internet(active_task, query, language, kind, when),
+                    research_progress=lambda stage: self._research_progress(active_task, stage),
                 )
             elif attachment_records:
                 run = lambda active_brain, active_task: active_brain.stream_chat(
@@ -3815,7 +3895,7 @@ class DesktopBackend:
             if task.state is not _GenerationState.RUNNING:
                 raise GenerationCancelledError("Work generation was cancelled.")
             options = task.work_options
-            if (options is None or task.method != "chat.stream" or task.work_calls >= 4
+            if (options is None or task.method != "chat.stream" or task.work_calls >= MAX_WORK_STEPS
                     or not work_call_allowed(options["permission"], tool)):
                 return {"status": "denied", "text": "当前权限不允许此工具。", "error": "permission_denied"}
             task.work_calls += 1
@@ -3837,6 +3917,8 @@ class DesktopBackend:
             if task.state is not _GenerationState.RUNNING:
                 raise GenerationCancelledError("Work generation was cancelled.")
             task.work_call_id = "work_call_" + uuid4().hex
+            task.work_call_tool = tool
+            task.work_call_arguments = dict(arguments)
             task.work_ready.clear()
             task.work_result = None
             task.work_waiting = True
@@ -3864,6 +3946,8 @@ class DesktopBackend:
             with task._lock:
                 task.work_waiting = False
                 task.work_result = None
+                task.work_call_tool = None
+                task.work_call_arguments = None
 
     def _resolve_chat_work(self, request_id: str, params: JsonObject) -> None:
         """Consume one Main receipt only for its live generation and unique call."""
@@ -3876,19 +3960,36 @@ class DesktopBackend:
                     and self._active_chat.chat_id == task.chat_id and self._active_chat.mode == "work"):
                 with task._lock:
                     if (task.state is _GenerationState.RUNNING and task.work_waiting
-                            and task.work_call_id == params["callId"] and not task.work_ready.is_set()):
+                            and task.work_call_id == params["callId"] and not task.work_ready.is_set()
+                            and task.work_call_tool is not None and task.work_call_arguments is not None
+                            and work_result_matches_call(task.work_call_tool, task.work_call_arguments, result)):
                         task.work_result = result
                         task.work_ready.set()
                         accepted = True
         self._emit_response(request_id, {"kind": "chat.work.resolved", "accepted": accepted})
+
+    def _research_progress(self, task: _GenerationTask, stage: ResearchStage) -> None:
+        """Publish a fixed research phase only for its still-running Chat generation."""
+
+        with self._state_lock:
+            if (self._generation_task is not task or self._active_chat is None
+                    or self._active_chat.chat_id != task.chat_id or self._active_chat.mode != "chat"):
+                raise GenerationCancelledError("Chat research owner changed.")
+        with task._lock:
+            if task.state is not _GenerationState.RUNNING:
+                raise GenerationCancelledError("Chat generation was cancelled.")
+        self._emit_event("chat.research.status", request_id=task.request_id,
+                         data={"chatId": str(task.chat_id), "stage": stage})
 
     def _request_chat_internet(
         self,
         task: _GenerationTask,
         query: str,
         language: InternetLanguage,
+        kind: InternetKind = "search",
+        when: WeatherWhen = "now",
     ) -> InternetEvidence:
-        """Wait for one Main-owned search without releasing the generation lease."""
+        """Wait for one Main-owned search/weather receipt under the generation lease."""
 
         with task._lock:
             if task.state is not _GenerationState.RUNNING:
@@ -3898,10 +3999,13 @@ class DesktopBackend:
             task.internet_search_id = "internet_search_" + uuid4().hex
             task.internet_waiting = True
         try:
-            self._emit_event("chat.internet.request", request_id=task.request_id, data={
+            data: JsonObject = {
                 "chatId": str(task.chat_id), "searchId": task.internet_search_id,
                 "query": query, "language": language,
-            })
+            }
+            if kind == "weather":
+                data.update({"kind": kind, "when": when})
+            self._emit_event("chat.internet.request", request_id=task.request_id, data=data)
             deadline = monotonic() + INTERNET_SEARCH_TIMEOUT_SECONDS
             while True:
                 if task.should_cancel():
@@ -4036,6 +4140,17 @@ class DesktopBackend:
                     should_cancel=task.should_cancel, begin_commit=task.begin_commit,
                     work_options=task.work_options,
                     work_progress=lambda phase, text: self._work_progress(task, phase, text),
+                ),
+            )
+            return
+        if params.get("automaticInternet", False) and not use_project_knowledge:
+            self._start_generation(
+                request_id, params, method="chat.retry",
+                run=lambda brain, task: brain.stream_retry(
+                    task.chat_id, user_message_id, assistant_message_id, message,
+                    should_cancel=task.should_cancel, begin_commit=task.begin_commit,
+                    internet_research=lambda query, language, kind="search", when="now": self._request_chat_internet(task, query, language, kind, when),
+                    research_progress=lambda stage: self._research_progress(task, stage),
                 ),
             )
             return

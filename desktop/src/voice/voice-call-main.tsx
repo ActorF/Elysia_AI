@@ -4,14 +4,19 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 
 import { AppErrorBoundary } from '../AppErrorBoundary.tsx'
+import { initializeDocumentLocale, LocaleProvider } from '../i18n/LocaleProvider.tsx'
 import '../design-system/global.css'
 import { VoiceCallWindow } from './VoiceCallWindow.tsx'
 import './VoiceCallWindow.css'
 
+initializeDocumentLocale()
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <AppErrorBoundary>
-      <VoiceCallWindow />
-    </AppErrorBoundary>
+    <LocaleProvider>
+      <AppErrorBoundary>
+        <VoiceCallWindow />
+      </AppErrorBoundary>
+    </LocaleProvider>
   </StrictMode>,
 )

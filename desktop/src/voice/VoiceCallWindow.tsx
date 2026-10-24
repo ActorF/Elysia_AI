@@ -6,6 +6,9 @@
  * the main application remains the single owner of the call's audio lifecycle.
  */
 
+import { t, useLocale } from '../i18n/LocaleProvider.tsx'
+import { formatUiError } from '../i18n/ui-error.ts'
+
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import type { VoiceCallWindowState } from '../../electron/voice-call-contracts.ts'
@@ -37,6 +40,7 @@ const ACTIVITY_LABELS: Readonly<Record<CharacterState, string>> = {
  * introducing visible status text over the face or above the controls.
  */
 export function VoiceCallWindow() {
+  useLocale()
   const windowRef = useRef<HTMLElement | null>(null)
   const microphoneButtonRef = useRef<HTMLButtonElement | null>(null)
   const currentCallIdRef = useRef<string | null>(null)
@@ -189,9 +193,9 @@ export function VoiceCallWindow() {
   const warning = callState?.warning ?? null
   const callIsClosed = callState === null && (stateResolved || bridge === undefined)
   const liveActivity = callState === null
-    ? callIsClosed ? 'Voice Call is closed.' : 'Voice Call is connecting.'
-    : `${ACTIVITY_LABELS[callState.characterState]} ${
-      microphoneMuted ? 'Microphone muted.' : 'Microphone on.'
+    ? callIsClosed ? t('Voice Call is closed.') : t('Voice Call is connecting.')
+    : `${t(ACTIVITY_LABELS[callState.characterState])} ${
+      microphoneMuted ? t('Microphone muted.') : t('Microphone on.')
     }`
 
   return (
@@ -205,7 +209,7 @@ export function VoiceCallWindow() {
       <img
         className="voice-call-background"
         src={BACKGROUND_SOURCE}
-        alt=""
+        alt={t("")}
         aria-hidden="true"
         draggable={false}
         hidden={backgroundFailed}
@@ -223,14 +227,14 @@ export function VoiceCallWindow() {
 
       <header className="voice-call-header">
         <div className="voice-call-identity">
-          <p className="voice-call-eyebrow">Voice Call</p>
-          <h1 id="voice-call-title">Elysia</h1>
+          <p className="voice-call-eyebrow">{t("Voice Call")}</p>
+          <h1 id="voice-call-title">{t("Elysia")}</h1>
         </div>
         {callState !== null && (
           <time
             className="voice-call-duration"
             dateTime={formatVoiceSessionDurationIso(elapsedMs)}
-            aria-label={`Voice Call duration ${formatVoiceSessionDuration(elapsedMs)}`}
+            aria-label={t("Voice Call duration {v0}", { v0: formatVoiceSessionDuration(elapsedMs) })}
             aria-live="off"
           >
             {formatVoiceSessionDuration(elapsedMs)}
@@ -243,50 +247,50 @@ export function VoiceCallWindow() {
       </p>
       {warning !== null && (
         <p className="sr-only voice-call-process-notice" role="status" aria-live="polite">
-          {warning}
+          {formatUiError(warning)}
         </p>
       )}
 
       {callIsClosed && (
-        <section className="voice-call-closed" aria-label="Voice Call closed">
-          <h2>Call ended</h2>
-          <p>Start a new Voice Call from the main window.</p>
+        <section className="voice-call-closed" aria-label={t("Voice Call closed")}>
+          <h2>{t("Call ended")}</h2>
+          <p>{t("Start a new Voice Call from the main window.")}</p>
         </section>
       )}
 
       <footer className="voice-call-footer">
         {error !== null && (
           <div className="voice-call-notices">
-            <p className="voice-call-notice error" role="alert">{error}</p>
+            <p className="voice-call-notice error" role="alert">{formatUiError(error)}</p>
           </div>
         )}
         {callState !== null && (
-          <div className="voice-call-controls" role="group" aria-label="Voice Call controls">
+          <div className="voice-call-controls" role="group" aria-label={t("Voice Call controls")}>
             <button
               ref={microphoneButtonRef}
               type="button"
               className={'voice-call-control mute' + (microphoneMuted ? ' active' : '')}
               disabled={pendingAction !== null}
               onClick={toggleMicrophone}
-              aria-label={microphoneLabel}
+              aria-label={t(microphoneLabel)}
               aria-pressed={microphoneMuted}
-              title={microphoneLabel}
+              title={t(microphoneLabel)}
             >
               <span className="voice-call-control-icon">
                 <Icon name={microphoneMuted ? 'microphone-off' : 'microphone'} />
               </span>
-              <span className="voice-call-control-label">{microphoneLabel}</span>
+              <span className="voice-call-control-label">{t(microphoneLabel)}</span>
             </button>
             <button
               type="button"
               className="voice-call-control hangup"
               disabled={pendingAction === 'end'}
               onClick={endCall}
-              aria-label="Close voice"
-              title="End call"
+              aria-label={t("Close voice")}
+              title={t("End call")}
             >
               <span className="voice-call-control-icon"><Icon name="hangup" /></span>
-              <span className="voice-call-control-label">End call</span>
+              <span className="voice-call-control-label">{t("End call")}</span>
             </button>
           </div>
         )}

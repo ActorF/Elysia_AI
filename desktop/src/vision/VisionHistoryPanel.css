@@ -1,11 +1,11 @@
 /* Keep local image retention opt-in prominent and arrange saved copies as simple rows with optional storage management. */
 
-.vision-history { display: grid; gap: 1rem; min-width: 0; }
+.vision-history { display: grid; gap: var(--space-4); min-width: 0; }
 .vision-history h3 { margin: 0; font-size: var(--font-size-sm); }
-.vision-history-opt-in { display: flex; align-items: center; gap: var(--space-2); padding: .85rem; border-radius: .65rem; background: var(--color-bg-soft); }
+.vision-history-opt-in { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-3); border-radius: var(--radius-md); background: var(--color-bg-soft); }
 .vision-panel .vision-history-note { color: var(--color-text-muted); font-size: var(--font-size-xs); }
 .vision-history-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 .vision-history-list { display: grid; gap: var(--space-3); list-style: none; padding: 0; margin: 0; }
-.vision-history-list li { display: grid; gap: .75rem; min-width: 0; padding: 1rem 0; border-top: 1px solid var(--color-border); overflow-wrap: anywhere; font-size: var(--font-size-xs); }
+.vision-history-list li { display: grid; gap: var(--space-3); min-width: 0; padding: var(--space-3) 0; overflow-wrap: anywhere; font-size: var(--font-size-xs); }
 .vision-history-confirm { border-left: 3px solid var(--color-accent); border-radius: .25rem; background: var(--color-bg-soft); padding: var(--space-3); }
-.vision-history-management[open] { display: grid; gap: .65rem; }
+.vision-history-management[open] { display: grid; gap: var(--space-3); }

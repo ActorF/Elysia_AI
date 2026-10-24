@@ -12,20 +12,31 @@ from memory import Memory, Profile
 def test_load_profile_creates_default_profile(
     tmp_path: Path,
 ) -> None:
-    """Verify that load profile creates default profile."""
+    """Create a neutral new-customer profile without developer identity data."""
     memory = Memory(tmp_path)
 
     profile = memory.load_profile()
 
     assert profile == {
         "schema_version": 1,
-        "user_name": "Ying",
+        "user_name": "User",
         "assistant_name": "Elysia",
         "languages": ["Chinese", "English"],
-        "project": "Elysia AI",
+        "project": "",
         "launch_count": 0,
     }
     assert memory.profile_file.exists()
+
+
+def test_load_profile_preserves_existing_customer_identity(tmp_path: Path) -> None:
+    """A default-profile change must never rename an existing user's data."""
+    memory = Memory(tmp_path)
+    profile = memory.load_profile()
+    profile["user_name"] = "Ying"
+    profile["project"] = "My research"
+    memory.save_profile(profile)
+
+    assert Memory(tmp_path).load_profile() == profile
 
 
 def test_load_profile_migrates_legacy_profile_without_rewriting(

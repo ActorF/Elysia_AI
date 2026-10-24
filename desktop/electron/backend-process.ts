@@ -13,13 +13,15 @@ import {
 import { randomBytes, randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
+import { resolveBackendPython } from './backend-runtime.js'
 import { Duplex, Readable } from 'node:stream'
 import { type GpuAdmissionCoordinator } from './gpu-admission.js'
 import { GpuBackendBroker, type GpuBackendBrokerOptions } from './gpu-backend-broker.js'
 import { ImagePreviewChannelReader } from './image-preview-channel.js'
 import { ImagePreviewOwner, type ImagePreview, type VerifiedImagePreview } from './image-preview-owner.js'
-import { parseWorkTurnOptions, parseWorkToolResult, parseWorkResolved,
+import { parseWorkTurnOptions, parseWorkToolResult, parseWorkResolved, parseWorkCommandArguments, parseWorkCommandApprovalDecision,
   type WorkTurnOptions, type WorkActivity, type WorkRequestEvent, type WorkProgressEvent,
+  type WorkCommandApprovalOutcome,
   type WorkToolCall as WorkAgentCall, type WorkToolResult as WorkAgentResult } from './work-agent-protocol.js'
 
 import type {
@@ -107,6 +109,9 @@ import {
   parseKnowledgeExportResult,
   parseProjectStateResult,
   parseSettingsStateResult,
+  parseUserProfileState,
+  type UserProfileState,
+  type UpdateUserProfileRequest,
   parseVoiceCaptureResult,
   parseVoiceSpeechCancellationResult,
   parseVoiceSpeechStartResult,
@@ -153,6 +158,7 @@ export interface BackendNativeOptions {
   onInternetSearch?: (
     request: ChatInternetRequestEventMessage['data'] & { requestId: string },
     signal: AbortSignal,
+    onReading: () => void,
   ) => Promise<{ sources: ChatInternetSource[]; error: ChatInternetResolveParams['error'] }>
 }
 
@@ -408,6 +414,7 @@ interface PendingRequest {
   internetSearchId?: string
   internetAbort?: AbortController
   internetClosed?: boolean
+  researchStage?: ActiveChatGeneration['researchStage']
   workOptions?: WorkTurnOptions
   workProjectId?: string | null
   workActivity?: WorkActivity
@@ -451,6 +458,8 @@ interface PendingRequest {
   rejectWorkAudit?: (error: Error) => void
   resolveSettingsState?: (state: DesktopSettingsState) => void
   rejectSettingsState?: (error: Error) => void
+  resolveProfile?: (state: UserProfileState) => void
+  rejectProfile?: (error: Error) => void
   resolveVoiceSettingsState?: (state: VoiceSettingsState) => void
   rejectVoiceSettingsState?: (error: Error) => void
   voiceCaptureRequest?: Omit<VoiceCaptureRequest, 'pcmBase64'>
@@ -725,6 +734,11 @@ export class BackendProcess {
   } | null = null
   private dataRoot: string | undefined
   private readonly workActivities = new Map<string, WorkActivity>()
+  private workCommandApproval: {
+    request: WorkAgentCall
+    isCurrent: () => boolean
+    settle: (outcome: WorkCommandApprovalOutcome) => void
+  } | undefined
   private snapshot: BackendSnapshot = {
     revision: 0,
     status: 'stopped',
@@ -773,6 +787,7 @@ export class BackendProcess {
                   activeEntry[1].generation.assistantMessageId,
               }),
           reply: activeEntry[1].streamedReply,
+          ...(activeEntry[1].researchStage === undefined ? {} : { researchStage: activeEntry[1].researchStage }),
           ...(activeEntry[1].usesProjectKnowledge === true
             ? { usesProjectKnowledge: true }
             : {}),
@@ -1083,7 +1098,9 @@ export class BackendProcess {
 
     const child = spawn(
       pythonExecutable,
-      [bridgeScript],
+      existsSync(path.join(this.projectRoot, 'distribution-manifest.json'))
+        ? ['-B', bridgeScript]
+        : [bridgeScript],
       {
         cwd: this.projectRoot,
         env: childEnvironment,
@@ -1505,8 +1522,8 @@ export class BackendProcess {
     await this.finishGpuCleanup()
   }
 
-  /** Retry the final persisted turn, optionally replacing its user text. */
-  beginRetry(request: RetryChatRequest): { requestId: string } {
+  /** Retry the final turn with fresh native-authorized research, never replaying Work effects. */
+  beginRetry(request: RetryChatRequest, automaticInternet = false): { requestId: string } {
     this.assertWorkIdle()
     if (
       this.snapshot.status !== 'ready'
@@ -1561,6 +1578,10 @@ export class BackendProcess {
     }
 
     const selectedWork = this.admitWorkOptions(request.workOptions, request.chatId, request.useProjectKnowledge === true)
+    const internetEnabled = automaticInternet === true
+      && request.useProjectKnowledge !== true && selectedWork === undefined
+      && this.snapshot.capabilities.includes('chat.internet')
+      && this.nativeOptions.onInternetSearch !== undefined
     // Retrying an answer must never replay an already-applied desktop effect.
     const workOptions: WorkTurnOptions | undefined = selectedWork === undefined ? undefined : { ...selectedWork, permission: 'none' }
     const requestId = this.sendRequest(
@@ -1570,6 +1591,7 @@ export class BackendProcess {
         userMessageId: request.userMessageId,
         assistantMessageId: request.assistantMessageId,
         speakReply: request.speakReply,
+        ...(internetEnabled ? { automaticInternet: true } : {}),
         ...(workOptions === undefined ? {} : { workOptions }),
         ...(message === undefined ? {} : { message }),
         ...(request.useProjectKnowledge === undefined
@@ -1579,6 +1601,7 @@ export class BackendProcess {
       request.chatId,
       {
         usesProjectKnowledge: request.useProjectKnowledge === true,
+        automaticInternet: internetEnabled,
         ...(workOptions === undefined ? {} : { workOptions, workProjectId: this.canonicalWorkChat?.projectId ?? null }),
         generation: {
           kind: 'retry',
@@ -1788,6 +1811,7 @@ export class BackendProcess {
     }
 
     if (CHAT_GENERATION_METHODS.has(target.method)) {
+      target.researchStage = undefined
       target.internetAbort?.abort()
       target.workAbort?.abort()
       this.speechDelivery?.cancelTurn(requestId)
@@ -2192,6 +2216,16 @@ export class BackendProcess {
     return this.requestSettingsState('settings.get', {})
   }
 
+  /** Read the canonical name even while model initialization is unavailable. */
+  getProfile(): Promise<UserProfileState> {
+    return this.requestProfile('profile.get', {})
+  }
+
+  /** Save only the reviewed name, preserving every other persisted profile field. */
+  updateProfile(request: UpdateUserProfileRequest): Promise<UserProfileState> {
+    return this.requestProfile('profile.update', request)
+  }
+
   /** Atomically replace one complete revisioned settings snapshot. */
   updateSettings(
     request: UpdateDesktopSettingsRequest,
@@ -2569,24 +2603,7 @@ export class BackendProcess {
   }
 
   private resolvePythonExecutable(): string {
-    const configuredPython = process.env.ELYSIA_PYTHON
-    if (configuredPython?.trim()) {
-      return path.resolve(configuredPython)
-    }
-
-    return process.platform === 'win32'
-      ? path.join(
-          this.projectRoot,
-          '.venv',
-          'Scripts',
-          'python.exe',
-        )
-      : path.join(
-          this.projectRoot,
-          '.venv',
-          'bin',
-          'python',
-        )
+    return resolveBackendPython(this.projectRoot)
   }
 
   private requestChatState<Method extends ChatSessionMethod>(
@@ -2763,6 +2780,23 @@ export class BackendProcess {
           rejectSettingsState: reject,
         },
       )
+    })
+  }
+
+  private requestProfile<Method extends 'profile.get' | 'profile.update'>(
+    method: Method, params: RequestParamsByMethod[Method],
+  ): Promise<UserProfileState> {
+    if (this.child === null
+      || ['starting', 'handshaking', 'stopping', 'stopped'].includes(this.snapshot.status)) {
+      return Promise.reject(new Error('Python Backend settings are not available yet.'))
+    }
+    if (method === 'profile.update' && (this.nativeActionActive()
+      || [...this.pendingRequests.values()].some(pending =>
+        CHAT_GENERATION_METHODS.has(pending.method) || pending.method === 'profile.update'))) {
+      return Promise.reject(new Error('Wait for the current reply before changing your name.'))
+    }
+    return new Promise<UserProfileState>((resolve, reject) => {
+      this.sendRequest(method, params, undefined, { resolveProfile: resolve, rejectProfile: reject })
     })
   }
 
@@ -3074,6 +3108,8 @@ export class BackendProcess {
       | 'rejectWorkAudit'
       | 'resolveSettingsState'
       | 'rejectSettingsState'
+      | 'resolveProfile'
+      | 'rejectProfile'
       | 'resolveVoiceSettingsState'
       | 'rejectVoiceSettingsState'
       | 'voiceCaptureRequest'
@@ -3294,6 +3330,8 @@ export class BackendProcess {
           throw new ProtocolValidationError('protocol.invalid_result', 'Work Undo request has no displayed audit record.')
         }
         parseWorkUndoResultForEntry(message.result, pending.workUndoEntry)
+      } else if (pending.method === 'profile.get' || pending.method === 'profile.update') {
+        parseUserProfileState(message.result)
       } else if (SETTINGS_METHODS.has(pending.method)) {
         parseSettingsStateResult(message.result)
       } else if (VOICE_SETTINGS_METHODS.has(pending.method)) {
@@ -3398,7 +3436,7 @@ export class BackendProcess {
       if (pending.method === 'initialize') {
         // Keep the authenticated child alive so Settings can repair a bad
         // persisted model or Ollama origin without editing files manually.
-        this.failInitialization(message.error.message)
+        this.failInitialization(message.error.message, message.error.code)
         return
       }
       // A Knowledge stop only requests cooperative rollback. Its durable
@@ -3492,6 +3530,9 @@ export class BackendProcess {
       if (pending.method === 'work.undo') pending.rejectWorkTool?.(new Error('The Work change could not be undone.'))
       if (SETTINGS_METHODS.has(pending.method)) {
         pending.rejectSettingsState?.(new Error(message.error.message))
+      }
+      if (pending.method === 'profile.get' || pending.method === 'profile.update') {
+        pending.rejectProfile?.(new Error(message.error.message))
       }
       if (VOICE_SETTINGS_METHODS.has(pending.method)) {
         pending.rejectVoiceSettingsState?.(new Error(message.error.message))
@@ -3735,6 +3776,11 @@ export class BackendProcess {
         }
       }
       pending.resolveWorkPlan?.(state)
+      return
+    }
+
+    if (pending.method === 'profile.get' || pending.method === 'profile.update') {
+      pending.resolveProfile?.(parseUserProfileState(message.result))
       return
     }
 
@@ -4061,6 +4107,7 @@ export class BackendProcess {
 
     if (message.done) {
       pending.streamCompleted = true
+      pending.researchStage = undefined
       return
     }
 
@@ -4243,6 +4290,7 @@ export class BackendProcess {
   private publishWorkActivity(activity: WorkActivity): void {
     // Retain only recent process summaries in Main memory. These are not a
     // second durable Chat history and never feed speech or retry prompt text.
+    activity.revision = (activity.revision ?? 0) + 1
     this.workActivities.delete(activity.chatId)
     this.workActivities.set(activity.chatId, structuredClone(activity))
     while (this.workActivities.size > 32) this.workActivities.delete(this.workActivities.keys().next().value!)
@@ -4270,6 +4318,67 @@ export class BackendProcess {
       && ![...this.pendingRequests.values()].some(entry => entry.cancelTargetId === request.requestId)
   }
 
+  /** Publish one reviewed CMD question and keep its authority in Main until an exact, timely decision arrives. */
+  requestWorkCommandApproval(request: WorkAgentCall, signal: AbortSignal,
+    isCurrent: () => boolean): Promise<WorkCommandApprovalOutcome> {
+    const pending = this.pendingRequests.get(request.requestId), activity = pending?.workActivity
+    if (request.tool !== 'run_command' || request.options.permission !== 'ask' || activity?.status !== 'running'
+      || signal.aborted || this.workCommandApproval !== undefined || !this.isWorkToolCurrent(request) || !isCurrent()) {
+      return Promise.resolve('cancelled')
+    }
+    const args = parseWorkCommandArguments(request.arguments)
+    if (args.cwd === undefined) return Promise.resolve('cancelled')
+    const frozen = structuredClone(request)
+    return new Promise(resolve => {
+      let settled = false
+      const settle = (outcome: WorkCommandApprovalOutcome): void => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        signal.removeEventListener('abort', abort)
+        this.workCommandApproval = undefined
+        delete activity.commandApproval
+        this.publishWorkActivity(activity)
+        resolve(outcome)
+      }
+      const abort = (): void => settle('cancelled')
+      // Python waits at most 240 seconds for a native call. A 90-second review
+      // leaves room for the maximum 120-second command and process-tree drain.
+      const timer = setTimeout(() => settle('timeout'), 90_000)
+      timer.unref()
+      this.workCommandApproval = { request: frozen, isCurrent, settle }
+      signal.addEventListener('abort', abort, { once: true })
+      activity.commandApproval = { requestId: frozen.requestId, chatId: frozen.chatId, callId: frozen.callId,
+        command: args.command, cwd: args.cwd! }
+      this.publishWorkActivity(activity)
+    })
+  }
+
+  /** Consume only one exact pending decision; stale, forged and repeated clicks can never dispatch a command. */
+  resolveWorkCommandApproval(value: unknown): { ok: boolean; activity?: WorkActivity } {
+    const decision = parseWorkCommandApprovalDecision(value), pending = this.workCommandApproval
+    if (pending === undefined || pending.request.requestId !== decision.requestId
+      || pending.request.chatId !== decision.chatId || pending.request.callId !== decision.callId) return { ok: false }
+    if (!this.isWorkToolCurrent(pending.request) || !pending.isCurrent()) {
+      pending.settle('cancelled')
+      return { ok: false }
+    }
+    pending.settle(decision.allow ? 'approved' : 'denied')
+    const activity = this.workActivities.get(decision.chatId)
+    return { ok: true, ...(activity?.requestId === decision.requestId ? { activity: structuredClone(activity) } : {}) }
+  }
+
+  /** Revoke a visible question when its canonical Chat, project, generation or native admission changes. */
+  synchronizeWorkCommandApproval(): void {
+    const pending = this.workCommandApproval
+    if (pending !== undefined && (!this.isWorkToolCurrent(pending.request) || !pending.isCurrent())) pending.settle('cancelled')
+  }
+
+  /** Closing or losing the renderer withdraws its outstanding question without approving an unseen command. */
+  cancelWorkCommandApproval(): void {
+    this.workCommandApproval?.settle('cancelled')
+  }
+
   private acceptWorkProgress(message: WorkProgressEvent): void {
     const pending = this.pendingRequests.get(message.requestId), activity = pending?.workActivity
     if (pending === undefined || activity === undefined || activity.chatId !== message.data.chatId
@@ -4291,7 +4400,7 @@ export class BackendProcess {
     const pending = this.pendingRequests.get(message.requestId), owner = this.getCanonicalWorkChat()
     if (pending?.method !== 'chat.stream' || pending.chatId !== message.data.chatId || pending.workOptions === undefined
       || pending.workCallIds === undefined || pending.workClosed || pending.workCurrentCallId !== undefined
-      || pending.workCallIds.has(message.data.callId) || pending.workCallIds.size >= 4 || pending.cancelAccepted
+      || pending.workCallIds.has(message.data.callId) || pending.workCallIds.size >= 8 || pending.cancelAccepted
       || owner?.chatId !== message.data.chatId || owner.mode !== 'work' || owner.projectId !== pending.workProjectId
       || [...this.pendingRequests.values()].some(entry => entry.cancelTargetId === message.requestId)) return
     pending.workCallIds.add(message.data.callId)
@@ -4307,14 +4416,29 @@ export class BackendProcess {
     const isRead = request.tool === 'list_apps' || request.tool === 'get_volume'
     // The local model can select only tools covered by the user's frozen grant.
     // Main's adapter repeats this check before each actual native effect.
-    if (request.options.permission !== 'none' && (isRead || request.options.permission !== 'read')) {
+    const canRun = request.tool === 'run_command'
+      ? request.options.permission === 'ask' || request.options.permission === 'full'
+      : request.options.permission !== 'none' && (isRead || request.options.permission !== 'read')
+    if (canRun) {
       try {
         result = this.nativeOptions.onWorkTool === undefined
           ? { status: 'failed', text: '此桌面工具暂不可用。', error: 'unavailable' }
           : parseWorkToolResult(await this.nativeOptions.onWorkTool(request, controller.signal))
+        if (request.tool === 'run_command' && result.status === 'succeeded' && result.command === undefined) {
+          throw new TypeError('Missing CMD receipt.')
+        }
+        if (result.command !== undefined && (request.tool !== 'run_command' || result.command.command !== request.arguments.command
+          || request.arguments.cwd !== undefined && result.command.cwd !== request.arguments.cwd)) throw new TypeError('Mismatched CMD receipt.')
       } catch { result = { status: 'failed', text: '桌面操作未能完成。', error: 'failed' } }
     }
     if (controller.signal.aborted || !this.isWorkToolCurrent(request)) return
+    if (result.command !== undefined && pending.workActivity !== undefined) {
+      // Only validated native receipts enter the terminal view; model progress
+      // cannot fabricate output, and a retired turn cannot update another Chat.
+      pending.workActivity.commands ??= []
+      pending.workActivity.commands.push({ ...result.command, callId: request.callId, status: result.status })
+      this.publishWorkActivity(pending.workActivity)
+    }
     pending.workCurrentCallId = undefined
     try { this.sendRequest('chat.work.resolve', { requestId: request.requestId, chatId: request.chatId,
       callId: request.callId, result }, request.chatId) }
@@ -4323,7 +4447,7 @@ export class BackendProcess {
 
   private acceptInternetRequest(message: ChatInternetRequestEventMessage): void {
     const pending = this.pendingRequests.get(message.requestId)
-    if (pending?.method !== 'chat.stream' || pending.chatId !== message.data.chatId
+    if (pending === undefined || !CHAT_GENERATION_METHODS.has(pending.method) || pending.chatId !== message.data.chatId
       || this.snapshot.status !== 'ready' || this.snapshot.chatId !== pending.chatId
       || pending.internetSearchId !== undefined || pending.internetClosed || pending.cancelAccepted
       || [...this.pendingRequests.values()].some((entry) => entry.cancelTargetId === message.requestId)) return
@@ -4335,6 +4459,20 @@ export class BackendProcess {
     void this.resolveInternetRequest(message, pending, controller)
   }
 
+  private updateResearchStage(requestId: string, chatId: string, stage: NonNullable<ActiveChatGeneration['researchStage']>): void {
+    const pending = this.pendingRequests.get(requestId)
+    // An old network callback may drain after Stop, navigation, or completion.
+    // It must never resurrect progress on another conversation or generation.
+    if (pending === undefined || !CHAT_GENERATION_METHODS.has(pending.method) || pending.chatId !== chatId
+      || this.snapshot.status !== 'ready' || this.snapshot.chatId !== chatId
+      || pending.internetClosed || pending.cancelAccepted || pending.streamCompleted
+      || [...this.pendingRequests.values()].some(entry => entry.cancelTargetId === requestId)) return
+    if (pending.researchStage !== stage) {
+      pending.researchStage = stage
+      this.updateSnapshot({})
+    }
+  }
+
   private async resolveInternetRequest(
     message: ChatInternetRequestEventMessage,
     pending: PendingRequest,
@@ -4342,13 +4480,19 @@ export class BackendProcess {
   ): Promise<void> {
     let evidence: Pick<ChatInternetResolveParams, 'sources' | 'error'> = { sources: [], error: 'disabled' }
     if (pending.automaticInternet && this.nativeOptions.onInternetSearch !== undefined) {
+      let readingActive = true
       try {
         evidence = await this.nativeOptions.onInternetSearch(
           { requestId: message.requestId, ...message.data }, controller.signal,
+          () => {
+            if (readingActive && !controller.signal.aborted && this.pendingRequests.get(message.requestId) === pending) {
+              this.updateResearchStage(message.requestId, message.data.chatId, 'reading')
+            }
+          },
         )
       } catch {
         evidence = { sources: [], error: 'unavailable' }
-      }
+      } finally { readingActive = false }
     }
     // Main retains the physical network lease until its Promise settles, even
     // after abort. This logical fence only prevents stale evidence publication.
@@ -4371,6 +4515,10 @@ export class BackendProcess {
     if (message.event === 'chat.work.progress') { this.acceptWorkProgress(message); return }
     if (message.event === 'chat.internet.request') {
       this.acceptInternetRequest(message)
+      return
+    }
+    if (message.event === 'chat.research.status') {
+      this.updateResearchStage(message.requestId, message.data.chatId, message.data.stage)
       return
     }
     if (
@@ -4423,6 +4571,7 @@ export class BackendProcess {
         this.speechDelivery?.cancelTurn(message.requestId)
       }
       if (message.event !== 'chat.started') {
+        pending.researchStage = undefined
         pending.internetClosed = true
         pending.internetAbort?.abort()
         pending.workClosed = true
@@ -4631,6 +4780,7 @@ export class BackendProcess {
           'Python Backend stopped before the Settings action completed.',
         ),
       )
+      pending.rejectProfile?.(new Error('Python Backend stopped before the name action completed.'))
       pending.rejectVoiceSettingsState?.(
         new Error(
           'Python Backend stopped before the Voice Settings action completed.',
@@ -4756,6 +4906,7 @@ export class BackendProcess {
       pending.rejectWorkPlan?.(error)
       pending.rejectWorkAudit?.(error)
       pending.rejectSettingsState?.(error)
+      pending.rejectProfile?.(error)
       pending.rejectVoiceSettingsState?.(error)
       pending.rejectVoiceCapture?.(error)
       pending.rejectAttachmentState?.(error)
@@ -4783,6 +4934,8 @@ export class BackendProcess {
       pending.rejectWorkAudit = undefined
       pending.resolveSettingsState = undefined
       pending.rejectSettingsState = undefined
+      pending.resolveProfile = undefined
+      pending.rejectProfile = undefined
       pending.resolveVoiceSettingsState = undefined
       pending.rejectVoiceSettingsState = undefined
       pending.resolveVoiceCapture = undefined
@@ -4828,15 +4981,20 @@ export class BackendProcess {
       modelName: undefined,
       models: [],
       error: message,
+      initializationErrorCode: undefined,
       chatId: undefined,
       chatTitle: undefined,
     })
   }
 
-  private failInitialization(message: string): void {
+  private failInitialization(message: string, code?: string): void {
     this.clearHandshakeTimeout()
     this.clearInitializeTimeout()
-    this.rejectPendingActionPromises(message)
+    // Initialization failure does not end the authenticated child. Settings,
+    // profile, and voice preference requests may already be queued behind it;
+    // retain their correlation and Promise until their own response arrives.
+    // Clearing them here turns a valid repair response into an unknown request
+    // and kills the very Backend that must remain available for setup.
     this.workPlans.clear()
     this.workPlanJobs.clear()
     this.workPlanReconciliations.clear()
@@ -4845,7 +5003,6 @@ export class BackendProcess {
     this.workPlanAppliedSequences.clear()
     this.workApprovals.clear()
     this.invalidateWorkUndo()
-    this.pendingRequests.clear()
     this.timedOutVoiceCaptureRequestIds.clear()
     this.timedOutSpeechStartRequestIds.clear()
     // The handshake remains valid even though Brain creation failed. Preserve
@@ -4856,6 +5013,7 @@ export class BackendProcess {
       modelName: undefined,
       models: [],
       error: message,
+      initializationErrorCode: code,
       chatId: undefined,
       chatTitle: undefined,
     })
@@ -4901,6 +5059,10 @@ export class BackendProcess {
       ...update,
       revision: this.snapshot.revision + 1,
     }
+    this.synchronizeWorkCommandApproval()
+    // Recovery guidance belongs only to this failed initialization. Starting,
+    // stopping, and ready snapshots must not carry it into a later Chat error.
+    if (this.snapshot.status !== 'error') this.snapshot.initializationErrorCode = undefined
     if (
       this.snapshot.status === 'ready'
       && this.snapshot.chatId !== undefined

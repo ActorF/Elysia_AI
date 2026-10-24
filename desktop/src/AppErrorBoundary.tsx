@@ -3,6 +3,8 @@
  * data-safe explanation and reload action.
  */
 
+import { t } from './i18n/LocaleProvider.tsx'
+
 import {
   Component,
   createRef,
@@ -47,19 +49,16 @@ export class AppErrorBoundary extends Component<
           role="alert"
           tabIndex={-1}
         >
-          <span className="fatal-renderer-mark" aria-hidden="true">✦</span>
-          <p className="eyebrow">Renderer error</p>
-          <h1>Elysia could not display this view.</h1>
+          <span className="fatal-renderer-mark" aria-hidden="true">{t("✦")}</span>
+          <p className="eyebrow">{t("Renderer error")}</p>
+          <h1>{t("Elysia could not display this view.")}</h1>
           <p>
-            Your local Chat and Memory data were not changed. Reload the
-            interface, or close and reopen Elysia if the problem continues.
-          </p>
+            {t("Your local Chat and Memory data were not changed. Reload the interface, or close and reopen Elysia if the problem continues.")}</p>
           <button
             type="button"
             onClick={() => { window.location.reload() }}
           >
-            Reload interface
-          </button>
+            {t("Reload interface")}</button>
         </main>
       )
     }

@@ -185,7 +185,7 @@ Prompt 目录精确 mode 0700、文件 0600、当前 UID 所有。用 O_NOFOLLOW
 
 ### 安装包状态
 
-Electron Builder 只包含 dist、dist-electron 与 package.json，不含 Python worker、上述 Windows 模型或 WSL runtime。安装包固定报告翻唱 Runtime 未包含；源码 readiness 只 lstat 必需 worker/core 文件，不联网、不运行模型。不可用时禁新建，但仍可播放/导出已完成结果；Main 在文件选择器前后重验，Renderer 状态不能授权启动。
+Windows 安装包已包含基础 Python 后端，但不包含翻唱专用 worker、上述 Windows 模型或 WSL runtime。翻唱仍为源码环境功能，安装包固定报告翻唱 Runtime 未包含；源码 readiness 只 lstat 必需 worker/core 文件，不联网、不运行模型。不可用时禁新建，但仍可播放/导出已完成结果；Main 在文件选择器前后重验，Renderer 状态不能授权启动。
 
 ## 验证与已知质量
 

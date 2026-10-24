@@ -113,9 +113,13 @@ _ANSWER_STYLES: Final = ("default", "concise", "balanced", "detailed")
 _DIGEST_PATTERN: Final = re.compile(r"^[0-9a-f]{64}$")
 _IDENTIFIER_PATTERN: Final = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 _VERSION_PATTERN: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$")
-# Public results may expose this display label, so path separators are excluded;
-# a production adapter must keep native model locations outside this contract.
-_MODEL_TAG_PATTERN: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:+-]{0,199}$")
+# Ollama registry namespaces use forward slashes, including an optional registry
+# port. These are opaque JSON model identities, never native file locations;
+# bounded components exclude absolute paths, traversal segments, and URL forms.
+_MODEL_TAG_PATTERN: Final = re.compile(
+    r"^(?=.{1,200}$)(?:[A-Za-z0-9][A-Za-z0-9._+-]*(?::[0-9]+)?/)*"
+    r"[A-Za-z0-9][A-Za-z0-9._+-]*(?::[A-Za-z0-9][A-Za-z0-9._+-]*)?$"
+)
 _PASSAGE_ID_PATTERN: Final = re.compile(r"^passage_[0-9a-f]{64}$")
 _CITATION_ID_PATTERN: Final = re.compile(r"^citation_[0-9a-f]{64}$")
 _STATEMENT_ID_PATTERN: Final = re.compile(r"^statement_[0-9]{3}$")

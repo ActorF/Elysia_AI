@@ -20,6 +20,7 @@ import { BrowserWindow, desktopCapturer, ipcMain, screen, session,
 import { validateVisionDimensions, validateVisionFileName } from './vision-protocol.js'
 import { parseVisionCaptureRegion, type VisionCaptureRegion } from './vision-capture-protocol.js'
 import { VisionCaptureError, type NativeVisionCaptureSource, type NativeVisionCaptureFrame } from './vision-capture.js'
+import { nativeText } from './native-locale.js'
 
 /** Select only trusted app-owned helper artifacts; this configuration is never exposed through renderer IPC. */
 export interface VisionCaptureNativeOptions { helperDocumentPath?: string; preloadPath?: string; timeoutMs?: number }
@@ -38,7 +39,7 @@ function digest(value: unknown): string { return createHash('sha256').update(JSO
 // while a previous helper is draining after a lifecycle/controller replacement.
 let nativeLease = false
 function safeLabel(name: string, kind: 'display' | 'window', index: number): string {
-  const fallback = `${kind === 'display' ? 'Display' : 'Window'} ${index + 1}`
+  const fallback = nativeText(kind === 'display' ? 'Display {number}' : 'Window {number}', { number: index + 1 })
   // Paths in window titles are not needed to select a capture and must not
   // become retained provenance. Such titles receive an anonymous local label.
   if (typeof name !== 'string' || /[\\/]/u.test(name)) return fallback

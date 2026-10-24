@@ -42,6 +42,13 @@ _EXPECTED_BUILDER_CONFIGURATION: Final[dict[str, object]] = {
         "buildResources": "assets",
     },
     "files": list(_EXPECTED_BUILDER_FILES),
+    "extraResources": [
+        {"from": "build/backend", "to": "backend", "filter": ["**/*"]},
+        # Notices are individual reviewed files, not permission to copy their
+        # parent directory or redirect arbitrary files outside the ASAR.
+        {"from": "../LICENSE", "to": "LICENSE.txt"},
+        {"from": "../MODEL_LICENSE.md", "to": "MODEL_LICENSE.md"},
+    ],
     "win": {
         "target": "nsis",
         "icon": "elysia-icon.ico",
@@ -174,6 +181,17 @@ _FORBIDDEN_RETIRED_LIVE2D_RUNTIME_FILE_NAMES: Final = frozenset(
 _ALLOWED_UNPACKED_BIN_PATHS: Final = frozenset(
     {"snapshot_blob.bin", "v8_context_snapshot.bin"}
 )
+# These are redistributable runtime resources from the reviewed CPython and
+# faster-whisper wheels, not user-installed generative-model weights.
+_BACKEND_RUNTIME_RESOURCE_HASHES: Final = {
+    "python/msvcp140.dll": "7c26614e1d733892c2deac7e245ce115504b1d80592dd0a01b08e3e5a55f89ca",
+    "python/msvcp140_1.dll": "206c931bf90fdad8816de3b5e2ef80b2bcaa9406c89ecc05fe6fddffe251e982",
+    "python/vcruntime140.dll": "d1f4225df2cd877dbf130d5668a021dce3f94118455ff5ec952061c30afc9ce7",
+    "python/vcruntime140_1.dll": "a7146c08f89fe5b04541ab507cdb59ff7b44534d4ba3c668a426c6450a03434e",
+    "python/python314.zip": "6120caba7f9ae34503557fab91f351c6fbd92595fd63ebca3627e7ea60cf30c2",
+    "python/lib/site-packages/faster_whisper/assets/silero_vad_v6.onnx":
+        "4cbf549b8326f60f80f2536d9eefeb450a9abe83365a098031c89719f1be17d2",
+}
 _ALLOWED_GIT_VISUAL_ASSET_PATHS: Final = frozenset(
     {
         "data/characters/elysia-2dart/01-character-turnaround.png",
@@ -485,12 +503,19 @@ def _path_policy_message(
         # admission makes every new visual asset an explicit rights review.
         return "unreviewed visual assets are forbidden at this boundary"
     if suffix in _FORBIDDEN_MODEL_SUFFIXES:
+        if allow_unpacked_runtime_bins and normalized_path.removeprefix("resources/backend/") in _BACKEND_RUNTIME_RESOURCE_HASHES:
+            return None
         if allow_unpacked_runtime_bins and normalized_path in _ALLOWED_UNPACKED_BIN_PATHS:
             return None
         return "model-weight file extension is forbidden"
     if suffix in _FORBIDDEN_AUDIO_SUFFIXES:
         return "audio asset file extension is forbidden"
     if any(file_name.endswith(suffix) for suffix in _FORBIDDEN_ARCHIVE_SUFFIXES):
+        # Only CPython's standard-library archive is admitted. The unpacked
+        # tree audit also verifies its reviewed digest; no model or user archive
+        # inherits this exception from merely living in the backend directory.
+        if allow_unpacked_runtime_bins and normalized_path == "resources/backend/python/python314.zip":
+            return None
         return "archive files are forbidden because they can conceal local assets"
     return None
 
@@ -804,7 +829,9 @@ def _find_forbidden_builder_keys(
                 continue
             child_path = f"{path}.{key}"
             if key in _FORBIDDEN_BUILDER_KEYS:
-                yield child_path, key
+                if not (child_path == "build.extraResources"
+                        and child == _EXPECTED_BUILDER_CONFIGURATION["extraResources"]):
+                    yield child_path, key
             yield from _find_forbidden_builder_keys(child, path=child_path)
     elif isinstance(value, list):
         for index, child in enumerate(value):
@@ -925,6 +952,42 @@ def audit_unpacked_tree(unpacked_root: Path) -> tuple[DistributionProblem, ...]:
             allowed_visual_asset_paths=_ALLOWED_UNPACKED_VISUAL_ASSET_PATHS,
         )
     )
+    backend_root = unpacked_root / "resources" / "backend"
+    problems.extend(_audit_packaged_backend(backend_root))
+    return tuple(problems)
+
+
+def _audit_packaged_backend(backend_root: Path) -> tuple[DistributionProblem, ...]:
+    """Verify the staged inventory and reject additions or modified release files."""
+    problems: list[DistributionProblem] = []
+    manifest_path = backend_root / "distribution-manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text("utf-8"))
+        files = manifest["files"]
+        if not isinstance(files, dict) or not files:
+            raise ValueError("missing file inventory")
+        actual = {
+            item.relative_to(backend_root).as_posix(): item
+            for item in backend_root.rglob("*") if item.is_file() and item != manifest_path
+        }
+        if set(actual) != set(files):
+            raise ValueError("backend inventory differs from the staged file set")
+        for relative, file_path in actual.items():
+            with file_path.open("rb") as stream:
+                digest = hashlib.file_digest(stream, "sha256").hexdigest()
+            if digest != files[relative]:
+                raise ValueError(f"backend file digest mismatch: {relative}")
+            expected_runtime = _BACKEND_RUNTIME_RESOURCE_HASHES.get(relative.casefold())
+            if expected_runtime is not None and digest != expected_runtime:
+                raise ValueError(f"unreviewed backend runtime resource: {relative}")
+        if not {"desktop_backend.py", "python/python.exe", "python/python314.zip", "python/python314._pth",
+                "requirements-runtime.txt", "core/elysia_system_prompt_zh.md",
+                "python/msvcp140.dll", "python/msvcp140_1.dll",
+                "python/vcruntime140.dll", "python/vcruntime140_1.dll",
+                "python/MICROSOFT-VC-RUNTIME-LICENSE.txt", "python/MICROSOFT-VC-RUNTIME-NOTICE.txt"}.issubset(files):
+            raise ValueError("backend is missing a required runtime entry")
+    except (OSError, UnicodeError, ValueError, KeyError, TypeError) as error:
+        problems.append(DistributionProblem("unpacked-tree", "resources/backend", str(error)))
     return tuple(problems)
 
 

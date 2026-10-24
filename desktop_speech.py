@@ -93,21 +93,25 @@ class DesktopSpeechConfig:
 
     @classmethod
     def from_app_settings(cls, settings: AppSettings) -> "DesktopSpeechConfig":
-        """Derive every path from the trusted application root, never Renderer."""
+        """Keep worker code in resources and optional assets in trusted user data."""
 
         if not isinstance(settings, AppSettings):
             raise TypeError("settings must be an AppSettings instance.")
         base_dir = settings.base_dir.resolve()
         data_layout = settings.data_layout
+        models_root = settings.model_assets_root
+        # The installer replaces program resources on upgrades. User-installed
+        # speech runtimes and weights therefore follow the movable data root,
+        # while the reviewed worker script remains application-owned code.
         return cls(
             runtime_root=(
-                base_dir / "models" / "cache" / "GPT-SoVITS-v2-240821"
+                models_root / "cache" / "GPT-SoVITS-v2-240821"
             ),
             worker_script=base_dir / "scripts" / "gpt_sovits_worker.py",
             catalog_path=(
                 data_layout.settings / "voice-profiles.json"
             ),
-            asset_root=base_dir / "models" / "weights" / "gpt-sovits",
+            asset_root=models_root / "weights" / "gpt-sovits",
             voice_profile_id=settings.voice_profile_id,
             voice_emotion=settings.voice_emotion,
             speech_rate_percent=settings.speech_rate_percent,

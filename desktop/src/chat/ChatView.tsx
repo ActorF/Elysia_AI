@@ -3,6 +3,8 @@
  * that preserves native request owners when its presentation closes.
  */
 
+import { t, useLocale } from '../i18n/LocaleProvider.tsx'
+
 import {
   useEffect,
   useLayoutEffect,
@@ -20,6 +22,7 @@ import type {
 import type { SongCoverState } from '../../electron/song-cover-contracts.ts'
 import type { WorkActivity, WorkTurnOptions } from '../../electron/work-agent-protocol.ts'
 import type { WorkAuditState } from '../../electron/work-audit-protocol.ts'
+import { isCloudOllamaModel, isLocalModelSetupError } from '../../electron/local-ollama-origin.js'
 import { Composer } from './Composer.tsx'
 import { WorkFileChanges, WorkThinkingPanel } from './WorkThinkingPanel.tsx'
 import { MessageView } from './MessageView.tsx'
@@ -59,9 +62,14 @@ interface ChatViewProps {
   dictationDisabled: boolean
   draft: string
   generationBusy: boolean
+  /** Canonical native policy; null means the initial policy read is unresolved. */
+  internetEnabled?: boolean | null
   messages: ChatMessage[]
+  /** Canonical owner of messages; backend status may switch before history arrives. */
+  messageOwnerId: string | undefined
   modelSelectionPending: boolean
   modelOptions: string[]
+  setupModelName?: string
   notice: ChatNotice | null
   panelOpen: boolean
   panelTransitionPending: boolean
@@ -80,12 +88,16 @@ interface ChatViewProps {
   stopPending: boolean
   voiceCallDisabled: boolean
   workPanel?: ReactNode
+  /** Select the canonical audit when the file-summary card opens Workspace. */
+  onReviewWorkChanges?(): void
   /** Reveal the workspace once when a new approval or reviewed context arrives. */
   workspaceAttentionKey?: string
   /** Reveal a draft explicitly exported from Vision, including in Work mode. */
   conversationAttentionRevision?: number
   visionPanel?: ReactNode
   screenshotControl?: ReactNode
+  /** Keep CMD consent beside the generation controls instead of a native modal. */
+  workCommandApproval?: ReactNode
   onChooseAttachments(): void
   onBeginRetryEdit(pair: RetryableChatPair): void
   onCancelRetryEdit(): void
@@ -96,6 +108,10 @@ interface ChatViewProps {
   onDropAttachments(files: File[]): void
   onOpenCall(): void
   onOpenExternalUrl(url: string): Promise<void>
+  /** Open editable model settings even when the local service cannot initialize. */
+  onOpenSettings(): void
+  /** Open Internet settings without changing the current session's permission. */
+  onOpenInternetSettings?(): void
   onReadAloud(messageId: string): void
   onRemoveAttachment(attachmentId: string): Promise<boolean>
   /** Open Vision for one current Chat image attachment by its opaque identity. */
@@ -138,6 +154,44 @@ function statusLabel(snapshot: BackendSnapshot): string {
   }
 }
 
+/** Explain local model recovery without running commands or downloading assets automatically. */
+function LocalSetupGuide({ modelName, onOpenSettings, onOpenExternalUrl }: {
+  modelName?: string
+  onOpenSettings(): void
+  onOpenExternalUrl(url: string): Promise<void>
+}) {
+  // A configured model is user-owned text. Only a plain Ollama identifier may
+  // appear in a copyable shell command; metacharacters must never become code.
+  const downloadCommand = modelName !== undefined
+    && /^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,199}$/.test(modelName)
+    && !isCloudOllamaModel(modelName)
+    ? `ollama pull ${modelName}` : null
+  return (
+    <section className="local-setup-guide" aria-labelledby="local-setup-heading">
+      <h2 id="local-setup-heading">{t('Set up local chat')}</h2>
+      <p>{t('Elysia needs Ollama and a downloaded local model to chat. These are installed separately.')}</p>
+      <ol>
+        <li>{t('Install and open Ollama on this computer.')}</li>
+        <li>
+          {downloadCommand === null
+            ? t('In PowerShell, use ollama list to find an installed model.')
+            : t('In PowerShell, download the configured model. The first download can take several minutes.')}
+          <code>{downloadCommand ?? 'ollama list'}</code>
+        </li>
+        <li>{t('Open model settings to choose an installed model, save any changes, then retry the connection.')}</li>
+      </ol>
+      <div className="local-setup-actions">
+        <button type="button" className="secondary-button" onClick={() => {
+          void onOpenExternalUrl('https://ollama.com/download/windows')
+        }}>{t('Download Ollama')}</button>
+        <button type="button" className="primary-button" onClick={onOpenSettings}>
+          {t('Open model settings')}
+        </button>
+      </div>
+    </section>
+  )
+}
+
 /** Render the active Chat from immutable snapshot and message props. */
 export function ChatView({
   attachmentAdding,
@@ -161,9 +215,12 @@ export function ChatView({
   dictationDisabled,
   draft,
   generationBusy,
+  internetEnabled,
   messages,
+  messageOwnerId,
   modelSelectionPending,
   modelOptions,
+  setupModelName,
   notice,
   panelOpen,
   panelTransitionPending,
@@ -182,10 +239,12 @@ export function ChatView({
   stopPending,
   voiceCallDisabled,
   workPanel,
+  onReviewWorkChanges,
   workspaceAttentionKey,
   conversationAttentionRevision,
   visionPanel,
   screenshotControl,
+  workCommandApproval,
   onChooseAttachments,
   onBeginRetryEdit,
   onCancelRetryEdit,
@@ -196,6 +255,8 @@ export function ChatView({
   onDropAttachments,
   onOpenCall,
   onOpenExternalUrl,
+  onOpenSettings,
+  onOpenInternetSettings,
   onReadAloud,
   onRemoveAttachment,
   onReviewImage,
@@ -217,6 +278,7 @@ export function ChatView({
   onToggleSidebar,
   onToggleDictation,
 }: ChatViewProps) {
+  useLocale()
   const scrollRef = useRef<HTMLElement | null>(null)
   const bodyRef = useRef<HTMLDivElement | null>(null)
   const workspaceRef = useRef<HTMLElement | null>(null)
@@ -226,30 +288,64 @@ export function ChatView({
   const stickToBottomRef = useRef(true)
   const focusedAttentionRef = useRef(workspaceAttentionKey)
   const focusedDraftRef = useRef(conversationAttentionRevision)
+  const commandApprovalFocusRef = useRef<string | undefined>(undefined)
   const [optionsOpen, setOptionsOpen] = useState(false)
+  const [historyWindow, setHistoryWindow] = useState({ chatId: messageOwnerId, count: 0, open: false, settled: false })
+  // Freeze the boundary after history loads. New streamed turns must not move
+  // messages into a closed section while someone is reading or copying them.
+  const previousMessageCount = historyWindow.chatId === messageOwnerId ? historyWindow.count : 0
+  if (historyWindow.chatId !== messageOwnerId) {
+    setHistoryWindow({ chatId: messageOwnerId, count: 0, open: false, settled: false })
+  } else if (!historyWindow.settled && messages.length > 0 && !generationBusy) {
+    setHistoryWindow({ ...historyWindow, count: messages.length > 16 ? messages.length - 12 : 0, settled: true })
+  }
+  const localSetupRequired = snapshot.status === 'error' && isLocalModelSetupError(snapshot.initializationErrorCode)
   const [narrowWorkspace, setNarrowWorkspace] = useState(true)
+  const commandApprovalKey = workCommandApproval === undefined || workActivity?.commandApproval === undefined
+    ? undefined : `${workActivity.requestId}:${workActivity.commandApproval.callId}`
   const [workspace, setWorkspace] = useState<{
     chatId: string | undefined
     mode: 'chat' | 'work'
     attentionKey: string | undefined
     draftRevision: number | undefined
+    commandApprovalKey: string | undefined
+    focusCommandApproval?: string
     open: boolean
   }>({ chatId: snapshot.chatId, mode: chatMode, attentionKey: workspaceAttentionKey,
-    draftRevision: conversationAttentionRevision, open: false })
+    draftRevision: conversationAttentionRevision, commandApprovalKey, open: false })
   // Every conversation starts in its task dialogue. Only a newly issued review
   // opens the inspector automatically; clearing a receipt does not reopen it.
   const newWorkspaceAttention = workspaceAttentionKey !== undefined && workspace.attentionKey !== workspaceAttentionKey
   const ownerChanged = workspace.chatId !== snapshot.chatId || workspace.mode !== chatMode
-  if (ownerChanged || newWorkspaceAttention || workspace.draftRevision !== conversationAttentionRevision) {
+  const draftAttentionChanged = workspace.draftRevision !== conversationAttentionRevision
+  const newCommandApproval = commandApprovalKey !== undefined && workspace.commandApprovalKey !== commandApprovalKey
+  const revealCommandApproval = newCommandApproval && narrowWorkspace && workspace.open
+  if (ownerChanged || newWorkspaceAttention || draftAttentionChanged || workspace.commandApprovalKey !== commandApprovalKey) {
+    // The narrow inspector makes the composer inert. A newly issued consent
+    // must be reachable before its native deadline; reveal it once, retaining
+    // the inspector's mounted state and any in-progress manual tool ownership.
     setWorkspace({ chatId: snapshot.chatId, mode: chatMode, attentionKey: workspaceAttentionKey,
-      draftRevision: conversationAttentionRevision, open: !ownerChanged && newWorkspaceAttention })
+      draftRevision: conversationAttentionRevision, commandApprovalKey,
+      focusCommandApproval: revealCommandApproval ? commandApprovalKey : ownerChanged ? undefined : workspace.focusCommandApproval,
+      open: ownerChanged || draftAttentionChanged || revealCommandApproval ? false : newWorkspaceAttention || workspace.open })
     if (optionsOpen) setOptionsOpen(false)
   }
   const workspaceVisible = chatMode === 'work' && workspace.open
   const workspaceModal = workspaceVisible && narrowWorkspace
-  const generationAnnouncement = streaming
-    ? 'Elysia is generating a reply.'
-    : 'Elysia is ready for your next message.'
+  const researchStage = chatMode === 'chat' && streaming && !stopPending
+    && snapshot.activeGeneration?.chatId === snapshot.chatId
+    ? snapshot.activeGeneration?.researchStage : undefined
+  const researchLabel = researchStage === undefined ? null : {
+    planning: 'Deciding whether to look online…',
+    searching: 'Searching the web…',
+    weather: 'Checking the weather…',
+    reading: 'Reading allowed web pages…',
+    answering: 'Preparing your answer…',
+    failed: 'Live information could not be verified.',
+  }[researchStage]
+  const generationAnnouncement = snapshot.status !== 'ready'
+    ? statusLabel(snapshot)
+    : researchLabel ?? (streaming ? 'Elysia is generating a reply.' : 'Elysia is ready for your next message.')
 
   function closeWorkspace(): void {
     setWorkspace(current => ({ ...current, open: false }))
@@ -280,6 +376,7 @@ export function ChatView({
     }
     const dismissEscape = (event: KeyboardEvent): void => {
       if (event.key !== 'Escape') return
+      if (document.querySelector('.help-hint-popup:not([hidden])')) return
       event.preventDefault(); event.stopImmediatePropagation()
       setOptionsOpen(false); optionsToggleRef.current?.focus()
     }
@@ -300,6 +397,8 @@ export function ChatView({
     })
     const handleKey = (event: KeyboardEvent): void => {
       if (document.querySelector('dialog[open]') !== null || workspaceRef.current?.closest('[inert]') !== null) return
+      // Escape first dismisses transient help, preserving this modal workspace.
+      if (event.key === 'Escape' && document.querySelector('.help-hint-popup:not([hidden])')) return
       if (event.key === 'Escape') {
         event.preventDefault(); event.stopImmediatePropagation()
         setWorkspace(current => ({ ...current, open: false }))
@@ -359,14 +458,33 @@ export function ChatView({
     return () => { cancelAnimationFrame(frame) }
   }, [conversationAttentionRevision, visionPanel, sidebarOpen, panelOpen])
 
+  useLayoutEffect(() => {
+    if (commandApprovalKey === undefined || workspace.focusCommandApproval !== commandApprovalKey
+      || commandApprovalFocusRef.current === commandApprovalKey || workspaceModal) return
+    const frame = requestAnimationFrame(() => {
+      const decline = bodyRef.current?.querySelector<HTMLButtonElement>('.work-command-approval button')
+      if (decline === undefined || decline === null || decline.closest('[inert]') !== null
+        || decline.getClientRects().length === 0 || document.querySelector('dialog[open]') !== null) return
+      commandApprovalFocusRef.current = commandApprovalKey
+      decline.focus()
+    })
+    return () => { cancelAnimationFrame(frame) }
+  }, [commandApprovalKey, workspace.focusCommandApproval, workspaceModal, visionPanel, sidebarOpen, panelOpen])
+
   // Playback time updates do not change the card's layout and should not
   // repeatedly scroll the conversation while a user scrubs the song.
+  useLayoutEffect(() => {
+    // Reading an older turn belongs to one Chat. A different canonical history
+    // opens at its latest messages even when a status broadcast arrived first.
+    stickToBottomRef.current = true
+  }, [messageOwnerId])
+
   useLayoutEffect(() => {
     const scroller = scrollRef.current
     if (scroller !== null && stickToBottomRef.current) {
       scroller.scrollTop = scroller.scrollHeight
     }
-  }, [messages, workActivity, workHistory, songCoverState?.stage, songCoverState?.jobId, workspaceVisible])
+  }, [messages, messageOwnerId, workActivity, workHistory, songCoverState?.stage, songCoverState?.jobId, workspaceVisible])
 
   return (
     <div className={'chat-surface' + (chatMode === 'work' ? ' chat-surface-work' : '')}>
@@ -375,55 +493,64 @@ export function ChatView({
           <button
             type="button"
             className="icon-button sidebar-toggle"
-            aria-label={sidebarOpen ? 'Hide navigation' : 'Show navigation'}
+            aria-label={sidebarOpen ? t("Hide navigation") : t("Show navigation")}
             aria-controls="app-sidebar"
             aria-expanded={sidebarOpen}
             aria-keyshortcuts="Control+B Meta+B"
-            title="Toggle navigation (Ctrl+B)"
+            title={t("Toggle navigation (Ctrl+B)")}
             onClick={onToggleSidebar}
           >
             <Icon name="menu" />
           </button>
           <div className="chat-heading">
+            <Icon name={chatMode === 'work' ? 'folder' : 'chat'} />
             <h1 id="chat-title" title={chatTitle}>{chatTitle}</h1>
           </div>
         </div>
         <div className="connection-controls">
+          {chatMode === 'chat' && internetEnabled !== undefined && <button type="button"
+            className="chat-internet-status" data-enabled={internetEnabled === true}
+            onClick={onOpenInternetSettings ?? onOpenSettings}
+            title={t('Open Internet settings')}
+            aria-label={t(internetEnabled === null ? 'Internet status unavailable. Open Internet settings.'
+              : internetEnabled ? 'Internet on. Open Internet settings.' : 'Internet off. Open Internet settings.')}>
+            <Icon name="globe" /><span>{t(internetEnabled === null ? 'Internet unavailable' : internetEnabled ? 'Internet on' : 'Internet off')}</span>
+          </button>}
           {chatMode === 'work' && <button ref={workspaceToggleRef} type="button" className="codex-workspace-toggle"
-            aria-label="Workspace" aria-controls="codex-workspace" aria-expanded={workspaceVisible}
+            aria-label={t("Workspace")} aria-controls="codex-workspace" aria-expanded={workspaceVisible}
             onClick={() => { if (workspaceVisible) closeWorkspace(); else openWorkspace() }}>
-            <Icon name="folder" /><span>Workspace</span>{workBusy && <span className="codex-task-dot" aria-hidden="true" />}
+            <Icon name="folder" /><span>{t("Workspace")}</span>{workBusy && <span className="codex-task-dot" aria-hidden="true" />}
           </button>}
           <span
             className={`connection-pill ${snapshot.status}`}
             role="status"
             aria-live="polite"
-            title={statusLabel(snapshot)}
+            title={t(statusLabel(snapshot))}
           >
             <span className="connection-dot" />
-            <span className={snapshot.status === 'ready' ? 'visually-hidden' : undefined}>{statusLabel(snapshot)}</span>
+            <span className={snapshot.status === 'ready' ? 'visually-hidden' : undefined}>{t(statusLabel(snapshot))}</span>
           </span>
           <button
             type="button"
             className={'panel-toggle' + (panelOpen ? ' active' : '')}
             aria-label={panelOpen
-              ? 'Collapse Elysia panel'
-              : 'Expand Elysia panel'}
+              ? t("Collapse Elysia panel")
+              : t("Expand Elysia panel")}
             aria-controls="character-panel"
             aria-expanded={panelOpen}
-            title={panelOpen ? 'Collapse Elysia panel' : 'Expand Elysia panel'}
+            title={panelOpen ? t("Collapse Elysia panel") : t("Expand Elysia panel")}
             disabled={panelTransitionPending}
             onClick={onTogglePanel}
           >
             <Icon name="panel" />
           </button>
           <div className="conversation-options" ref={optionsRef}>
-            <button ref={optionsToggleRef} type="button" className="icon-button" aria-label="Conversation options"
+            <button ref={optionsToggleRef} type="button" className="icon-button" aria-label={t("Conversation options")}
               aria-haspopup="dialog" aria-expanded={optionsOpen && !workspaceModal} aria-controls="conversation-options-popover"
               onClick={() => { setOptionsOpen(current => !current) }}><Icon name="more" /></button>
             <div id="conversation-options-popover" className="conversation-options-popover" role="dialog"
-              aria-label="Conversation options" hidden={!optionsOpen || workspaceModal}>
-              <label>Conversation mode<select className="conversation-mode-select" aria-label="Conversation mode"
+              aria-label={t("Conversation options")} hidden={!optionsOpen || workspaceModal}>
+              <label>{t("Conversation mode")}<select className="conversation-mode-select" aria-label={t("Conversation mode")}
                 aria-describedby="chat-mode-capabilities" value={chatMode} disabled={modeSelectionDisabled}
                 onChange={(event) => {
                   const mode = event.currentTarget.value
@@ -432,8 +559,8 @@ export function ChatView({
                     setOptionsOpen(false)
                     requestAnimationFrame(() => { optionsToggleRef.current?.focus() })
                   }
-                }}><option value="chat">Chat</option><option value="work">Work</option></select></label>
-              <p>{modeSelectionDisabled ? 'Finish the current action before changing mode.' : 'Change the mode of this conversation.'}</p>
+                }}><option value="chat">{t("Chat")}</option><option value="work">{t("Work")}</option></select></label>
+              {modeSelectionDisabled && <p>{t("Finish the current action before changing mode.")}</p>}
             </div>
           </div>
         </div>
@@ -442,22 +569,24 @@ export function ChatView({
         <div className="visually-hidden" id="chat-mode-capabilities" role="status">
           {chatMode === 'work'
             ? workOptions === null
-              ? 'Work: discuss tasks and review tools in Workspace. File changes require your approval.'
-              : 'Work: choose permissions for each task. Workspace contains folder access and manual tools.'
-            : 'Chat: conversation and answers. Computer tools are disabled.'}
+              ? t("Work: discuss tasks and review tools in Workspace. File changes require your approval.")
+              : t("Work: choose permissions for each task. Workspace contains folder access and manual tools.")
+            : t("Chat: conversation and answers. Computer tools are disabled.")}
         </div>
       <div ref={bodyRef} className="chat-body" data-workspace-open={workspaceVisible} data-workspace-modal={narrowWorkspace}>
       <div className="chat-dialogue" inert={workspaceModal}>
+      {researchLabel !== null && <div className="chat-research-status" role="status" aria-live="polite"
+        data-research-stage={researchStage}><Icon name="search" /><span>{t(researchLabel)}</span></div>}
       {chatMode === 'work' && workBusy && <div className="codex-task-status" role="status">
-        <span className="codex-task-dot" aria-hidden="true" /><span>Workspace is active</span>
-        <button type="button" onClick={openWorkspace}>Review task<Icon name="chevron" /></button>
+        <span className="codex-task-dot" aria-hidden="true" /><span>{t("Workspace is active")}</span>
+        <button type="button" onClick={openWorkspace}>{t("Review task")}<Icon name="chevron" /></button>
       </div>}
-      <div className={'chat-conversation' + (messages.length === 0 ? ' chat-conversation-empty' : '')}>
+      <div className={'chat-conversation' + (messages.length === 0 && !localSetupRequired ? ' chat-conversation-empty' : '')}>
 
       <main
         ref={scrollRef}
         className="message-scroll"
-        aria-label="Conversation"
+        aria-label={t("Conversation")}
         onScroll={(event) => {
           const target = event.currentTarget
           const remaining = target.scrollHeight
@@ -469,52 +598,77 @@ export function ChatView({
         <p
           className="visually-hidden"
           role="status"
-          aria-live="polite"
+          aria-live={researchLabel === null ? 'polite' : 'off'}
           aria-atomic="true"
           data-generation-announcement
         >
-          {generationAnnouncement}
+          {t(generationAnnouncement)}
         </p>
         <div
           className="message-column"
           aria-live="off"
           aria-busy={streaming}
         >
-          {snapshot.status !== 'ready' && snapshot.status !== 'error' && (
+          {snapshot.status !== 'ready' && snapshot.status !== 'error' && snapshot.status !== 'stopped' && (
             <LoadingState
               className="connection-state"
-              title={statusLabel(snapshot)}
-              description="The local conversation will unlock automatically."
+              title={t(statusLabel(snapshot))}
             />
           )}
 
-          {messages.length === 0 && (
+          {localSetupRequired && (
+            <LocalSetupGuide
+              modelName={setupModelName}
+              onOpenSettings={onOpenSettings}
+              onOpenExternalUrl={onOpenExternalUrl}
+            />
+          )}
+
+          {messages.length === 0 && !localSetupRequired && (
             <EmptyState
               className="conversation-empty"
-              icon="sparkles"
-              title={chatMode === 'work' ? '想一起完成什么？' : '今天，想聊些什么？'}
-              description={chatMode === 'work' ? workOptions === null ? '先聊清楚目标，再在 Workspace 中规划和检查改动。' : '选择权限后，查找文件、调节音量，或打开支持的应用。' : '一个想法，一件小事，都可以从这里开始。'}
+              icon={null}
+              title={chatMode === 'work' ? t("想一起完成什么？") : t("今天，想聊些什么？")}
             />
           )}
 
           {messages.length === 0 && snapshot.status === 'ready' && draft.length === 0 && (
-            <div className="conversation-starters" role="group" aria-label="Conversation ideas">
+            <div className="conversation-starters" role="group" aria-label={t("Conversation ideas")}>
               {(chatMode === 'work' ? workOptions === null ? ['梳理一个任务', '一起看段代码', '规划下一步'] : ['查找目录中的文件', '把音量调到 30%', '打开记事本'] : ['聊聊今天', '帮我整理想法', '一起写点什么']).map((idea) => (
                 <button
                   type="button"
                   key={idea}
                   onClick={() => {
-                    onDraftChange(idea)
+                    onDraftChange(t(idea))
                     document.getElementById('chat-composer')?.focus()
                   }}
                 >
-                  {idea}
+                  {t(idea)}
                 </button>
               ))}
             </div>
           )}
 
-          {messages.map((message) => (
+          {previousMessageCount > 0 && <details className="conversation-history" key={historyWindow.chatId}
+            open={historyWindow.open} onToggle={event => {
+              const open = event.currentTarget.open
+              // Opening old messages is an explicit reading action; subsequent
+              // model updates must not drag the reader back to the newest turn.
+              if (open) stickToBottomRef.current = false
+              setHistoryWindow(current => current.open === open ? current : { ...current, open })
+            }}>
+            <summary>{t('{count} previous messages', { count: previousMessageCount })}<Icon name="chevron" /></summary>
+            {messages.slice(0, previousMessageCount).map(message => (
+              <MessageView key={message.id} message={message}
+                readAloudDisabled={readAloudDisabled} readAloudPendingMessageId={readAloudPendingMessageId}
+                readAloudPhase={readAloudPhase} retryEditDraft={retryEditDraft} retryPair={retryPair}
+                retryDisabled={generationBusy || readAloudPendingMessageId !== null}
+                onBeginRetryEdit={onBeginRetryEdit} onCancelRetryEdit={onCancelRetryEdit}
+                onCopy={onCopy} onOpenExternalUrl={onOpenExternalUrl} onReadAloud={onReadAloud}
+                onRetry={onRetry} onRetryEditChange={onRetryEditChange} />
+            ))}
+          </details>}
+          {messages.slice(previousMessageCount).map((message) => (
             <MessageView
               key={message.id}
               message={message}
@@ -534,11 +688,15 @@ export function ChatView({
             />
           ))}
           {chatMode === 'work' && workActivity !== null && <WorkThinkingPanel key={workActivity.requestId} activity={workActivity} />}
-          {chatMode === 'work' && workHistory !== null && <WorkFileChanges history={workHistory} />}
+          {chatMode === 'work' && workHistory !== null && <WorkFileChanges history={workHistory} onReview={() => {
+            onReviewWorkChanges?.()
+            openWorkspace()
+          }} />}
         </div>
       </main>
 
       <Composer
+        workCommandApproval={workCommandApproval}
         visible={!workspaceModal}
         mode={chatMode}
         attachmentAdding={attachmentAdding}
@@ -595,14 +753,14 @@ export function ChatView({
       </div>
       </div>
       {workspaceModal && <button type="button" className="codex-workspace-backdrop" tabIndex={-1}
-        aria-label="Dismiss Workspace" onClick={closeWorkspace} />}
+        aria-label={t("Dismiss Workspace")} onClick={closeWorkspace} />}
       {/* Closing the inspector changes visibility only. Its native request,
           cancellation and approval owners survive every presentation change. */}
       <aside ref={workspaceRef} id="codex-workspace" className="codex-workspace-dock"
-        role={narrowWorkspace ? 'dialog' : 'complementary'} aria-label="Workspace tools panel"
+        role={narrowWorkspace ? 'dialog' : 'complementary'} aria-label={t("Workspace tools panel")}
         aria-modal={workspaceModal ? true : undefined} tabIndex={-1} hidden={!workspaceVisible}>
-        <div className="codex-workspace-header"><div><Icon name="folder" /><h2>Workspace</h2></div>
-          <button type="button" className="icon-button" aria-label="Close workspace" onClick={closeWorkspace}><Icon name="close" /></button>
+        <div className="codex-workspace-header"><div><h2>{t("Workspace")}</h2></div>
+          <button type="button" className="icon-button" aria-label={t("Close workspace")} onClick={closeWorkspace}><Icon name="close" /></button>
         </div>
         <div className="codex-workspace-content">{chatMode === 'work' ? workPanel : null}</div>
       </aside>

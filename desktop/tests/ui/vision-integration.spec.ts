@@ -88,13 +88,13 @@ test('selects a native context reference for an explicit Work plan while preserv
   const request = await page.evaluate(() => (window as IntegrationWindow).elysiaDesktopTest.getCalls().find((call) => call.method === 'createWorkPlan')?.args[0])
   expect(request).toMatchObject({ chatId: 'chat_vision_integration', visionContextId: expect.stringMatching(/^vision_context_[0-9a-f]{32}$/u) })
   expect(request).not.toHaveProperty('visionContext')
-  await expect(plan.getByRole('status')).toContainText('pending')
+  await expect(plan.getByRole('status')).toContainText('Pending')
   await plan.getByRole('button', { name: 'Start plan', exact: true }).click()
   const approval = page.getByRole('region', { name: 'Work step approval', exact: true })
   await expect(approval).toContainText('Only this explicit write is planned.')
   expect(await page.evaluate(() => (window as IntegrationWindow).elysiaDesktopTest.getCalls().filter((call) => call.method === 'confirmWorkPlan'))).toHaveLength(0)
   await approval.getByRole('button', { name: 'Approve once', exact: true }).click()
-  await expect(plan.getByRole('status')).toContainText('succeeded')
+  await expect(plan.getByRole('status')).toContainText('Succeeded')
 })
 
 test('a new Chat cannot inherit the previous visual review or its selected Work evidence', async () => {

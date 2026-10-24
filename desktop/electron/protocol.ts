@@ -39,6 +39,7 @@ import {
   type WorkAuditListParams, type WorkUndoParams,
 } from './work-audit-protocol.js'
 import { parseWorkPlanRetryParams, type WorkPlanRetryParams } from './work-job-protocol.js'
+import { isCloudOllamaModel, localOllamaTarget, LOCAL_OLLAMA_MODEL_ERROR, LOCAL_OLLAMA_ORIGIN_ERROR } from './local-ollama-origin.js'
 
 export {
   codePointLength,
@@ -271,7 +272,7 @@ export interface ChatInternetSource {
   url: string
   snippet: string
   fetchedAt: string
-  provider: 'web' | 'wikipedia'
+  provider: 'web' | 'wikipedia' | 'weather'
 }
 
 /** Correlate one native search completion without granting the model network access. */
@@ -304,6 +305,7 @@ export interface ChatRetryParams {
   assistantMessageId: string
   message?: string
   useProjectKnowledge?: boolean
+  automaticInternet?: boolean
   speakReply: boolean
 }
 
@@ -482,6 +484,18 @@ export interface SettingsValues {
   automaticRelisten: boolean
 }
 
+/** The chosen name from the canonical user profile, including legacy values. */
+export interface UserProfileState {
+  kind: 'profile'
+  userName: string
+}
+
+/** Replace only the name the user actually reviewed; no other profile fields cross IPC. */
+export interface UpdateUserProfileRequest {
+  expectedUserName: string
+  userName: string
+}
+
 export interface SettingsUpdateParams {
   expectedRevision: number
   settings: SettingsValues
@@ -590,6 +604,8 @@ export interface RequestParamsByMethod {
   'project.archive': ProjectArchiveParams
   'project.chat.move': ProjectChatMoveParams
   'settings.get': Record<string, never>
+  'profile.get': Record<string, never>
+  'profile.update': UpdateUserProfileRequest
   'settings.update': SettingsUpdateParams
   'voice.settings.get': Record<string, never>
   'voice.settings.update': VoiceSettingsUpdateParams
@@ -707,13 +723,25 @@ export interface ChatLifecycleEventMessage {
   data: { chatId: string }
 }
 
-/** Ask only the native owner to resolve one short model-generated search query. */
+/** Renderer-safe research progress excludes user queries and provider diagnostics. */
+export type ChatResearchStage = 'planning' | 'searching' | 'weather' | 'reading' | 'answering' | 'failed'
+
+/** Report one generation's bounded research progress without disclosing its evidence. */
+export interface ChatResearchStatusEventMessage {
+  type: 'event'
+  protocol: ProtocolDescriptor
+  event: 'chat.research.status'
+  requestId: string
+  data: { chatId: string; stage: ChatResearchStage }
+}
+
+/** Ask only the native owner to resolve one short search query or weather location. */
 export interface ChatInternetRequestEventMessage {
   type: 'event'
   protocol: ProtocolDescriptor
   event: 'chat.internet.request'
   requestId: string
-  data: { chatId: string; searchId: string; query: string; language: 'en' | 'zh' }
+  data: { chatId: string; searchId: string; query: string; language: 'en' | 'zh'; kind?: 'search' | 'weather'; when?: 'now' | 'today' | 'tomorrow' }
 }
 
 export interface VoiceTranscriptionLifecycleEventMessage {
@@ -786,6 +814,7 @@ export type ProtocolEventMessage =
   | (WorkProgressEvent & { protocol: ProtocolDescriptor })
   | ChatLifecycleEventMessage
   | ChatInternetRequestEventMessage
+  | ChatResearchStatusEventMessage
   | VoiceTranscriptionLifecycleEventMessage
   | VoiceSpeechClipEventMessage
   | VoiceSpeechFailureEventMessage
@@ -1526,7 +1555,7 @@ function parseChatRetryParams(
     params,
     ['chatId', 'userMessageId', 'assistantMessageId', 'speakReply'],
     context,
-    ['message', 'useProjectKnowledge', 'workOptions'],
+    ['message', 'useProjectKnowledge', 'automaticInternet', 'workOptions'],
   )
   const message = params.message === undefined
     ? undefined
@@ -1546,6 +1575,7 @@ function parseChatRetryParams(
       context,
     ),
     speakReply: readBoolean(params, 'speakReply', context),
+    ...(Object.hasOwn(params, 'automaticInternet') ? { automaticInternet: readBoolean(params, 'automaticInternet', context) } : {}),
     ...(Object.hasOwn(params, 'workOptions') ? { workOptions: parseWorkWire(parseWorkTurnOptions, params.workOptions) } : {}),
     ...(message === undefined ? {} : { message }),
     ...(Object.hasOwn(params, 'useProjectKnowledge')
@@ -1584,12 +1614,17 @@ function parseInternetIdentity(value: Record<string, unknown>): { chatId: string
 
 function parseChatInternetRequestData(value: unknown): ChatInternetRequestEventMessage['data'] {
   const data = asRecord(value, 'Chat Internet request')
-  requireFields(data, ['chatId', 'searchId', 'query', 'language'], 'Chat Internet request')
+  requireFields(data, ['chatId', 'searchId', 'query', 'language'], 'Chat Internet request', ['kind', 'when'])
   const query = readInternetText(data, 'query', 2048)
   if (!hasNonBlankCodePoint(query) || [...query].some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)) {
     return fail('protocol.invalid_message', 'Chat Internet query is invalid.')
   }
+  if (Object.hasOwn(data, 'when') && data.kind !== 'weather') {
+    return fail('protocol.invalid_message', 'Only Chat weather requests accept a forecast time.')
+  }
   return { ...parseInternetIdentity(data), query,
+    ...(Object.hasOwn(data, 'kind') ? { kind: readStringLiteral(data, 'kind', 'Chat Internet request', ['search', 'weather'] as const) } : {}),
+    ...(Object.hasOwn(data, 'when') ? { when: readStringLiteral(data, 'when', 'Chat Internet request', ['now', 'today', 'tomorrow'] as const) } : {}),
     language: readStringLiteral(data, 'language', 'Chat Internet request', ['en', 'zh'] as const) }
 }
 
@@ -1626,7 +1661,7 @@ export function parseChatInternetResolveParams(value: unknown): ChatInternetReso
       return fail('protocol.invalid_message', 'Chat Internet retrieval time is invalid.')
     }
     return { title, url, snippet, fetchedAt,
-      provider: readStringLiteral(source, 'provider', 'Chat Internet source', ['web', 'wikipedia'] as const) }
+      provider: readStringLiteral(source, 'provider', 'Chat Internet source', ['web', 'wikipedia', 'weather'] as const) }
   })
   if (new TextEncoder().encode(JSON.stringify(sources)).byteLength > 32768) {
     return fail('protocol.invalid_message', 'Chat Internet evidence exceeds its byte budget.')
@@ -2160,30 +2195,11 @@ function parseSettingsValues(
   ) {
     return fail(errorCode, `${context}.modelName must be trimmed and single-line.`)
   }
-  if (
-    ollamaHost !== ollamaHost.trim()
-    || ollamaHost.includes('\0')
-    || /\s/u.test(ollamaHost)
-  ) {
-    return fail(errorCode, `${context}.ollamaHost must be a valid HTTP origin.`)
-  }
-  let parsedHost: URL
+  if (isCloudOllamaModel(modelName)) return fail(errorCode, LOCAL_OLLAMA_MODEL_ERROR)
   try {
-    parsedHost = new URL(ollamaHost)
+    localOllamaTarget(ollamaHost)
   } catch {
-    return fail(errorCode, `${context}.ollamaHost must be a valid HTTP origin.`)
-  }
-  if (
-    (parsedHost.protocol !== 'http:' && parsedHost.protocol !== 'https:')
-    || parsedHost.hostname.length === 0
-    || parsedHost.username.length > 0
-    || parsedHost.password.length > 0
-    || parsedHost.port === '0'
-    || (parsedHost.pathname !== '/' && parsedHost.pathname !== '')
-    || parsedHost.search.length > 0
-    || parsedHost.hash.length > 0
-  ) {
-    return fail(errorCode, `${context}.ollamaHost must be a valid HTTP origin.`)
+    return fail(errorCode, LOCAL_OLLAMA_ORIGIN_ERROR)
   }
   const readPositive = (key: keyof Pick<
     SettingsValues,
@@ -2318,6 +2334,30 @@ function parseSettingsUpdateParams(value: unknown): SettingsUpdateParams {
     expectedRevision,
     settings: parseSettingsValues(params.settings, `${context}.settings`),
   }
+}
+
+/** Validate an exact name edit while accepting any older name as its compare value. */
+export function parseUpdateUserProfileRequest(value: unknown): UpdateUserProfileRequest {
+  const context = 'profile.update params'
+  const request = asRecord(value, context)
+  requireFields(request, ['expectedUserName', 'userName'], context)
+  if (typeof request.expectedUserName !== 'string' || typeof request.userName !== 'string'
+    || request.userName.length === 0 || request.userName.trim() !== request.userName
+    || codePointLength(request.userName) > 80
+    || /[\p{Cc}\p{Cs}\u2028\u2029]/u.test(request.userName)) {
+    return fail('protocol.invalid_params', 'Your name must contain 1–80 characters on one line.')
+  }
+  return { expectedUserName: request.expectedUserName, userName: request.userName }
+}
+
+/** Keep profile results narrow without imposing the new edit policy on legacy data. */
+export function parseUserProfileState(value: unknown): UserProfileState {
+  const result = asRecord(value, 'profile result')
+  requireFields(result, ['kind', 'userName'], 'profile result')
+  if (result.kind !== 'profile' || typeof result.userName !== 'string') {
+    return fail('protocol.invalid_message', 'Profile result is invalid.')
+  }
+  return { kind: 'profile', userName: result.userName }
 }
 
 function readNullableAudioDeviceId(
@@ -2951,6 +2991,14 @@ export function parseClientRequest(value: unknown): ClientRequest {
       params: parseProjectChatMoveParams(request.params),
     }
   }
+  if (method === 'profile.get') {
+    const params = asRecord(request.params, 'profile.get params')
+    requireFields(params, [], 'profile.get params')
+    return { type: 'request', protocol, id, method, params: {} }
+  }
+  if (method === 'profile.update') {
+    return { type: 'request', protocol, id, method, params: parseUpdateUserProfileRequest(request.params) }
+  }
   if (method === 'settings.get') {
     const params = asRecord(request.params, 'settings.get params')
     requireFields(params, [], 'settings.get params')
@@ -3508,6 +3556,15 @@ function parseEvent(
   }
   if (event === 'chat.internet.request') {
     return { type: 'event', protocol, event, requestId, data: parseChatInternetRequestData(message.data) }
+  }
+  if (event === 'chat.research.status') {
+    const data = asRecord(message.data, 'Chat research status')
+    requireFields(data, ['chatId', 'stage'], 'Chat research status')
+    return { type: 'event', protocol, event, requestId, data: {
+      chatId: readIdentifier(data, 'chatId', 'Chat research status'),
+      stage: readStringLiteral(data, 'stage', 'Chat research status',
+        ['planning', 'searching', 'weather', 'reading', 'answering', 'failed'] as const),
+    } }
   }
   if (
     event === 'chat.started'
@@ -5796,6 +5853,10 @@ function validateSuccessResult(value: unknown): Record<string, unknown> {
   }
   if (result.kind === 'voice.speech.start') {
     parseVoiceSpeechStartResult(result)
+    return result
+  }
+  if (result.kind === 'profile') {
+    parseUserProfileState(result)
     return result
   }
   if (result.kind === 'voice.settings') {

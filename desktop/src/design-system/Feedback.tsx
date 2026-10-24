@@ -2,6 +2,9 @@
  * Provide consistent, accessible loading, empty, and inline feedback states.
  */
 
+import { t, useLocale } from '../i18n/LocaleProvider.tsx'
+import { formatUiError } from '../i18n/ui-error.ts'
+
 import { useId, type ReactNode } from 'react'
 
 import { Icon, type IconName } from './Icon'
@@ -52,6 +55,7 @@ export function LoadingState({
   description,
   className,
 }: LoadingStateProps) {
+  useLocale()
   return (
     <section
       className={classNames('feedback-state loading-state', className)}
@@ -62,8 +66,8 @@ export function LoadingState({
     >
       <Icon name="sparkles" className="feedback-state-icon loading-state-icon" />
       <div className="feedback-state-copy">
-        <strong>{title}</strong>
-        {description !== undefined && <p>{description}</p>}
+        <strong>{t(title)}</strong>
+        {description !== undefined && <p>{t(description)}</p>}
       </div>
     </section>
   )
@@ -77,6 +81,7 @@ export function EmptyState({
   action,
   className,
 }: EmptyStateProps) {
+  useLocale()
   const titleId = useId()
 
   return (
@@ -88,8 +93,8 @@ export function EmptyState({
         <Icon name={icon} className="feedback-state-icon empty-state-icon" />
       )}
       <div className="feedback-state-copy">
-        <h2 id={titleId}>{title}</h2>
-        {description !== undefined && <p>{description}</p>}
+        <h2 id={titleId}>{t(title)}</h2>
+        {description !== undefined && <p>{t(description)}</p>}
       </div>
       {action !== undefined && (
         <button
@@ -98,7 +103,7 @@ export function EmptyState({
           onClick={action.onClick}
           disabled={action.disabled}
         >
-          {action.label}
+          {t(action.label)}
         </button>
       )}
     </section>
@@ -118,6 +123,7 @@ export function InlineAlert({
   onDismiss,
   className,
 }: InlineAlertProps) {
+  useLocale()
   const isError = tone === 'error'
 
   return (
@@ -129,8 +135,8 @@ export function InlineAlert({
     >
       <Icon name="info" className="inline-alert-icon" />
       <div className="inline-alert-copy">
-        {title !== undefined && <strong>{title}</strong>}
-        <div className="inline-alert-message">{children}</div>
+        {title !== undefined && <strong>{t(title)}</strong>}
+        <div className="inline-alert-message">{typeof children === 'string' ? formatUiError(children) : children}</div>
       </div>
       {action !== undefined && (
         <button
@@ -139,7 +145,7 @@ export function InlineAlert({
           onClick={action.onClick}
           disabled={action.disabled}
         >
-          {action.label}
+          {t(action.label)}
         </button>
       )}
       {onDismiss !== undefined && (
@@ -147,7 +153,7 @@ export function InlineAlert({
           type="button"
           className="inline-alert-dismiss"
           onClick={onDismiss}
-          aria-label={dismissLabel}
+          aria-label={t(dismissLabel)}
         >
           <Icon name="close" />
         </button>

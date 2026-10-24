@@ -295,23 +295,58 @@ export function floatToPcm16(samples: Float32Array): Int16Array {
   return pcm
 }
 
+const RESAMPLING_MINIMUM_FILTER_TAPS = 63
+const RESAMPLING_MAXIMUM_FILTER_TAPS = 511
+
+/** Build a unity-gain, linear-phase low-pass for the canonical 16 kHz destination. */
+function resamplingLowPass(sourceSampleRate: number): Float64Array {
+  // A Hann-windowed sinc preserves the speech band while rejecting frequencies
+  // above the destination's Nyquist limit before decimation can alias them.
+  // Scale the odd tap count above 48 kHz so 96/192 kHz devices retain the
+  // same transition band and roughly 0.65 ms delay. The cap bounds allocation
+  // for a malformed device rate; common rates retain >60 dB rejection at 10 kHz.
+  const tapCount = Math.min(RESAMPLING_MAXIMUM_FILTER_TAPS, Math.max(
+    RESAMPLING_MINIMUM_FILTER_TAPS,
+    2 * Math.ceil(31 * sourceSampleRate / 48_000) + 1,
+  ))
+  const cutoff = VOICE_SAMPLE_RATE * 0.45 / sourceSampleRate
+  const midpoint = (tapCount - 1) / 2
+  const coefficients = Float64Array.from({ length: tapCount }, (_, index) => {
+    const distance = index - midpoint
+    const sinc = distance === 0 ? 2 * cutoff : Math.sin(2 * Math.PI * cutoff * distance) / (Math.PI * distance)
+    const window = 0.5 - 0.5 * Math.cos(2 * Math.PI * index / (tapCount - 1))
+    return sinc * window
+  })
+  const gain = coefficients.reduce((total, coefficient) => total + coefficient, 0)
+  return coefficients.map(coefficient => coefficient / gain)
+}
+
 /**
- * Resample arbitrary Web Audio chunks while retaining interpolation phase and
- * the preceding source sample across callback boundaries.
+ * Resample Web Audio chunks with continuous anti-alias filtering and interpolation.
+ * The canonical 16 kHz path bypasses filtering and remains sample-exact. Causal
+ * downsampling includes its short filter delay; callers flush once at stream end
+ * to preserve the remaining tail rather than cutting off the last input samples.
  */
 export class StreamingLinearResampler {
   private readonly sourceSampleRate: number
   private readonly sourceSamplesPerOutput: number
+  private readonly filterCoefficients: Float64Array | null
+  private readonly filterHistory: Float64Array
+  private filterPosition = 0
   private previousSample: number | null = null
   private sourceSamplesSeen = 0
   private nextOutputPosition = 0
+  private flushed = false
 
+  /** Configure one source rate; filtering is needed only when reducing it to 16 kHz. */
   constructor(sourceSampleRate: number) {
     if (!Number.isFinite(sourceSampleRate) || sourceSampleRate <= 0) {
       throw new RangeError('The source audio sample rate must be positive.')
     }
     this.sourceSampleRate = sourceSampleRate
     this.sourceSamplesPerOutput = sourceSampleRate / VOICE_SAMPLE_RATE
+    this.filterCoefficients = sourceSampleRate > VOICE_SAMPLE_RATE ? resamplingLowPass(sourceSampleRate) : null
+    this.filterHistory = new Float64Array(this.filterCoefficients?.length ?? 0)
   }
 
   /** Return the source rate actually used for streaming interpolation. */
@@ -319,15 +354,21 @@ export class StreamingLinearResampler {
     return this.sourceSampleRate
   }
 
-  /** Produce all target samples that have two known interpolation endpoints. */
+  /** Pass through 16 kHz samples or produce target samples with known interpolation endpoints. */
   process(input: Float32Array): Float32Array {
     if (input.length === 0) {
       return new Float32Array()
     }
+    if (this.flushed) throw new Error('The audio resampler must be reset after finishing.')
+    if (this.sourceSampleRate === VOICE_SAMPLE_RATE) {
+      // Avoid interpolation arithmetic on the canonical path, including signed
+      // zero, while preserving the existing finite/range normalization contract.
+      return Float32Array.from(input, clampSample)
+    }
     const output: number[] = []
     let inputOffset = 0
     if (this.previousSample === null) {
-      this.previousSample = clampSample(input[0] ?? 0)
+      this.previousSample = this.filterSample(input[0] ?? 0)
       this.sourceSamplesSeen = 1
       output.push(this.previousSample)
       this.nextOutputPosition = this.sourceSamplesPerOutput
@@ -335,7 +376,7 @@ export class StreamingLinearResampler {
     }
 
     for (let index = inputOffset; index < input.length; index += 1) {
-      const currentSample = clampSample(input[index] ?? 0)
+      const currentSample = this.filterSample(input[index] ?? 0)
       const currentPosition = this.sourceSamplesSeen
       const previousPosition = currentPosition - 1
       while (this.nextOutputPosition <= currentPosition) {
@@ -352,11 +393,40 @@ export class StreamingLinearResampler {
     return Float32Array.from(output)
   }
 
-  /** Forget interpolation history without manufacturing a trailing sample. */
+  /** Drain the finite downsampling tail once; 16 kHz and empty streams add no samples. */
+  flush(): Float32Array {
+    if (this.flushed) return new Float32Array()
+    const tail = this.previousSample !== null && this.filterCoefficients !== null
+      ? this.process(new Float32Array(this.filterCoefficients.length - 1))
+      : new Float32Array()
+    this.flushed = true
+    this.filterHistory.fill(0)
+    return tail
+  }
+
+  /** Forget all filter and interpolation history so another capture cannot inherit samples. */
   reset(): void {
+    this.filterHistory.fill(0)
+    this.filterPosition = 0
     this.previousSample = null
     this.sourceSamplesSeen = 0
     this.nextOutputPosition = 0
+    this.flushed = false
+  }
+
+  private filterSample(value: number): number {
+    const sample = clampSample(value)
+    const coefficients = this.filterCoefficients
+    if (coefficients === null) return sample
+    this.filterHistory[this.filterPosition] = sample
+    let filtered = 0
+    let historyIndex = this.filterPosition
+    for (const coefficient of coefficients) {
+      filtered += coefficient * this.filterHistory[historyIndex]
+      historyIndex = historyIndex === 0 ? this.filterHistory.length - 1 : historyIndex - 1
+    }
+    this.filterPosition = (this.filterPosition + 1) % this.filterHistory.length
+    return filtered
   }
 }
 
@@ -415,9 +485,14 @@ export class AudioCaptureController {
     this.createDetector = options.createDetector
       ?? ((sessionId, purpose) => new AdaptiveEnergyVoiceActivityDetector(
         sessionId,
-        purpose === 'barge-in' || purpose === 'voice-call' || purpose === 'dictation'
-          ? { noSpeechTimeoutSampleCount: null }
-          : {},
+        purpose === 'barge-in'
+          // AEC verification is necessary but does not guarantee zero playback
+          // residue. Preserve the stricter interruption gate independently of
+          // the quieter speech accepted by normal listening and dictation.
+          ? { noSpeechTimeoutSampleCount: null, minimumVoiceEnergy: 0.012, initialNoiseFloor: 0.004 }
+          : purpose === 'voice-call' || purpose === 'dictation'
+            ? { noSpeechTimeoutSampleCount: null }
+            : {},
       ))
     this.scheduleTimeout = options.scheduleTimeout ?? ((callback, delay) => (
       globalThis.setTimeout(callback, delay)
@@ -618,11 +693,23 @@ export class AudioCaptureController {
     if (this.disposed) {
       return
     }
+    const draining = this.resources
+    if (draining !== null && draining.resampler !== null) {
+      const tail = draining.resampler.flush()
+      if (tail.length > 0) {
+        this.consumePcm(draining, floatToPcm16(tail))
+      }
+      // Draining can complete the final segment, and its consumer can cancel or
+      // start another capture synchronously. Never stop that replacement owner.
+      if (this.resources !== draining) {
+        return
+      }
+    }
     ++this.operation
     const resources = this.takeResources()
     let finalFrameSegment: CompletedVoiceSegment | null = null
     if (
-      resources?.purpose === 'dictation'
+      resources !== null
       && resources.detector !== null
       && resources.frameRemainder.length > 0
     ) {

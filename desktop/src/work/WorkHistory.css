@@ -1,20 +1,20 @@
-/** Render Work history as a quiet activity list, preserving explicit Undo decisions and verified recovery paths. */
+/* Render audit history as an open activity list with clearly grouped Undo and recovery decisions. */
 
-.work-history { display: grid; gap: 1rem; min-width: 0; font-size: var(--font-size-sm); }
-.work-history h3 { font-size: var(--font-size-sm); margin: 0; }
-.work-history-heading { display: flex; flex-wrap: wrap; align-items: start; justify-content: space-between; gap: .5rem; }
+.work-history { display: grid; gap: var(--space-6); min-width: 0; font-size: var(--font-size-md); }
+.work-history h3 { font-size: var(--font-size-md); margin: 0; }
+.work-history-heading { display: flex; flex-wrap: wrap; align-items: start; justify-content: space-between; gap: var(--space-2); }
 .work-history-heading .work-section-heading { margin: 0; }
-.work-history-entries { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
-.work-history-entries li { display: grid; gap: .55rem; min-width: 0; padding: 1.15rem 0; border-bottom: 1px solid var(--color-border); }
-.work-history-entries li > strong { font-weight: 500; }
+.work-history-entries { display: grid; gap: var(--space-6); margin: 0; padding: 0; list-style: none; }
+.work-history-entries li { display: grid; gap: var(--space-2); min-width: 0; }
+.work-history-entries li > strong { font-weight: var(--font-weight-medium); }
 .work-history-entries li > span { font-size: var(--font-size-xs); }
 .work-history small, .work-history time { overflow-wrap: anywhere; color: var(--color-text-secondary); }
-.work-history time, .work-history-privacy { font-size: .6875rem; color: var(--color-text-muted); }
-.work-history pre { margin: 0; padding: .75rem; max-height: 12rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
-.work-history-recovery, .work-undo-decision { display: grid; gap: .75rem; padding: 1rem; background: var(--color-bg-soft); border-left: 2px solid var(--color-accent); border-radius: .75rem; min-width: 0; }
+.work-history time, .work-history-privacy { font-size: var(--font-size-xs); color: var(--color-text-muted); }
+.work-history-recovery { display: grid; gap: var(--space-3); min-width: 0; padding: var(--space-3); background: var(--color-warning-soft); border-radius: var(--radius-sm); }
 .work-history-recovery code { overflow-wrap: anywhere; }
-.work-undo-decision > div { display: flex; flex-wrap: wrap; gap: .5rem; }
+.work-undo-decision > div { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 .work-history button { justify-self: start; }
 .work-history p { margin: 0; }
-.work-history-empty { display: grid; gap: .5rem; padding: .5rem 0; }
-.work-panel .work-history-empty h3 { font-size: var(--font-size-sm); font-weight: 500; }
+.work-history-empty { display: grid; gap: var(--space-2); padding-block: var(--space-2); }
+.work-panel .work-history-empty h3 { font-size: var(--font-size-md); font-weight: var(--font-weight-medium); }
+.work-undo-result { display: grid; gap: var(--space-2); }

@@ -1,5 +1,6 @@
 /** Exercise production Main Work admission and physical native ownership without invoking real applications or audio. */
 import assert from 'node:assert/strict'
+import { EventEmitter } from 'node:events'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 import vm from 'node:vm'
@@ -25,7 +26,11 @@ function deferred() { let resolve; const promise = new Promise(done => { resolve
 function plain(value) { return JSON.parse(JSON.stringify(value)) }
 function fixture() {
   const drain = deferred(), calls = [], gates = [], owner = { value: { chatId: call.chatId, projectId: null, mode: 'work' } }
-  const backend = { getCanonicalVisionChat: () => owner.value, isWorkToolCurrent: () => true }
+  const approvals = []
+  const backend = { getCanonicalVisionChat: () => owner.value, isWorkToolCurrent: () => true,
+    requestWorkCommandApproval: async (request, signal, isCurrent) => {
+      approvals.push({ request, signal, isCurrent }); return 'approved'
+    } }
   const host = { module: { exports: {} }, AbortController, AbortSignal, parseWorkTurnOptions, codePointLength, hasNonBlankCodePoint, MAX_IDENTIFIER_LENGTH,
     MAX_MESSAGE_LENGTH, MAX_ATTACHMENT_FILE_COUNT, trimProtocolBlankCharacters,
     parseChatId: value => { if (typeof value !== 'string' || !value) throw new Error('Invalid identifier.'); return value },
@@ -34,11 +39,14 @@ function fixture() {
     hasActiveVisionWork: () => host.vision, hasActiveInternetWork: () => host.internet, competing: false, vision: false, internet: false,
     shutdownStarted: false, dataStorageOperation: null, presenceVoiceSessionActive: false, songCoverManager: null,
     imageConfigurationInFlight: false, imageSettingsManager: null, imageExportInFlight: false,
-    requireMainWindow: () => ({}), createWorkAgentNativeTools: gate => { gates.push(gate); return async (request, signal) => {
+    resolveProjectRoot: () => 'D:\\Elysia_AI', resolveBackendPython: root => `${root}\\python.exe`,
+    app: { getPath: name => { assert.equal(name, 'home'); return 'C:\\Users\\Tester' } },
+    createWorkCommandNativeRunner: commandHost => { gates.push({ commandHost }); return async () => result },
+    requireMainWindow: () => ({}), createWorkAgentNativeTools: gate => { gates.unshift(gate); return async (request, signal) => {
       calls.push({ request, signal }); return drain.promise
     } } }
   vm.runInNewContext(compiled, host, { timeout: 1000 })
-  return { host, api: host.module.exports, backend, drain, calls, gates, owner }
+  return { host, api: host.module.exports, backend, drain, calls, gates, owner, approvals }
 }
 
 test('Main parses and detaches user Work choices on both send and retry', () => {
@@ -60,10 +68,68 @@ test('The matching generation can act while its physical native lease blocks unr
   await tick()
   assert.equal(f.calls.length, 1)
   assert.equal(f.gates[0].isCurrent(call), true)
+  assert.equal(f.gates[0].defaultCommandCwd, 'C:\\Users\\Tester')
+  assert.equal(f.gates[1].commandHost.projectRoot, 'D:\\Elysia_AI')
+  assert.equal(f.gates[1].commandHost.pythonExecutable, 'D:\\Elysia_AI\\python.exe')
   assert.equal((await f.api.resolveWorkAgent(call, signal)).status, 'failed')
   f.drain.resolve(result)
   assert.deepEqual(plain(await operation), result)
   assert.equal(f.api.hasActiveDesktopWork(), false)
+})
+
+test('Main sends reviewed approval to the originating backend with the same canonical authority check', async () => {
+  const f = fixture(), controller = new AbortController(), operation = f.api.resolveWorkAgent(call, controller.signal)
+  await tick()
+  const reviewed = { ...call, tool: 'run_command', arguments: { command: 'date /t', cwd: 'C:\\Users\\Tester' } }
+  assert.equal(await f.gates[0].approveCommand(reviewed, f.calls[0].signal), 'approved')
+  assert.equal(f.approvals.length, 1)
+  assert.equal(f.approvals[0].request, reviewed)
+  assert.equal(f.approvals[0].signal, f.calls[0].signal)
+  assert.equal(f.approvals[0].isCurrent(), true)
+  controller.abort()
+  assert.equal(f.approvals[0].isCurrent(), false)
+  f.drain.resolve({ status: 'cancelled', text: 'Cancelled.', error: 'cancelled' })
+  await operation
+})
+
+test('CMD approval IPC checks the trusted sender before forwarding only the pending decision', () => {
+  let registration
+  const find = node => {
+    if (ts.isCallExpression(node) && node.expression.getText(source) === 'ipcMain.handle'
+      && node.arguments[0]?.getText(source) === "'work:command-approval'") registration = node
+    ts.forEachChild(node, find)
+  }
+  find(source)
+  assert.ok(registration)
+  const invoked = [], callbacks = new Map()
+  const context = { ipcMain: { handle: (channel, callback) => callbacks.set(channel, callback) },
+    assertTrustedSender: event => { if (event !== 'trusted') throw new Error('Untrusted sender') },
+    requireBackend: () => ({ resolveWorkCommandApproval: value => { invoked.push(value); return { ok: true } } }) }
+  vm.runInNewContext(ts.transpileModule(registration.getText(source), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+  }).outputText, context, { timeout: 1000 })
+  const decide = callbacks.get('work:command-approval'), decision = { requestId: call.requestId,
+    chatId: call.chatId, callId: call.callId, allow: true }
+  assert.throws(() => decide('untrusted', decision), /Untrusted sender/u)
+  assert.deepEqual(invoked, [])
+  assert.deepEqual(plain(decide('trusted', decision)), { ok: true })
+  assert.equal(invoked[0], decision)
+})
+
+test('The bundled preload exposes only a decision capability and returns the authoritative activity', async () => {
+  const invoked = [], exposed = new Map(), ipcRenderer = new EventEmitter()
+  const outcome = { ok: true, activity: { requestId: call.requestId, chatId: call.chatId, revision: 2 } }
+  ipcRenderer.invoke = async (...args) => { invoked.push(args); return outcome }
+  const electron = { ipcRenderer, contextBridge: { exposeInMainWorld: (name, api) => exposed.set(name, api) }, webUtils: {} }
+  const preload = await readFile(new URL('../dist-electron/preload.cjs', import.meta.url), 'utf8')
+  vm.runInNewContext(preload, { exports: {}, module: { exports: {} }, require: name => {
+    assert.equal(name, 'electron'); return electron
+  } }, { timeout: 1000 })
+  const api = exposed.get('elysiaDesktop'), decision = { requestId: call.requestId,
+    chatId: call.chatId, callId: call.callId, allow: false }
+  assert.equal(await api.resolveWorkCommandApproval(decision), outcome)
+  assert.deepEqual(invoked, [['work:command-approval', decision]])
+  for (const prohibited of ['exec', 'spawn', 'runCommand', 'runShell']) assert.equal(api[prohibited], undefined)
 })
 
 test('Cancellation revokes the callback immediately but releases capacity only after physical drain', async () => {

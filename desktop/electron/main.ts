@@ -5,6 +5,7 @@
  * surfaces fail independently so they cannot destabilize core Backend work.
  */
 
+import { initializeNativeLocale, localizeNativeDialog, nativeText, setNativeLocale } from './native-locale.js'
 import { parseWorkTurnOptions, type WorkToolCall as WorkAgentCall, type WorkToolResult as WorkAgentResult } from './work-agent-protocol.js'
 import { createWorkAgentNativeTools } from './work-agent-native.js'
 import {
@@ -37,9 +38,12 @@ import { GpuAdmissionCoordinator } from './gpu-admission.js'
 import { NativeGpuWorkloads } from './native-gpu-workloads.js'
 
 import { BackendProcess } from './backend-process.js'
+import { resolveBackendPython } from './backend-runtime.js'
+import { createWorkCommandNativeRunner } from './work-command-native.js'
 import { InternetPolicyService } from './internet-policy.js'
 import { InternetTransport } from './internet-transport.js'
 import { searchChatInternet } from './internet-chat-search.js'
+import { readChatWeather } from './internet-chat-weather.js'
 import type { ChatInternetRequestEventMessage, ChatInternetResolveParams, ChatInternetSource } from './protocol.js'
 import { InternetResearchController, InternetResearchError, type InternetResearchOwner } from './internet-research.js'
 import { InternetReviewStore } from './internet-review.js'
@@ -186,6 +190,7 @@ import {
   codePointLength,
   hasNonBlankCodePoint,
   parseVoiceCaptureCompleteParams,
+  parseUpdateUserProfileRequest,
   parseVoiceTranscriptionStartParams,
   trimProtocolBlankCharacters,
 } from './protocol.js'
@@ -420,8 +425,8 @@ function createFixedPresenceNotificationHandle(
     groupId: PRESENCE_NOTIFICATION_GROUP_ID,
     title: 'Elysia',
     body: kind === 'completion'
-      ? 'Your local reply is ready.'
-      : 'Open Elysia whenever you are ready.',
+      ? nativeText('Your local reply is ready.')
+      : nativeText('Open Elysia whenever you are ready.'),
     icon: resolveApplicationIconPath(),
     silent: true,
     timeoutType: 'default',
@@ -1085,12 +1090,12 @@ async function chooseDesktopPetModelDirectory(): Promise<DesktopPetState> {
       resolveProjectRoot(),
       app.isPackaged,
     )
-    const result = await dialog.showOpenDialog(requireMainWindow(), {
+    const result = await dialog.showOpenDialog(requireMainWindow(), localizeNativeDialog({
       title: 'Choose a local Desktop Pet program folder',
       buttonLabel: 'Use this folder',
       properties: ['openDirectory', 'dontAddToRecent'],
       ...(defaultPath === undefined ? {} : { defaultPath }),
-    })
+    }))
     const selectedDirectory = selectedDesktopPetDirectory(result)
     if (selectedDirectory === null) {
       return requireDesktopPetPreferences().state
@@ -1280,14 +1285,12 @@ function installMusicPlaybackOwner(window: BrowserWindow): void {
 }
 
 function resolveProjectRoot(): string {
+  if (app.isPackaged) {
+    return path.join(process.resourcesPath, 'backend')
+  }
   const configuredRoot = process.env.ELYSIA_PROJECT_ROOT
   if (configuredRoot?.trim()) {
     return path.resolve(configuredRoot)
-  }
-
-  if (app.isPackaged) {
-    // Stage 14 will place the frozen Python Backend in this resource folder.
-    return path.join(process.resourcesPath, 'backend')
   }
 
   return path.resolve(app.getAppPath(), '..')
@@ -2112,7 +2115,26 @@ function parseUpdateVoiceSettingsRequest(
 }
 
 function nativeBackgroundColor(): string {
-  return nativeTheme.shouldUseDarkColors ? '#242125' : '#fcfafb'
+  // Match tokens.css's window surface, not the lighter reading canvas, so the
+  // native caption buttons blend into the surrounding rail and title strip.
+  return nativeTheme.shouldUseDarkColors ? '#19141f' : '#ebe0ec'
+}
+
+function nativeTitleBarOverlay(): Electron.TitleBarOverlay {
+  // Native caption buttons preserve Windows Snap and system accessibility. The
+  // renderer reserves their reported CSS height, including display scaling.
+  return {
+    color: nativeBackgroundColor(),
+    symbolColor: nativeTheme.shouldUseDarkColors ? '#faeff5' : '#382b38',
+    height: 32,
+  }
+}
+
+function synchronizeWindowTheme(window: BrowserWindow): void {
+  window.setBackgroundColor(nativeBackgroundColor())
+  if (process.platform === 'win32') {
+    window.setTitleBarOverlay(nativeTitleBarOverlay())
+  }
 }
 
 function broadcastBackendEvent(event: BackendEvent): void {
@@ -2124,6 +2146,7 @@ function broadcastBackendEvent(event: BackendEvent): void {
   }
   // Deliver the core event first. Every native probe then stays behind a full
   // failure boundary so an optional notice cannot become a protocol failure.
+  backendProcess?.synchronizeWorkCommandApproval()
   try { workDesktopController?.getState() }
   catch { workDesktopController?.clear() }
   try { visionImageController?.synchronize() }
@@ -2177,7 +2200,10 @@ function resolveWorkAgent(request: WorkAgentCall, signal: AbortSignal): Promise<
     && backend.getCanonicalVisionChat()?.projectId === owner.projectId
     && backend.getCanonicalVisionChat()?.chatId === request.chatId
   if (!isCurrent()) return Promise.resolve(unavailable)
-  const execute = createWorkAgentNativeTools({ isCurrent, getWindow: requireMainWindow })
+  const projectRoot = resolveProjectRoot(), defaultCwd = app.getPath('home')
+  const execute = createWorkAgentNativeTools({ isCurrent, getWindow: requireMainWindow, defaultCommandCwd: defaultCwd,
+    approveCommand: (reviewed, approvalSignal) => backend.requestWorkCommandApproval(reviewed, approvalSignal, isCurrent),
+    runCommand: createWorkCommandNativeRunner({ isCurrent, projectRoot, pythonExecutable: resolveBackendPython(projectRoot), defaultCwd }) })
   const operation = Promise.resolve().then(() => execute(request, nativeSignal))
   // Hold the physical native lease through cancellation until the process or
   // native dialog actually settles, even if Python already stops its turn.
@@ -2206,8 +2232,25 @@ function requireInternetPolicy(): InternetPolicyService {
   return internetPolicyService
 }
 
+async function beginChatWithInternet(request: ChatRequest | RetryChatRequest): Promise<{ requestId: string }> {
+  const backend = requireBackend()
+  const documentGeneration = internetResearchGeneration, policy = requireInternetPolicy().getState()
+  let owner = backend.getCanonicalVisionChat()
+  if (owner === null && (request.workOptions !== undefined || policy.enabled && !request.useProjectKnowledge)) owner = await backend.hydrateVisionOwner()
+  if (backend !== requireBackend() || documentGeneration !== internetResearchGeneration) throw new Error('Chat owner changed.')
+  const currentPolicy = requireInternetPolicy().getState()
+  const enabled = policy.enabled && currentPolicy.enabled && policy.revision === currentPolicy.revision
+    && owner?.mode === 'chat' && owner.chatId === request.chatId && !request.useProjectKnowledge
+  // Regeneration is a new read under the current policy. It must not inherit
+  // an old search lease or let Renderer fields authorize network access.
+  const result = 'userMessageId' in request ? backend.beginRetry(request, enabled) : backend.beginChat(request, enabled)
+  automaticInternetTurn = enabled && owner !== null ? { requestId: result.requestId, chatId: owner.chatId,
+    projectId: owner.projectId, revision: policy.revision, backend, used: false, abort: new AbortController() } : null
+  return result
+}
+
 function resolveAutomaticInternet(request: ChatInternetRequestEventMessage['data'] & { requestId: string },
-  signal: AbortSignal): Promise<{ sources: ChatInternetSource[]; error: ChatInternetResolveParams['error'] }> {
+  signal: AbortSignal, onReading: () => void = () => {}): Promise<{ sources: ChatInternetSource[]; error: ChatInternetResolveParams['error'] }> {
   return trackInternetOperation(async () => {
     const turn = automaticInternetTurn
     const valid = (): boolean => {
@@ -2226,10 +2269,13 @@ function resolveAutomaticInternet(request: ChatInternetRequestEventMessage['data
     // off then on cannot make the fallback borrow the new policy revision.
     const lease = requireInternetPolicy().acquire(AbortSignal.any([signal, turn.abort.signal]))
     try {
-      const sources = await searchChatInternet(internetTransport, request, lease.signal)
+      const sources = request.kind === 'weather'
+        ? await readChatWeather(internetTransport, request, lease.signal)
+        : await searchChatInternet(internetTransport, { ...request, allowedDomains: lease.policy.allowedDomains }, lease.signal,
+          () => { if (valid()) onReading() })
       lease.assertCurrent()
       return valid() ? { sources, error: null } : { sources: [], error: 'cancelled' }
-    } catch { return { sources: [], error: signal.aborted ? 'cancelled' : 'unavailable' } }
+    } catch { return { sources: [], error: lease.signal.aborted || !valid() ? 'cancelled' : 'unavailable' } }
     finally { lease.release() }
   })
 }
@@ -2362,10 +2408,10 @@ function requireVisionController(): VisionImageController {
     visionImageController = new VisionImageController({
       getOwner: visionOwner,
       chooseFile: async () => {
-        const selected = await dialog.showOpenDialog(requireMainWindow(), {
+        const selected = await dialog.showOpenDialog(requireMainWindow(), localizeNativeDialog({
           title: 'Select an image for this Chat', properties: ['openFile', 'dontAddToRecent'],
           filters: [{ name: 'Still PNG and JPEG images', extensions: ['png', 'jpg', 'jpeg'] }],
-        })
+        }))
         return !selected.canceled && selected.filePaths.length === 1 ? selected.filePaths[0]! : null
       },
       readFile: readVisionSelectedFile,
@@ -2820,17 +2866,17 @@ async function chooseAndMoveDataDirectory(
     assertNoManagedSongCoverOutput()
     const selection = await dialog.showOpenDialog(
       requireMainWindow(),
-      {
+      localizeNativeDialog({
         title: 'Choose an empty folder for Elysia data',
         properties: ['openDirectory', 'createDirectory', 'dontAddToRecent'],
-      },
+      }),
     )
     if (selection.canceled || selection.filePaths.length === 0) {
       return
     }
     const confirmation = await dialog.showMessageBox(
       requireMainWindow(),
-      {
+      localizeNativeDialog({
         type: 'warning',
         title: 'Move Elysia data?',
         message: 'Elysia will pause while it verifies and moves private data.',
@@ -2842,7 +2888,7 @@ async function chooseAndMoveDataDirectory(
         defaultId: 1,
         cancelId: 1,
         noLink: true,
-      },
+      }),
     )
     if (confirmation.response !== 0) {
       return
@@ -2965,7 +3011,7 @@ async function clearTemporaryData(
     }
     const confirmation = await dialog.showMessageBox(
       requireMainWindow(),
-      {
+      localizeNativeDialog({
         type: 'warning',
         title: 'Clear temporary Elysia data?',
         message: 'Delete temporary audio, application cache, and local logs?',
@@ -2977,7 +3023,7 @@ async function clearTemporaryData(
         defaultId: 1,
         cancelId: 1,
         noLink: true,
-      },
+      }),
     )
     if (confirmation.response !== 0) {
       return
@@ -3102,17 +3148,15 @@ function requireImageSettingsManager(): ImageSettingsManager {
   imageSettingsRoot = dataRoot
   const projectRoot = resolveProjectRoot()
   const choose = async (title: string, directory: boolean, extension?: string): Promise<string | null> => {
-    const result = await dialog.showOpenDialog(requireMainWindow(), {
+    const result = await dialog.showOpenDialog(requireMainWindow(), localizeNativeDialog({
       title, properties: [directory ? 'openDirectory' : 'openFile', 'dontAddToRecent'],
       ...(extension ? { filters: [{ name: extension, extensions: [extension] }] } : {}),
-    })
+    }))
     return result.canceled || result.filePaths.length !== 1 ? null : result.filePaths[0]!
   }
   imageSettingsManager = new ImageSettingsManager({
     projectRoot, dataRoot,
-    pythonExecutable: process.env.ELYSIA_PYTHON?.trim()
-      ? path.resolve(process.env.ELYSIA_PYTHON)
-      : path.join(projectRoot, '.venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python'),
+    pythonExecutable: resolveBackendPython(projectRoot),
     chooseRuntimeRoot: () => choose('选择受信 ComfyUI 安装目录（包含 main.py）', true),
     choosePythonExecutable: () => choose('选择该 ComfyUI 安装使用的 Python 解释器', false, process.platform === 'win32' ? 'exe' : undefined),
     chooseCheckpoint: () => choose('选择 SDXL safetensors 主模型文件', false, 'safetensors'),
@@ -3124,28 +3168,28 @@ function requireImageSettingsManager(): ImageSettingsManager {
         : `${review.params.metadata.source}\n${review.params.metadata.license}`
       const installation = review.installation === null ? ''
         : `\n\nComfyUI: ${review.installation.runtimeRoot}\nPython: ${review.installation.pythonExecutable}\nPython SHA-256: ${review.installation.pythonSha256}\nComfyUI SHA-256: ${review.installation.comfyuiMainSha256}`
-      const result = await dialog.showMessageBox(requireMainWindow(), {
+      const result = await dialog.showMessageBox(requireMainWindow(), localizeNativeDialog({
         type: 'question', title: review.params.kind === 'checkpoint' ? '导入受信主模型' : '导入受信 LoRA',
         buttons: ['确认并导入', '取消'], cancelId: 1, defaultId: 1,
         message: '请确认文件来源与许可。文件将复制到本机私有模型目录，原文件会保留。',
-        detail: `${metadata.displayName}\n${review.sourcePath}\nSHA-256: ${review.sha256}\n\n来源与许可：\n${origin}${installation}`,
-      })
+        detail: `${metadata.displayName}\n${review.sourcePath}\nSHA-256: ${review.sha256}\n\n${nativeText('来源与许可：')}\n${origin}${installation}`,
+      }))
       return !signal.aborted && result.response === 0
     },
     confirmInstallation: async (review, signal) => {
-      const result = await dialog.showMessageBox(requireMainWindow(), {
+      const result = await dialog.showMessageBox(requireMainWindow(), localizeNativeDialog({
         type: 'question', title: '确认受信图片安装', buttons: ['确认并保存', '取消'], cancelId: 1, defaultId: 1,
         message: '请确认安装来源与模型许可，并固定本次文件摘要。修改这些文件后需要重新审核。损坏的旧配置会先备份再替换，画廊会保留。',
-        detail: `${review.runtimeRoot}\n${review.pythonExecutable}\n${review.checkpointPath}\n\nPython SHA-256: ${review.pythonSha256}\nComfyUI SHA-256: ${review.comfyuiMainSha256}\n模型 SHA-256: ${review.checkpointSha256}\n\n来源: ${review.metadata.checkpointSource}\n许可: ${review.metadata.checkpointLicense}`,
-      })
+        detail: `${review.runtimeRoot}\n${review.pythonExecutable}\n${review.checkpointPath}\n\nPython SHA-256: ${review.pythonSha256}\nComfyUI SHA-256: ${review.comfyuiMainSha256}\n${nativeText('模型 SHA-256:')} ${review.checkpointSha256}\n\n${nativeText('来源:')} ${review.metadata.checkpointSource}\n${nativeText('许可:')} ${review.metadata.checkpointLicense}`,
+      }))
       return !signal.aborted && result.response === 0
     },
     confirmRecovery: async (review, signal) => {
-      const result = await dialog.showMessageBox(requireMainWindow(), {
+      const result = await dialog.showMessageBox(requireMainWindow(), localizeNativeDialog({
         type: 'question', title: '恢复未完成的图片任务', buttons: ['隔离保留并恢复', '取消'], cancelId: 1, defaultId: 1,
         message: '未完成任务的文件将移入私有隔离目录，已提交画廊继续保留。',
-        detail: `${review.runCount} 个任务，${review.fileCount} 个文件，${review.byteSize} 字节。\n\n保留位置：${path.join(dataRoot, 'workspace', 'image-recovery')}\n\n恢复期间将关闭并重新启动 Backend。`,
-      })
+        detail: nativeText('{runs} 个任务，{files} 个文件，{bytes} 字节。\n\n保留位置：{directory}\n\n恢复期间将关闭并重新启动 Backend。', { runs: review.runCount, files: review.fileCount, bytes: review.byteSize, directory: path.join(dataRoot, 'workspace', 'image-recovery') }),
+      }))
       return !signal.aborted && result.response === 0
     },
   })
@@ -3272,11 +3316,11 @@ function registerIpcHandlers(): void {
     imageExportOwner ??= new ImageExportOwner({
       chooseSavePath: async (id, signal) => {
         if (signal.aborted) return null
-        const selected = await dialog.showSaveDialog(requireMainWindow(), {
+        const selected = await dialog.showSaveDialog(requireMainWindow(), localizeNativeDialog({
           title: '导出生成的图片', defaultPath: `${id}.png`,
           filters: [{ name: 'PNG image', extensions: ['png'] }],
           properties: ['showOverwriteConfirmation', 'dontAddToRecent'],
-        })
+        }))
         return signal.aborted || selected.canceled ? null : selected.filePath ?? null
       },
       getVerifiedImage: async (id, signal) => {
@@ -3568,6 +3612,8 @@ function registerIpcHandlers(): void {
       presenceVoiceSessionActive = false
       presenceReminderSchedulingStarted = true
       schedulePresenceReminder()
+      const window = requireMainWindow()
+      window.webContents.send('window:fullscreen-changed', window.isFullScreen())
       revealMainWindow()
     },
   )
@@ -3577,7 +3623,16 @@ function registerIpcHandlers(): void {
     (event, value: unknown): void => {
       assertTrustedSender(event)
       nativeTheme.themeSource = parseThemePreference(value)
-      requireMainWindow().setBackgroundColor(nativeBackgroundColor())
+      synchronizeWindowTheme(requireMainWindow())
+    },
+  )
+
+  ipcMain.handle(
+    'window:set-interface-locale',
+    (event, value: unknown): void => {
+      assertTrustedSender(event)
+      setNativeLocale(value)
+      refreshTrayMenu()
     },
   )
 
@@ -3661,18 +3716,7 @@ function registerIpcHandlers(): void {
     'backend:send-message',
     async (event, request: unknown) => {
       assertTrustedSender(event)
-      const parsed = parseChatRequest(request), backend = requireBackend()
-      const documentGeneration = internetResearchGeneration, policy = requireInternetPolicy().getState()
-      let owner = backend.getCanonicalVisionChat()
-      if (owner === null && (parsed.workOptions !== undefined || policy.enabled && !parsed.useProjectKnowledge)) owner = await backend.hydrateVisionOwner()
-      if (backend !== requireBackend() || documentGeneration !== internetResearchGeneration) throw new Error('Chat owner changed.')
-      const currentPolicy = requireInternetPolicy().getState()
-      const enabled = policy.enabled && currentPolicy.enabled && policy.revision === currentPolicy.revision
-        && owner?.mode === 'chat' && owner.chatId === parsed.chatId && !parsed.useProjectKnowledge
-      const result = backend.beginChat(parsed, enabled)
-      automaticInternetTurn = enabled && owner !== null ? { requestId: result.requestId, chatId: owner.chatId,
-        projectId: owner.projectId, revision: policy.revision, backend, used: false, abort: new AbortController() } : null
-      return result
+      return beginChatWithInternet(parseChatRequest(request))
     },
   )
 
@@ -3693,6 +3737,16 @@ function registerIpcHandlers(): void {
       )
     },
   )
+
+  ipcMain.handle('profile:get', (event) => {
+    assertTrustedSender(event)
+    return requireBackend().getProfile()
+  })
+
+  ipcMain.handle('profile:update', (event, request: unknown) => {
+    assertTrustedSender(event)
+    return requireBackend().updateProfile(parseUpdateUserProfileRequest(request))
+  })
 
   ipcMain.handle(
     'voice:settings-get',
@@ -3799,7 +3853,7 @@ function registerIpcHandlers(): void {
         // launch a worker when the local admission boundary is unavailable.
         await assertSongCoverAvailable(manager)
         assertDataStorageIdleForBackendRestart()
-        const vocalSelection = await dialog.showOpenDialog(requireMainWindow(), {
+        const vocalSelection = await dialog.showOpenDialog(requireMainWindow(), localizeNativeDialog({
           title: request.sourceMode === 'song'
             ? 'Choose a song for Elysia to sing'
             : 'Choose the isolated vocal stem',
@@ -3813,7 +3867,7 @@ function registerIpcHandlers(): void {
               extensions: ['aac', 'flac', 'm4a', 'mp3', 'ogg', 'opus', 'wav'],
             },
           ],
-        })
+        }))
         if (
           vocalSelection.canceled
           || vocalSelection.filePaths.length !== 1
@@ -3827,7 +3881,7 @@ function registerIpcHandlers(): void {
           assertDataStorageIdleForBackendRestart()
           const accompanimentSelection = await dialog.showOpenDialog(
             requireMainWindow(),
-            {
+            localizeNativeDialog({
               title: 'Choose the matching instrumental accompaniment',
               buttonLabel: 'Choose accompaniment',
               properties: ['openFile', 'dontAddToRecent'],
@@ -3839,7 +3893,7 @@ function registerIpcHandlers(): void {
                   ],
                 },
               ],
-            },
+            }),
           )
           if (
             accompanimentSelection.canceled
@@ -3933,12 +3987,12 @@ function registerIpcHandlers(): void {
           throw new Error('Song Cover job is no longer available.')
         }
         const baseName = path.parse(state.sourceName ?? 'song').name
-        const selection = await dialog.showSaveDialog(requireMainWindow(), {
+        const selection = await dialog.showSaveDialog(requireMainWindow(), localizeNativeDialog({
           title: 'Export Elysia Song Cover',
           buttonLabel: 'Export WAV',
           defaultPath: `${baseName}-Elysia-cover.wav`,
           filters: [{ name: 'Lossless WAV audio', extensions: ['wav'] }],
-        })
+        }))
         if (selection.canceled || selection.filePath === undefined) {
           return false
         }
@@ -3955,9 +4009,9 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle(
     'backend:retry-message',
-    (event, request: unknown) => {
+    async (event, request: unknown) => {
       assertTrustedSender(event)
-      return requireBackend().beginRetry(parseRetryChatRequest(request))
+      return beginChatWithInternet(parseRetryChatRequest(request))
     },
   )
 
@@ -4007,11 +4061,11 @@ function registerIpcHandlers(): void {
       assertTrustedSender(event)
       if (typeof url !== 'string') throw new Error('External URL is invalid.')
       await trackInternetOperation(() => openInternetBrowser(requireInternetPolicy(), url, async target => {
-        const choice = await dialog.showMessageBox(requireMainWindow(), {
+        const choice = await dialog.showMessageBox(requireMainWindow(), localizeNativeDialog({
           type: 'question', title: 'Open external website', message: 'Open this website in your browser?',
-          detail: `${target}\n\nYour browser controls its own cookies, login and network traffic. Turning Internet off in Elysia will not close this tab.`,
+          detail: `${target}\n\n${nativeText('Your browser controls its own cookies, login and network traffic. Turning Internet off in Elysia will not close this tab.')}`,
           buttons: ['Cancel', 'Open browser'], defaultId: 0, cancelId: 0, noLink: true,
-        })
+        }))
         return choice.response === 1
       }, target => shell.openExternal(target)))
     },
@@ -4230,7 +4284,7 @@ function registerIpcHandlers(): void {
       const parsedScope = parseAttachmentScope(scope)
       const result = await dialog.showOpenDialog(
         requireMainWindow(),
-        {
+        localizeNativeDialog({
           title: 'Add attachments to Elysia',
           properties: ['openFile', 'multiSelections', 'dontAddToRecent'],
           filters: [
@@ -4244,7 +4298,7 @@ function registerIpcHandlers(): void {
               ],
             },
           ],
-        },
+        }),
       )
 
       if (result.canceled || result.filePaths.length === 0) {
@@ -4314,7 +4368,7 @@ function registerIpcHandlers(): void {
       const parsedProjectId = parseKnowledgeProjectId(projectId)
       const result = await dialog.showOpenDialog(
         requireMainWindow(),
-        {
+        localizeNativeDialog({
           title: 'Add sources to this Project',
           properties: ['openFile', 'multiSelections', 'dontAddToRecent'],
           filters: [
@@ -4327,7 +4381,7 @@ function registerIpcHandlers(): void {
               ],
             },
           ],
-        },
+        }),
       )
       if (result.canceled || result.filePaths.length === 0) {
         return null
@@ -4352,7 +4406,7 @@ function registerIpcHandlers(): void {
       const request = parseKnowledgeSourceRequest(value)
       const result = await dialog.showOpenDialog(
         requireMainWindow(),
-        {
+        localizeNativeDialog({
           title: 'Choose a replacement source',
           properties: ['openFile', 'dontAddToRecent'],
           filters: [
@@ -4365,7 +4419,7 @@ function registerIpcHandlers(): void {
               ],
             },
           ],
-        },
+        }),
       )
       if (result.canceled || result.filePaths.length === 0) {
         return null
@@ -4467,11 +4521,11 @@ function registerIpcHandlers(): void {
       }
       const result = await dialog.showSaveDialog(
         requireMainWindow(),
-        {
+        localizeNativeDialog({
           title: 'Export original Project source',
           defaultPath: source.fileName,
           properties: ['dontAddToRecent', 'showOverwriteConfirmation'],
-        },
+        }),
       )
       if (result.canceled || result.filePath === undefined) {
         return null
@@ -4508,10 +4562,10 @@ function registerIpcHandlers(): void {
       const parsedProjectId = parseProjectId(projectId)
       const result = await dialog.showOpenDialog(
         requireMainWindow(),
-        {
+        localizeNativeDialog({
           title: 'Choose a workspace for this Project',
           properties: ['openDirectory'],
-        },
+        }),
       )
       if (result.canceled || result.filePaths.length === 0) {
         return null
@@ -4588,6 +4642,11 @@ function registerIpcHandlers(): void {
     return withDesktopOwner(chatId, () => desktopStore().list(chatId, desktopOwner().projectId))
   })
 
+  ipcMain.handle('work:command-approval', (event, request: unknown) => {
+    assertTrustedSender(event)
+    return requireBackend().resolveWorkCommandApproval(request)
+  })
+
   ipcMain.handle('work:get-tools', (event, chatId: unknown) => {
     assertTrustedSender(event)
     const request = parseWorkWorkspaceGetParams({ chatId })
@@ -4654,10 +4713,10 @@ function registerIpcHandlers(): void {
     assertTrustedSender(event)
     if (hasActiveComputerWork()) throw new Error('Wait for the current desktop action.')
     const request = parseWorkWorkspaceGetParams({ chatId })
-    const selected = await dialog.showOpenDialog(requireMainWindow(), {
+    const selected = await dialog.showOpenDialog(requireMainWindow(), localizeNativeDialog({
       title: 'Choose a Workspace for this Work Chat',
       properties: ['openDirectory', 'dontAddToRecent'],
-    })
+    }))
     if (selected.canceled || selected.filePaths.length !== 1) {
       return null
     }
@@ -4850,19 +4909,19 @@ function refreshTrayMenu(): void {
         : 'Launch Desktop Pet'
   const template: MenuItemConstructorOptions[] = [
     {
-      label: 'Show Elysia',
+      label: nativeText('Show Elysia'),
       click: showOrCreateMainWindow,
     },
     { type: 'separator' },
     {
-      label: petToggleLabel,
+      label: nativeText(petToggleLabel),
       enabled: petVisible || petConfigured,
       click: () => {
         void requestDesktopPetMode(petVisible ? 'hidden' : 'visible')
       },
     },
     {
-      label: 'Disable Desktop Pet',
+      label: nativeText('Disable Desktop Pet'),
       enabled: state?.mode !== 'disabled',
       click: () => {
         void requestDesktopPetMode('disabled')
@@ -4870,7 +4929,7 @@ function refreshTrayMenu(): void {
     },
     { type: 'separator' },
     {
-      label: 'Quit',
+      label: nativeText('Quit'),
       click: () => {
         app.quit()
       },
@@ -4908,6 +4967,10 @@ function createMainWindow(): void {
     title: 'Elysia',
     icon: resolveApplicationIconPath(),
     backgroundColor: nativeBackgroundColor(),
+    ...(process.platform === 'win32' ? {
+      titleBarStyle: 'hidden' as const,
+      titleBarOverlay: nativeTitleBarOverlay(),
+    } : {}),
     autoHideMenuBar: true,
     show: false,
     webPreferences: {
@@ -4919,6 +4982,13 @@ function createMainWindow(): void {
       // Windows minimization must not throttle its audio processing callbacks.
       backgroundThrottling: false,
     },
+  })
+
+  mainWindow.on('enter-full-screen', () => {
+    mainWindow?.webContents.send('window:fullscreen-changed', true)
+  })
+  mainWindow.on('leave-full-screen', () => {
+    mainWindow?.webContents.send('window:fullscreen-changed', false)
   })
 
   mainWindow.webContents.setWindowOpenHandler(() => ({
@@ -4947,6 +5017,7 @@ function createMainWindow(): void {
     presenceVoiceSessionActive = false
   })
   mainWindow.webContents.on('render-process-gone', () => {
+    backendProcess?.cancelWorkCommandApproval()
     retireInternetResearch()
     voiceCallWindowManager.dispose()
     backendProcess?.stopCurrentSpeechPlayback()
@@ -4954,6 +5025,7 @@ function createMainWindow(): void {
     revealMainWindow()
   })
   mainWindow.on('closed', () => {
+    backendProcess?.cancelWorkCommandApproval()
     retireInternetResearch()
     voiceCallWindowManager.dispose()
     clearRendererReadyTimer()
@@ -4992,6 +5064,7 @@ if (!hasSingleInstanceLock) {
   })
 
   void app.whenReady().then(async () => {
+    initializeNativeLocale(app.getLocale())
     protocol.handle('elysia-image', (request) => {
       if (request.method !== 'GET') return new Response(null, { status: 405 })
       const image = backendProcess?.readImagePreviewUrl(request.url)
@@ -5054,7 +5127,7 @@ if (!hasSingleInstanceLock) {
       .load(presenceNotificationRuntime)
     nativeTheme.on('updated', () => {
       if (mainWindow !== null && !mainWindow.isDestroyed()) {
-        mainWindow.setBackgroundColor(nativeBackgroundColor())
+        synchronizeWindowTheme(mainWindow)
       }
     })
     configureAudioPermissions()

@@ -2,6 +2,32 @@
 
 from typing import Final, Literal, TypedDict, cast
 
+MAX_USER_NAME_LENGTH: Final = 80
+
+
+class ProfileConflictError(ValueError):
+    """Reject a name edit whose displayed value has already been replaced."""
+
+
+def validate_user_name(value: object) -> str:
+    """Accept a bounded display name without changing legacy profile validation.
+
+    Older profiles may contain names outside this editing policy. They remain
+    readable until the user explicitly chooses a valid replacement.
+    """
+
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or len(value) > MAX_USER_NAME_LENGTH
+        or any(ord(char) < 32 or 127 <= ord(char) <= 159
+               or 0xD800 <= ord(char) <= 0xDFFF
+               or char in "\u2028\u2029" for char in value)
+    ):
+        raise ValueError("Your name must contain 1–80 characters on one line.")
+    return value
+
 PROFILE_SCHEMA_VERSION: Final = 1
 
 

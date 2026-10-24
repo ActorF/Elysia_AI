@@ -46,7 +46,7 @@ test('Windows Electron source or explicitly selected ASAR helper captures only t
       }
       await fs.writeFile(path.join(folder, 'package.json'), '{"type":"module"}')
       if (packaged === undefined) {
-        for (const name of ['vision-capture-native', 'vision-capture', 'vision-capture-protocol', 'vision-protocol', 'protocol-text']) {
+        for (const name of ['vision-capture-native', 'vision-capture', 'vision-capture-protocol', 'vision-protocol', 'protocol-text', 'native-locale']) {
           const code = await fs.readFile(path.join(desktop, 'electron', `${name}.ts`), 'utf8')
           await fs.writeFile(path.join(folder, `${name}.js`), ts.transpileModule(code,
             { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText)

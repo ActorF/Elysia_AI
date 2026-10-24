@@ -1,6 +1,8 @@
 /** Collect explicit public-service inputs without detecting location, fetching on edits, or creating a separate request lifecycle. */
 
+import { t, useTranslation } from '../i18n/LocaleProvider.tsx'
 import { useState } from 'react'
+import { HelpHint } from '../design-system/HelpHint.tsx'
 import type { InternetPolicyState } from '../../electron/internet-policy-protocol.ts'
 import { parseInternetGithubRequest, parseInternetWeatherRequest, type InternetGithubRequest, type InternetWeatherRequest } from '../../electron/internet-protocol.ts'
 import './InternetServicesSection.css'
@@ -17,6 +19,7 @@ interface InternetServicesSectionProps {
 
 /** Present manual coordinates and public repository names; the parent owns all asynchronous admission and source publication. */
 export function InternetServicesSection({ chatId, policy, disabled, onWeather, onGithub }: InternetServicesSectionProps) {
+  useTranslation()
   const [latitude, setLatitude] = useState('')
   const [longitude, setLongitude] = useState('')
   const [owner, setOwner] = useState('')
@@ -35,30 +38,27 @@ export function InternetServicesSection({ chatId, policy, disabled, onWeather, o
   const weatherAllowed = policy?.enabled === true && policy.allowedDomains.includes('api.open-meteo.com')
   const githubAllowed = policy?.enabled === true && policy.allowedDomains.includes('api.github.com')
 
-  return <section className="internet-services" aria-label="Public Internet services">
-    <section aria-label="Weather lookup">
-      <h3>Weather by coordinates</h3>
-      <p>Current weather from Open-Meteo. No API key needed.</p>
+  return <section className="internet-services" aria-label={t("Public Internet services")}>
+    <section aria-label={t("Weather lookup")}>
+      <h3>{t("Weather by coordinates")} <HelpHint label={t("Location and weather data")}>{t("Open-Meteo receives coordinates rounded to four decimal places only when you click Get weather. No location is detected automatically. Current conditions come from weather models, rather than a direct local station observation. Provider time, retrieval time and units accompany the result.")}</HelpHint></h3>
       <div className="internet-service-fields">
-        <label>Latitude<input inputMode="decimal" value={latitude} maxLength={24} disabled={disabled} placeholder="−90 to 90" onChange={event => { setLatitude(event.target.value) }} /></label>
-        <label>Longitude<input inputMode="decimal" value={longitude} maxLength={24} disabled={disabled} placeholder="−180 to 180" onChange={event => { setLongitude(event.target.value) }} /></label>
+        <label>{t("Latitude")}<input inputMode="decimal" value={latitude} maxLength={24} disabled={disabled} placeholder={t("−90 to 90")} onChange={event => { setLatitude(event.target.value) }} /></label>
+        <label>{t("Longitude")}<input inputMode="decimal" value={longitude} maxLength={24} disabled={disabled} placeholder={t("−180 to 180")} onChange={event => { setLongitude(event.target.value) }} /></label>
       </div>
-      {weather !== null && <p>Coordinates to share: {weather.latitude.toFixed(4)}, {weather.longitude.toFixed(4)}.</p>}
-      {weather === null && (latitude !== '' || longitude !== '') && <p>Enter decimal latitude from −90 to 90 and longitude from −180 to 180.</p>}
-      {!weatherAllowed && <p>Enable Internet and allow api.open-meteo.com in Internet settings.</p>}
-      <button type="button" disabled={disabled || weather === null || !weatherAllowed} onClick={() => { if (weather !== null && weatherAllowed) onWeather(weather) }}>Get weather</button>
-      <details className="internet-help"><summary>Location and weather data</summary><p>Open-Meteo receives coordinates rounded to four decimal places only when you click Get weather. No location is detected automatically. Current conditions come from weather models, rather than a direct local station observation. Provider time, retrieval time and units accompany the result.</p></details>
+      {weather !== null && <p>{t("Coordinates to share: ")}{weather.latitude.toFixed(4)}, {weather.longitude.toFixed(4)}.</p>}
+      {weather === null && (latitude !== '' || longitude !== '') && <p>{t("Enter decimal latitude from −90 to 90 and longitude from −180 to 180.")}</p>}
+      {!weatherAllowed && <p>{t("Enable Internet and allow api.open-meteo.com in Internet settings.")}</p>}
+      <button type="button" disabled={disabled || weather === null || !weatherAllowed} onClick={() => { if (weather !== null && weatherAllowed) onWeather(weather) }}>{t("Get weather")}</button>
     </section>
-    <section aria-label="Public GitHub repository lookup">
-      <h3>Public GitHub repository</h3>
-      <p>Repository details, activity and counts. No token needed.</p>
+    <section aria-label={t("Public GitHub repository lookup")}>
+      <h3>{t("Public GitHub repository")} <HelpHint label={t("Public GitHub repository lookup")}>{t("Repository details, activity and counts. No token needed.")}</HelpHint></h3>
       <div className="internet-service-fields">
-        <label>GitHub owner<input value={owner} maxLength={39} disabled={disabled} onChange={event => { setOwner(event.target.value) }} /></label>
-        <label>Repository name<input value={repo} maxLength={100} disabled={disabled} onChange={event => { setRepo(event.target.value) }} /></label>
+        <label>{t("GitHub owner")}<input value={owner} maxLength={39} disabled={disabled} onChange={event => { setOwner(event.target.value) }} /></label>
+        <label>{t("Repository name")}<input value={repo} maxLength={100} disabled={disabled} onChange={event => { setRepo(event.target.value) }} /></label>
       </div>
-      {github === null && (owner !== '' || repo !== '') && <p>Enter valid owner and repository names, without a URL or slash.</p>}
-      {!githubAllowed && <p>Enable Internet and allow api.github.com in Internet settings.</p>}
-      <button type="button" disabled={disabled || github === null || !githubAllowed} onClick={() => { if (github !== null && githubAllowed) onGithub(github) }}>Get repository</button>
+      {github === null && (owner !== '' || repo !== '') && <p>{t("Enter valid owner and repository names, without a URL or slash.")}</p>}
+      {!githubAllowed && <p>{t("Enable Internet and allow api.github.com in Internet settings.")}</p>}
+      <button type="button" disabled={disabled || github === null || !githubAllowed} onClick={() => { if (github !== null && githubAllowed) onGithub(github) }}>{t("Get repository")}</button>
     </section>
   </section>
 }

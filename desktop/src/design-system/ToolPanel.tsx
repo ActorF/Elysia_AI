@@ -2,6 +2,7 @@
 
 import type { ReactNode } from 'react'
 import { Icon, type IconName } from './Icon.tsx'
+import { HelpHint } from './HelpHint.tsx'
 import './ToolPanel.css'
 
 interface ToolPanelFrameProps {
@@ -28,9 +29,10 @@ export function ToolPanelFrame({ id, title, description, icon, ariaLabel, open, 
       <button type="button" className="tool-panel-toggle" aria-label={title} aria-expanded={open}
         aria-controls={`${id}-body`} onClick={onToggle}>
         <span className="tool-panel-symbol"><Icon name={icon} /></span>
-        <span className="tool-panel-heading"><strong>{title}</strong><span>{description}</span></span>
+        <span className="tool-panel-heading"><strong>{title}</strong></span>
         <Icon name="chevron" className="tool-panel-chevron" />
       </button>
+      <HelpHint label={title}>{description}</HelpHint>
       {status !== undefined && <span className="tool-panel-status">{busy && <span className="tool-busy-dot" aria-hidden="true" />}{status}</span>}
       {actions !== undefined && <div className="tool-panel-header-actions">{actions}</div>}
     </div>

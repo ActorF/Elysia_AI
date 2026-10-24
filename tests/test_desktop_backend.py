@@ -53,7 +53,16 @@ from config.settings import (
     DEFAULT_TRANSCRIPTION_MODEL,
     AppSettings,
 )
-from core import Brain, ChatBusyError, GenerationCancelledError
+from core import (
+    Brain,
+    ChatBusyError,
+    ChatModelConnectionError,
+    ChatModelNotFoundError,
+    ChatModelResponseError,
+    ConfigurationError,
+    GenerationCancelledError,
+    LangChainOllamaChatModel,
+)
 from desktop_backend import (
     SERVER_CAPABILITIES,
     SERVER_NAME,
@@ -1693,6 +1702,63 @@ def _error(
     error = response["error"]
     assert isinstance(error, dict)
     return cast(JsonObject, error)
+
+
+@pytest.mark.parametrize(
+    "model_name",
+    [
+        "tobestyledintro/qwen3.8-9b-distill:latest",
+        "tobestyledintro/qwen3.8-9b-distill",
+        "registry.example:5000/team/local-model:q4_K_M",
+    ],
+)
+def test_default_initialization_composes_chat_and_knowledge_with_namespaced_model(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    model_name: str,
+) -> None:
+    """Real startup services accept installed namespaces without inference I/O."""
+
+    settings = AppSettings(
+        base_dir=tmp_path,
+        data_root=tmp_path / "profile",
+        model_name=model_name,
+        log_level="INFO",
+        debug=False,
+        ollama_host="http://127.0.0.1:11434",
+    )
+    monkeypatch.setattr(desktop_backend_module, "SETTINGS", settings)
+    checked_models: list[str] = []
+
+    def _record_installed_model(model: LangChainOllamaChatModel) -> None:
+        """Replace only the external catalog request, preserving composition."""
+
+        checked_models.append(model._model_name)
+
+    monkeypatch.setattr(
+        LangChainOllamaChatModel, "ensure_model_available", _record_installed_model
+    )
+    def _request_lines() -> Generator[str, None, None]:
+        """Inspect the composed runtime before shutdown releases its owner."""
+
+        for request in (_handshake_request(), _initialize_request()):
+            yield f"{json.dumps(request)}\n"
+        assert backend._knowledge_runtime is not None
+        yield f"{json.dumps(_request('shutdown-namespaced', 'shutdown', {}))}\n"
+
+    output_stream = StringIO()
+    backend = DesktopBackend(
+        model_loader=lambda: (model_name,),
+        input_stream=cast(TextIO, _request_lines()),
+        output_stream=output_stream,
+        expected_session_token=SESSION_TOKEN,
+    )
+    backend.run()
+
+    initialized = _success_result(_output_messages(output_stream), "initialize-1")
+    assert initialized["modelName"] == model_name
+    assert initialized["chatId"]
+    assert checked_models == [model_name]
 
 
 def test_bridge_initializes_and_streams_one_real_brain_turn() -> None:
@@ -6115,6 +6181,61 @@ def test_voice_settings_remain_available_after_brain_initialization_fails(
     assert _success_result(messages, "voice-after-failure")["kind"] == (
         "voice.settings"
     )
+
+
+@pytest.mark.parametrize(
+    ("failure_type", "expected_code"),
+    [
+        (ChatModelConnectionError, "backend.ollama_unavailable"),
+        (ChatModelNotFoundError, "backend.model_missing"),
+        (ChatModelResponseError, "backend.model_failed"),
+        (ConfigurationError, "backend.configuration_invalid"),
+    ],
+)
+def test_initialize_reports_actionable_model_setup_without_leaking_diagnostics(
+    tmp_path: Path,
+    failure_type: type[Exception],
+    expected_code: str,
+) -> None:
+    """Keep first-launch Ollama failures actionable and Settings recoverable."""
+    requests = [
+        _handshake_request(),
+        _initialize_request(),
+        _request("settings-after-failure", "settings.get", {}),
+        _request("shutdown-after-failure", "shutdown", {}),
+    ]
+    input_stream = StringIO("".join(f"{json.dumps(request)}\n" for request in requests))
+    output_stream = StringIO()
+
+    def fail_brain() -> Brain:
+        """Raise SDK details that must never become renderer-facing text."""
+        raise failure_type("private-diagnostic: C:/Users/customer/secret-config")
+
+    def validate_settings() -> None:
+        """Emulate configuration failure before model discovery when selected."""
+        if failure_type is ConfigurationError:
+            raise ConfigurationError("private-diagnostic: C:/Users/customer/persona")
+
+    DesktopBackend(
+        brain_factory=fail_brain,
+        model_loader=lambda: ("test-model",),
+        settings_validator=validate_settings,
+        settings_repository=_desktop_settings_repository(tmp_path / "global.json"),
+        voice_settings_service=create_voice_settings_service(tmp_path),
+        input_stream=input_stream,
+        output_stream=output_stream,
+        expected_session_token=SESSION_TOKEN,
+    ).run()
+    messages = [cast(JsonObject, json.loads(line)) for line in output_stream.getvalue().splitlines()]
+
+    failure = _error(messages, "initialize-1")
+    assert failure["code"] == expected_code
+    assert failure["retryable"] is True
+    assert "Ollama" in failure["message"]
+    assert "Settings" in failure["message"] or "settings" in failure["message"]
+    assert "private-diagnostic" not in output_stream.getvalue()
+    assert "C:/Users/customer" not in output_stream.getvalue()
+    assert _success_result(messages, "settings-after-failure")["revision"] == 0
 
 
 def test_voice_settings_conflict_is_typed_and_retryable(

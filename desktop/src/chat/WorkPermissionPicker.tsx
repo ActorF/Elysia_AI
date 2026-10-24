@@ -4,6 +4,7 @@
  */
 
 import { useId, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
+import { useTranslation } from '../i18n/LocaleProvider.tsx'
 import { createPortal } from 'react-dom'
 
 import type { WorkTurnOptions } from '../../electron/work-agent-protocol.ts'
@@ -15,14 +16,16 @@ type Permission = WorkTurnOptions['permission']
 interface WorkPermissionPickerProps {
   value: Permission
   disabled: boolean
+  /** Commit only the permission explicitly chosen by the user. */
   onChange(value: Permission): void
 }
 
 const PERMISSIONS: ReadonlyArray<{ value: Permission; label: string; description: string }> = [
   { value: 'none', label: '仅对话', description: '不使用工具' },
   { value: 'read', label: '只读', description: '查找文件、查看应用和音量' },
-  { value: 'ask', label: '操作前询问', description: '桌面操作前由你确认' },
+  { value: 'ask', label: '操作前询问', description: '每条 CMD 命令和桌面操作前由你确认' },
   { value: 'auto', label: '允许桌面操作', description: '直接执行已支持的桌面工具' },
+  { value: 'full', label: '允许 CMD 命令', description: '按当前 Windows 用户权限执行命令，可读写文件、运行程序和联网' },
 ]
 
 interface PopupPlacement {
@@ -61,6 +64,7 @@ function measurePopup(trigger: HTMLElement): PopupPlacement {
  * Arrow navigation, dismissal, and Tab never grant a different permission.
  */
 export function WorkPermissionPicker({ value, disabled, onChange }: WorkPermissionPickerProps) {
+  const { t } = useTranslation()
   const listboxId = useId()
   const triggerRef = useRef<HTMLButtonElement>(null)
   const popupRef = useRef<HTMLDivElement>(null)
@@ -154,7 +158,8 @@ export function WorkPermissionPicker({ value, disabled, onChange }: WorkPermissi
         type="button"
         role="combobox"
         className="work-permission-trigger"
-        aria-label="Work permissions"
+        aria-label={t("Work permissions")}
+        title={t(PERMISSIONS[selectedIndex].description)}
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={open ? listboxId : undefined}
@@ -168,7 +173,7 @@ export function WorkPermissionPicker({ value, disabled, onChange }: WorkPermissi
         onBlur={() => setInteraction({ disabled, open: false })}
       >
         <Icon name="shield" />
-        <span>{PERMISSIONS[selectedIndex].label}</span>
+        <span>{t(PERMISSIONS[selectedIndex].label)}</span>
         <Icon name="chevron" className="work-permission-chevron" />
       </button>
       {open && placement !== null && createPortal(
@@ -180,14 +185,14 @@ export function WorkPermissionPicker({ value, disabled, onChange }: WorkPermissi
           // descendant without introducing a focusable element for each option.
           onPointerDown={(event) => event.preventDefault()}
         >
-          <div className="work-permission-heading" aria-hidden="true">工具权限</div>
-          <div id={listboxId} role="listbox" aria-label="Work permission levels" className="work-permission-options">
+          <div className="work-permission-heading" aria-hidden="true">{t("工具权限")}</div>
+          <div id={listboxId} role="listbox" aria-label={t("Work permission levels")} className="work-permission-options">
             {PERMISSIONS.map((permission, index) => (
               <div
                 id={`${listboxId}-${index}`}
                 key={permission.value}
                 role="option"
-                aria-label={permission.label}
+                aria-label={t(permission.label)}
                 aria-selected={permission.value === value}
                 aria-describedby={`${listboxId}-${index}-description`}
                 className={`work-permission-option${index === activeIndex ? ' is-active' : ''}`}
@@ -197,8 +202,8 @@ export function WorkPermissionPicker({ value, disabled, onChange }: WorkPermissi
                 onClick={() => commit(index)}
               >
                 <span className="work-permission-copy">
-                  <span>{permission.label}</span>
-                  <span id={`${listboxId}-${index}-description`} className="work-permission-description">{permission.description}</span>
+                  <span>{t(permission.label)}</span>
+                  <span id={`${listboxId}-${index}-description`} className="work-permission-description">{t(permission.description)}</span>
                 </span>
                 {permission.value === value && <Icon name="check" />}
               </div>

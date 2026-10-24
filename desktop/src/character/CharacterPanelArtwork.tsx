@@ -5,6 +5,7 @@
  */
 
 import { useState, type CSSProperties } from 'react'
+import { t, useLocale } from '../i18n/LocaleProvider.tsx'
 
 import type { CharacterEmotion } from './character-emotion.ts'
 import { getCharacterPresentation } from './character-presentation.ts'
@@ -67,6 +68,7 @@ export function CharacterPanelArtwork({
   emotion,
   state,
 }: CharacterPanelArtworkProps) {
+  useLocale()
   const [illustrationsFailed, setIllustrationsFailed] = useState(false)
   const [portraitFailed, setPortraitFailed] = useState(false)
   const presentation = getCharacterPresentation(state)
@@ -102,7 +104,7 @@ export function CharacterPanelArtwork({
           <img
             className="character-artwork-image character-panel-illustration-image"
             src="./character/elysia-ui-illustrations.png"
-            alt="Elysia character portrait"
+            alt={t("Elysia character portrait")}
             decoding="async"
             style={illustrationStyle}
             onError={() => { setIllustrationsFailed(true) }}
@@ -112,7 +114,7 @@ export function CharacterPanelArtwork({
         <img
           className="character-artwork-image character-panel-portrait-fallback"
           src="./character/elysia-portrait.png"
-          alt="Elysia character portrait"
+          alt={t("Elysia character portrait")}
           decoding="async"
           onError={() => { setPortraitFailed(true) }}
         />
@@ -120,10 +122,10 @@ export function CharacterPanelArtwork({
         <div
           className="character-artwork-fallback"
           role="img"
-          aria-label="Elysia character portrait unavailable"
+          aria-label={t("Elysia character portrait unavailable")}
         >
           <span className="character-panel-fallback-initial" aria-hidden="true">E</span>
-          <span aria-hidden="true">Artwork unavailable</span>
+          <span aria-hidden="true">{t("Artwork unavailable")}</span>
         </div>
       )}
     </div>

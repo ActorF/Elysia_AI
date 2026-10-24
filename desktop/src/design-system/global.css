@@ -11,8 +11,11 @@
 }
 
 :root {
+  /* Electron supplies the native caption height in CSS pixels. Browser-only
+     renderers need no reserved title-bar space. */
+  --window-titlebar-height: env(titlebar-area-height, 0px);
   color: var(--color-text-primary);
-  background: var(--color-bg-canvas);
+  background: var(--color-bg-window);
   font-family: var(--font-family-sans);
   font-size: 100%;
   font-synthesis: none;
@@ -21,6 +24,10 @@
   text-size-adjust: 100%;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+html[data-window-fullscreen="true"] {
+  --window-titlebar-height: 0px;
 }
 
 html,
@@ -41,7 +48,7 @@ body {
   min-width: var(--layout-window-min-width);
   overflow: hidden;
   color: var(--color-text-primary);
-  background: var(--color-bg-canvas);
+  background: var(--color-bg-window);
 }
 
 body,

@@ -1,3 +1,2 @@
-# Optional local speech-to-text runtime. Install after the base requirements.
-faster-whisper==1.2.1
-numpy==2.5.3
+# Compatibility entry point: speech libraries now ship in the shared runtime.
+-r requirements-runtime.txt

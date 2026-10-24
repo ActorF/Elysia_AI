@@ -3,12 +3,16 @@
  * Device preferences are intentionally handled by the authenticated bridge.
  */
 
+import { t } from '../i18n/locale.ts'
+
 export type AudioDeviceKind = 'audioinput' | 'audiooutput'
 
 export interface AudioDevice {
   deviceId: string
   kind: AudioDeviceKind
   label: string
+  /** Number of an app-generated fallback; absent for an actual hardware name. */
+  generatedLabelNumber?: number
 }
 
 export type AudioDeviceErrorCode =
@@ -228,11 +232,12 @@ function deviceList(
     seen.add(device.deviceId)
     return true
   })
-  const fallbackName = kind === 'audioinput' ? 'Microphone' : 'Speaker'
   return matching.map((device, index) => ({
     deviceId: device.deviceId,
     kind,
-    label: device.label.trim() || `${fallbackName} ${index + 1}`,
+    // Hardware names belong to the device; only our unnamed-device fallback is translated.
+    label: device.label.trim() || t(kind === 'audioinput' ? 'Microphone {number}' : 'Speaker {number}', { number: index + 1 }),
+    ...(device.label.trim() === '' ? { generatedLabelNumber: index + 1 } : {}),
   }))
 }
 

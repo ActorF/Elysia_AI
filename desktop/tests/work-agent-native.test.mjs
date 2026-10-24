@@ -31,7 +31,7 @@ function childProcess() {
   return child
 }
 
-function harness(overrides = {}) {
+function harness(overrides = {}, hostOverrides = {}) {
   const calls = []
   const children = []
   let current = true
@@ -53,7 +53,8 @@ function harness(overrides = {}) {
     },
     ...overrides,
   }
-  const execute = createWorkAgentNativeTools({ isCurrent: () => current, getWindow: () => ({ trusted: true }) }, dependencies)
+  const execute = createWorkAgentNativeTools({ isCurrent: () => current, getWindow: () => ({ trusted: true }),
+    approveCommand: async request => { calls.push(['approve-command', request]); return 'approved' }, ...hostOverrides }, dependencies)
   return {
     calls, children, execute,
     invalidate: () => { current = false },
@@ -290,4 +291,111 @@ test('volume approval rechecks cancellation before starting the writing helper',
   approval.resolve({ response: 1 })
   assert.equal((await pending).status, 'cancelled')
   assert.equal(h.children.length, 1)
+})
+
+test('CMD requires a new full grant or exact ask approval; legacy auto cannot inherit execution', async () => {
+  const executed = []
+  const h = harness({}, { defaultCommandCwd: 'C:\\Users\\Tester', runCommand: async request => { executed.push(request); return { status: 'failed', text: 'Synthetic exit.', error: 'failed' } } })
+  for (const permission of ['none', 'read', 'auto']) {
+    assert.equal((await h.execute(h.request('run_command', { command: 'whoami' }, permission), new AbortController().signal)).status, 'denied')
+  }
+  assert.deepEqual(h.calls, [])
+  assert.equal(executed.length, 0)
+  const request = h.request('run_command', { command: 'echo 北京 & whoami', timeoutMs: 12000 }, 'ask')
+  await h.execute(request, new AbortController().signal)
+  const confirmation = h.calls.find(([type]) => type === 'approve-command')[1]
+  assert.equal(confirmation.arguments.cwd, 'C:\\Users\\Tester')
+  assert.equal(confirmation.arguments.command, request.arguments.command)
+  assert.equal(h.calls.some(([type]) => type === 'confirm'), false)
+  assert.equal(executed[0].arguments.cwd, 'C:\\Users\\Tester')
+  assert.equal(executed[0].arguments.timeoutMs, 12000)
+  assert.notEqual(executed[0].arguments, request.arguments)
+  h.calls.length = 0
+  await h.execute(h.request('run_command', { command: 'ver', cwd: 'D:\\工作目录' }, 'full'), new AbortController().signal)
+  assert.equal(h.calls.some(([type]) => type === 'confirm' || type === 'approve-command'), false)
+  assert.equal(executed[1].arguments.cwd, 'D:\\工作目录')
+})
+
+test('multiline CMD cannot be approved or executed as a misleading successful first line', async () => {
+  const executed = []
+  const h = harness({}, { defaultCommandCwd: 'C:\\Users\\Tester', runCommand: async request => { executed.push(request); return { status: 'failed', text: 'Unexpected.', error: 'failed' } } })
+  for (const separator of ['\n', '\r', '\r\n']) {
+    const result = await h.execute(h.request('run_command', { command: `echo first${separator}echo second` }, 'ask'), new AbortController().signal)
+    assert.equal(result.error, 'invalid_request')
+    assert.match(result.text, /single-line CMD.*& or &&/u)
+  }
+  assert.equal(executed.length, 0)
+  assert.equal(h.calls.some(([type]) => type === 'confirm'), false)
+})
+
+test('UNC directories cannot silently redirect a reviewed command to the Windows directory', async () => {
+  const executed = []
+  const h = harness({}, { defaultCommandCwd: 'C:\\Users\\Tester', runCommand: async request => { executed.push(request); return { status: 'failed', text: 'Unexpected.', error: 'failed' } } })
+  const result = await h.execute(h.request('run_command', { command: 'cd', cwd: '\\\\server\\share' }, 'ask'), new AbortController().signal)
+  assert.equal(result.error, 'invalid_request')
+  assert.match(result.text, /drive-qualified absolute working directory/u)
+  assert.equal(executed.length, 0)
+  assert.equal(h.calls.some(([type]) => type === 'confirm'), false)
+})
+
+test('CMD approval denial, cancellation and expired ownership never dispatch or mutate the reviewed command', async () => {
+  for (const boundary of ['denied', 'aborted', 'stale', 'mutation']) {
+    const approval = deferred(), executed = []
+    const h = harness({}, { approveCommand: () => approval.promise, defaultCommandCwd: 'C:\\Users\\Tester',
+      runCommand: async request => { executed.push(request); return { status: 'failed', text: 'Synthetic exit.', error: 'failed' } } })
+    const controller = new AbortController(), request = h.request('run_command', { command: 'ver' }, 'ask')
+    const pending = h.execute(request, controller.signal)
+    await Promise.resolve()
+    if (boundary === 'aborted') controller.abort()
+    if (boundary === 'stale') h.invalidate()
+    if (boundary === 'mutation') request.arguments.command = 'different command'
+    approval.resolve(boundary === 'denied' ? 'denied' : 'approved')
+    const output = await pending
+    if (boundary === 'mutation') assert.equal(executed[0].arguments.command, 'ver')
+    else {
+      assert.equal(output.status, boundary === 'denied' ? 'denied' : 'cancelled')
+      assert.equal(executed.length, 0)
+      if (boundary === 'denied') {
+        assert.equal(output.error, 'permission_denied')
+        assert.match(output.text, /user selected No.*never started.*permissions were not tested.*not a Windows or UAC error/u)
+      }
+    }
+  }
+})
+
+test('CMD approval expiry and a missing inline host never fall back to a native dialog or execution', async () => {
+  for (const decision of ['timeout', 'cancelled', 'missing']) {
+    const executed = [], h = harness({}, { defaultCommandCwd: 'C:\\Users\\Tester',
+      approveCommand: decision === 'missing' ? undefined : async () => decision,
+      runCommand: async request => { executed.push(request); throw new Error('Unexpected dispatch') } })
+    const result = await h.execute(h.request('run_command', { command: 'date /t' }, 'ask'), new AbortController().signal)
+    assert.equal(result.error, decision === 'missing' ? 'unavailable' : decision)
+    assert.equal(executed.length, 0)
+    assert.equal(h.calls.some(([type]) => type === 'confirm'), false)
+  }
+})
+
+test('The inline approval callback cannot mutate the detached command selected for execution', async () => {
+  const executed = [], h = harness({}, { defaultCommandCwd: 'C:\\Users\\Tester',
+    approveCommand: async request => {
+      request.arguments.command = 'replacement command'
+      request.arguments.cwd = 'D:\\Other'
+      return 'approved'
+    },
+    runCommand: async request => { executed.push(request); return { status: 'failed', text: 'Synthetic exit.', error: 'failed' } } })
+  await h.execute(h.request('run_command', { command: 'date /t' }, 'ask'), new AbortController().signal)
+  assert.equal(executed[0].arguments.command, 'date /t')
+  assert.equal(executed[0].arguments.cwd, 'C:\\Users\\Tester')
+})
+
+test('CMD delegates keep the native lease until physical settlement after cancellation', async () => {
+  const held = deferred(), controller = new AbortController()
+  const h = harness({}, { defaultCommandCwd: 'C:\\Users\\Tester', runCommand: () => held.promise })
+  const pending = h.execute(h.request('run_command', { command: 'ver' }, 'full'), controller.signal)
+  await Promise.resolve()
+  controller.abort()
+  assert.equal((await h.execute(h.request('list_apps'), new AbortController().signal)).status, 'denied')
+  held.resolve({ status: 'cancelled', text: 'Cancelled.', error: 'cancelled' })
+  assert.equal((await pending).status, 'cancelled')
+  assert.equal((await h.execute(h.request('list_apps'), new AbortController().signal)).status, 'succeeded')
 })

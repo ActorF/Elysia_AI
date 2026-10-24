@@ -1,13 +1,57 @@
-/** Define bounded per-turn Work permissions, native tool receipts, and truthful activity without exposing executable commands. */
+/** Define per-turn Work permissions and bounded native tool and CMD receipts without granting execution authority to model output. */
 
 /** The user's explicit options apply to one Work turn; model output cannot increase them. */
 export interface WorkTurnOptions {
   thinking: 'off' | 'deep'
-  permission: 'none' | 'read' | 'ask' | 'auto'
+  permission: 'none' | 'read' | 'ask' | 'auto' | 'full'
 }
 
-/** Native tools use a closed registry; file reads remain behind Python's Workspace boundary. */
-export type WorkNativeTool = 'list_apps' | 'open_app' | 'get_volume' | 'set_volume'
+/** Generic CMD execution requires ask/full independently of the older desktop-only auto grant. */
+export type WorkNativeTool = 'list_apps' | 'open_app' | 'get_volume' | 'set_volume' | 'run_command'
+
+/** The command is data until Main admits its exact turn and, for ask, obtains inline confirmation. */
+export interface WorkCommandArguments {
+  command: string
+  cwd?: string
+  timeoutMs?: number
+}
+
+/** A bounded command receipt preserves actual output and distinguishes exit from interruption. */
+export interface WorkCommandReceipt {
+  command: string
+  cwd: string
+  stdout: string
+  stderr: string
+  exitCode: number | null
+  termination: 'exit' | 'timeout' | 'cancelled' | 'spawn_failed'
+  truncated: boolean
+}
+
+/** Main stores completed command receipts separately from model-generated progress summaries. */
+export interface WorkCompletedCommand extends WorkCommandReceipt {
+  callId: string
+  status: WorkToolResult['status']
+}
+
+/** Main publishes the exact command awaiting a decision, never accepting replacement source from the renderer. */
+export interface WorkCommandApproval {
+  requestId: string
+  chatId: string
+  callId: string
+  command: string
+  cwd: string
+}
+
+/** The renderer can answer one pending question but cannot create or modify a command. */
+export interface WorkCommandApprovalDecision {
+  requestId: string
+  chatId: string
+  callId: string
+  allow: boolean
+}
+
+/** Approval expiry and owner cancellation remain distinct from an explicit user rejection. */
+export type WorkCommandApprovalOutcome = 'approved' | 'denied' | 'cancelled' | 'timeout'
 
 /** An admitted native call is bound to its exact generating request and frozen user options. */
 export interface WorkToolCall {
@@ -24,6 +68,7 @@ export interface WorkToolResult {
   status: 'succeeded' | 'denied' | 'failed' | 'cancelled'
   text: string
   error: null | 'permission_denied' | 'unavailable' | 'invalid_request' | 'cancelled' | 'failed' | 'timeout'
+  command?: WorkCommandReceipt
 }
 
 /** Public progress describes stages and observed actions independently of the spoken answer. */
@@ -40,6 +85,10 @@ export interface WorkActivity {
   options: WorkTurnOptions
   entries: WorkProgressEntry[]
   status: 'running' | 'complete' | 'cancelled' | 'error'
+  /** Main increments this even when approval changes without new progress or receipts. */
+  revision?: number
+  commands?: WorkCompletedCommand[]
+  commandApproval?: WorkCommandApproval
 }
 
 /** Correlate one native result with the Python worker still waiting for this exact call. */
@@ -88,19 +137,61 @@ function id(value: unknown): string {
 /** Validate and detach the user's per-turn choice, rejecting extra escalation fields. */
 export function parseWorkTurnOptions(value: unknown): WorkTurnOptions {
   const raw = exact(value, ['thinking', 'permission'])
-  if (!['off', 'deep'].includes(raw.thinking as string) || !['none', 'read', 'ask', 'auto'].includes(raw.permission as string)) {
+  if (!['off', 'deep'].includes(raw.thinking as string) || !['none', 'read', 'ask', 'auto', 'full'].includes(raw.permission as string)) {
     throw new TypeError('Invalid Work options.')
   }
   return { thinking: raw.thinking as WorkTurnOptions['thinking'], permission: raw.permission as WorkTurnOptions['permission'] }
 }
 
-/** Validate native arguments before admission; application names are IDs, never paths or arguments. */
+/** Accept only an explicit boolean tied to a previously published generation, Chat and call. */
+export function parseWorkCommandApprovalDecision(value: unknown): WorkCommandApprovalDecision {
+  const raw = exact(value, ['requestId', 'chatId', 'callId', 'allow'])
+  const chatId = id(raw.chatId), callId = id(raw.callId)
+  if (!chatId.startsWith('chat_') || !/^work_call_[a-f0-9]{32}$/u.test(callId) || typeof raw.allow !== 'boolean') {
+    throw new TypeError('Invalid CMD approval.')
+  }
+  return { requestId: id(raw.requestId), chatId, callId, allow: raw.allow }
+}
+
+function commandText(value: unknown): string {
+  const command = text(value, 8192)
+  // cmd /c can silently stop at the first newline while returning exit code 0.
+  // Admit only one physical line so the reviewed source is fully executed.
+  if (!command.trim() || /[\r\n]/u.test(command)) throw new TypeError('Use a single-line CMD command.')
+  return command
+}
+
+function commandDirectory(value: unknown): string {
+  const directory = text(value, 2048)
+  // CMD silently replaces a UNC working directory with the Windows directory
+  // even when it exits successfully. A drive-qualified directory preserves the
+  // reviewed execution context; UNC paths remain usable as command arguments.
+  if (!/^[A-Za-z]:[\\/]/u.test(directory)) {
+    throw new TypeError('Use a drive-qualified absolute CMD directory.')
+  }
+  return directory
+}
+
+/** Bound executable command data while allowing ordinary CMD syntax and optional absolute working directories. */
+export function parseWorkCommandArguments(value: unknown): WorkCommandArguments {
+  const raw = exact(value, ['command', ...(value !== null && typeof value === 'object' && Object.hasOwn(value, 'cwd') ? ['cwd'] : []),
+    ...(value !== null && typeof value === 'object' && Object.hasOwn(value, 'timeoutMs') ? ['timeoutMs'] : [])])
+  const command = commandText(raw.command)
+  const cwd = Object.hasOwn(raw, 'cwd') ? commandDirectory(raw.cwd) : undefined
+  const timeoutMs = Object.hasOwn(raw, 'timeoutMs') ? raw.timeoutMs : undefined
+  if (Object.hasOwn(raw, 'timeoutMs') && (typeof timeoutMs !== 'number' || !Number.isInteger(timeoutMs)
+    || timeoutMs < 1000 || timeoutMs > 120000)) throw new TypeError('Invalid CMD timeout.')
+  return { command, ...(cwd === undefined ? {} : { cwd }), ...(timeoutMs === undefined ? {} : { timeoutMs: timeoutMs as number }) }
+}
+
+/** Validate native arguments before admission; only run_command accepts shell source under its separate permission. */
 export function parseWorkNativeRequest(value: unknown): WorkRequestEvent['data'] {
   const raw = exact(value, ['chatId', 'callId', 'tool', 'arguments'])
   const chatId = id(raw.chatId), callId = id(raw.callId)
   if (!chatId.startsWith('chat_') || !/^work_call_[a-f0-9]{32}$/u.test(callId)
-    || !['list_apps', 'open_app', 'get_volume', 'set_volume'].includes(raw.tool as string)) throw new TypeError('Invalid Work call.')
+    || !['list_apps', 'open_app', 'get_volume', 'set_volume', 'run_command'].includes(raw.tool as string)) throw new TypeError('Invalid Work call.')
   const tool = raw.tool as WorkNativeTool
+  if (tool === 'run_command') return { chatId, callId, tool, arguments: { ...parseWorkCommandArguments(raw.arguments) } }
   const args = exact(raw.arguments, tool === 'open_app' ? ['application'] : tool === 'set_volume' ? ['level'] : [])
   if (tool === 'open_app' && !/^[a-z][a-z0-9_-]{0,63}$/u.test(text(args.application, 64))) throw new TypeError('Invalid application ID.')
   if (tool === 'set_volume' && (typeof args.level !== 'number' || !Number.isInteger(args.level) || args.level < 0 || args.level > 100)) {
@@ -111,13 +202,25 @@ export function parseWorkNativeRequest(value: unknown): WorkRequestEvent['data']
 
 /** Validate one truthful receipt while preventing arbitrary native diagnostics from crossing the bridge. */
 export function parseWorkToolResult(value: unknown): WorkToolResult {
-  const raw = exact(value, ['status', 'text', 'error'])
+  const hasCommand = value !== null && typeof value === 'object' && Object.hasOwn(value, 'command')
+  const raw = exact(value, ['status', 'text', 'error', ...(hasCommand ? ['command'] : [])])
   const status = raw.status as WorkToolResult['status'], error = raw.error as WorkToolResult['error']
   if (!['succeeded', 'denied', 'failed', 'cancelled'].includes(status)
     || (status === 'succeeded' ? error !== null : !['permission_denied', 'unavailable', 'invalid_request', 'cancelled', 'failed', 'timeout'].includes(error ?? ''))) {
     throw new TypeError('Invalid Work result.')
   }
-  return { status, text: text(raw.text, 32768), error }
+  if (!hasCommand) return { status, text: text(raw.text, 32768), error }
+  const record = exact(raw.command, ['command', 'cwd', 'stdout', 'stderr', 'exitCode', 'termination', 'truncated'])
+  const stdout = text(record.stdout, 16384), stderr = text(record.stderr, 16384)
+  const exitCode = record.exitCode, termination = record.termination as WorkCommandReceipt['termination']
+  if (new TextEncoder().encode(stdout + stderr).length > 16384
+    || exitCode !== null && (typeof exitCode !== 'number' || !Number.isInteger(exitCode) || exitCode < -2147483648 || exitCode > 4294967295)
+    || !['exit', 'timeout', 'cancelled', 'spawn_failed'].includes(termination) || typeof record.truncated !== 'boolean'
+    || status === 'denied' || (status === 'succeeded') !== (termination === 'exit' && exitCode === 0)
+    || (status === 'cancelled') !== (termination === 'cancelled')) throw new TypeError('Invalid CMD receipt.')
+  return { status, text: text(raw.text, 32768), error,
+    command: { command: commandText(record.command), cwd: commandDirectory(record.cwd), stdout, stderr,
+      exitCode: exitCode as number | null, termination, truncated: record.truncated } }
 }
 
 /** Require an exact generation/chat/call receipt before waking the Python worker. */

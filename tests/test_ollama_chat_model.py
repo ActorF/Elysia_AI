@@ -113,6 +113,58 @@ def test_ensure_model_available_rejects_missing_model(
         chat_model.ensure_model_available()
 
 
+@pytest.mark.parametrize(
+    ("requested", "installed"),
+    [
+        ("llama3.2", "llama3.2:latest"),
+        ("llama3.2:latest", "llama3.2"),
+        ("example/custom", "example/custom:latest"),
+        ("localhost:5000/example/custom", "localhost:5000/example/custom:latest"),
+    ],
+)
+@pytest.mark.parametrize("catalog_key", ["name", "model"])
+def test_ensure_model_available_accepts_implicit_latest_tag(
+    monkeypatch: pytest.MonkeyPatch,
+    requested: str,
+    installed: str,
+    catalog_key: str,
+) -> None:
+    """Accept the same default-tag aliases Ollama accepts for inference."""
+
+    def fake_request(
+        self: requests.Session,
+        method: str,
+        url: str,
+        **kwargs: object,
+    ) -> FakeResponse:
+        """Return one installed model under either supported catalog key."""
+        return FakeResponse({"models": [{catalog_key: installed}]})
+
+    monkeypatch.setattr(requests.Session, "request", fake_request)
+    OllamaChatModel(requested, "http://localhost:11434").ensure_model_available()
+
+
+@pytest.mark.parametrize("requested", ["llama3.2", "llama3.2:latest"])
+def test_ensure_model_available_does_not_substitute_another_tag(
+    monkeypatch: pytest.MonkeyPatch,
+    requested: str,
+) -> None:
+    """Keep explicit installed variants distinct from the default latest tag."""
+
+    def fake_request(
+        self: requests.Session,
+        method: str,
+        url: str,
+        **kwargs: object,
+    ) -> FakeResponse:
+        """Report a different installed variant and malformed catalog entries."""
+        return FakeResponse({"models": [None, {}, {"name": "llama3.2:1b"}]})
+
+    monkeypatch.setattr(requests.Session, "request", fake_request)
+    with pytest.raises(ChatModelNotFoundError, match="is not installed"):
+        OllamaChatModel(requested, "http://localhost:11434").ensure_model_available()
+
+
 def test_generate_reply_returns_content(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -159,7 +211,9 @@ def test_generate_reply_returns_content(
                 "message": {
                     "role": "assistant",
                     "content": "  Hello, Ying!  ",
-                }
+                },
+                "done": True,
+                "done_reason": "stop",
             }
         )
 
@@ -195,6 +249,52 @@ def test_generate_reply_returns_content(
     )
 
     assert reply == "Hello, Ying!"
+
+
+@pytest.mark.parametrize("metadata, expected_error", [
+    ({"done": True, "done_reason": "stop"}, None),
+    ({"done": True}, None),
+    ({"done": True, "done_reason": "length"}, "output limit"),
+    ({"done": True, "done_reason": "load"}, "did not finish"),
+    ({"done": True, "done_reason": "cancelled"}, "did not finish"),
+    ({"done": False}, "without a complete response"),
+    ({"done": 1}, "without a complete response"),
+    ({}, "without a complete response"),
+])
+def test_direct_reply_requires_a_successful_terminal_response(
+    monkeypatch: pytest.MonkeyPatch, metadata: dict[str, object], expected_error: str | None,
+) -> None:
+    """Never commit partial HTTP 200 text while retaining legacy done-only replies."""
+
+    def _request(self: requests.Session, *args: object, **kwargs: object) -> FakeResponse:
+        return FakeResponse({"message": {"role": "assistant", "content": "Partial answer"}, **metadata})
+
+    monkeypatch.setattr(requests.Session, "request", _request)
+    model = OllamaChatModel("fixture:latest", "http://127.0.0.1:11434")
+    if expected_error is None:
+        assert model.generate_reply([{"role": "user", "content": "Question"}]) == "Partial answer"
+    else:
+        with pytest.raises(ChatModelResponseError, match=expected_error):
+            model.generate_reply([{"role": "user", "content": "Question"}])
+
+
+def test_completion_diagnostics_exclude_untrusted_content(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Log only bounded counts and a fixed reason instead of provider-controlled fields."""
+
+    def _request(self: requests.Session, *args: object, **kwargs: object) -> FakeResponse:
+        return FakeResponse({"message": {"role": "assistant", "content": "private answer"},
+                             "done": True, "done_reason": "private provider reason",
+                             "prompt_eval_count": "private prompt", "eval_count": 3})
+
+    monkeypatch.setattr(requests.Session, "request", _request)
+    caplog.set_level("INFO", logger="core.ollama_chat_model")
+    with pytest.raises(ChatModelResponseError, match="did not finish"):
+        OllamaChatModel("fixture:latest", "http://127.0.0.1:11434").generate_reply(
+            [{"role": "user", "content": "private question"}])
+    assert "reason=unknown" in caplog.text and "output_tokens=3" in caplog.text
+    assert "private" not in caplog.text
 
 
 def test_request_rejects_offline_ollama(

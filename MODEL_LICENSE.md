@@ -248,6 +248,16 @@ Elysia AI 是非官方粉丝开发项目，与 HoYoverse / 米哈游以及上述
 
 发布前必须执行仓库策略检查，并对实际候选包进行目录、ASAR 清单及解包字节审计。完整命令见 [桌面开发指南](desktop/README.md#package-and-audit)；不能只检查 Git 或依赖 `.gitignore`。
 
+## Bundled Runtime Components / 随安装包分发的运行组件
+
+2026-10-22 的 Windows 候选包包含以下运行组件；大型生成模型、私人声音模型、参考录音及工作区数据仍被排除。构建配置与固定下载摘要见 [backend-runtime.json](desktop/backend-runtime.json)，每个成品文件另有 `resources/backend/distribution-manifest.json` 摘要清单。
+
+- **CPython 3.14.9 x64**：来自 [Python 官方发行页](https://www.python.org/downloads/release/python-3149/) 的 embeddable ZIP，SHA-256 为 `3c01d7cfc666f746a6f064f60fb2156ab0ec464d3d738ab796371a46a9bb24a2`。原始 `LICENSE.txt` 随解释器保留。
+- **Microsoft Visual C++ Runtime 14.51.36247.0 x64**：从 Microsoft 官方 Redistributable 提取 `msvcp140.dll` 与 `msvcp140_1.dll`，与 CPython 自带同版本 `vcruntime140.dll` / `vcruntime140_1.dll` 一起放在解释器目录。下载包 SHA-256 为 `843068991daaa1f73ad9f6239bce4d0f6a07a51f18c37ea2a867e9beca71295c`；本次 Windows Authenticode 检查为 `Valid`，签名人为 Microsoft Corporation。构建不执行该安装程序。随包的 `MICROSOFT-VC-RUNTIME-NOTICE.txt` 记录固定来源，`MICROSOFT-VC-RUNTIME-LICENSE.txt` 保留[官方许可](https://visualstudio.microsoft.com/license-terms/vs2026-ga-visualcpp-v14-redist-runtime/)文档的文字。
+- **faster-whisper 1.2.1 / Silero VAD**：该 wheel 的轻量语音活动检测文件 `python/Lib/site-packages/faster_whisper/assets/silero_vad_v6.onnx` 随运行库分发，SHA-256 为 `4cbf549b8326f60f80f2536d9eefeb450a9abe83365a098031c89719f1be17d2`。这不是 Whisper 转写模型或声音克隆权重。库的许可与其他 Python wheel 的许可保留在 `*.dist-info/licenses/`；该单一 VAD 路径和摘要由分发检查器明确允许，其他模型扩展名仍默认拒绝。
+
+这些组件有各自许可证，不改变下面的项目源代码许可边界。
+
 ## Source-Code License Boundary / 源代码许可证边界
 
 本仓库目前没有根级 `LICENSE` 文件。本说明不授予 Elysia AI 源代码许可。将来即使添加源码许可证，也不得把它解释为涵盖角色 IP、角色语料、模型权重、参考音频、Ollama 模型或其他第三方素材，除非许可证明确写明且本项目确实有权作出该授权。

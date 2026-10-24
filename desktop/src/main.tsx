@@ -5,6 +5,7 @@ import { flushSync } from 'react-dom'
 import { createRoot } from 'react-dom/client'
 import App from './App.tsx'
 import { AppErrorBoundary } from './AppErrorBoundary.tsx'
+import { initializeDocumentLocale, LocaleProvider, t } from './i18n/LocaleProvider.tsx'
 import './design-system/global.css'
 import {
   initializeDocumentTheme,
@@ -12,6 +13,7 @@ import {
 } from './theme/ThemeProvider.tsx'
 
 const initialThemeState = initializeDocumentTheme()
+initializeDocumentLocale()
 
 function waitForInitialPaint(): Promise<void> {
   return new Promise((resolve) => {
@@ -27,9 +29,11 @@ async function renderApp(): Promise<void> {
     root.render(
       <StrictMode>
         <ThemeProvider>
-          <AppErrorBoundary>
-            <App />
-          </AppErrorBoundary>
+          <LocaleProvider>
+            <AppErrorBoundary>
+              <App />
+            </AppErrorBoundary>
+          </LocaleProvider>
         </ThemeProvider>
       </StrictMode>,
     )
@@ -48,12 +52,12 @@ function showFatalRendererError(error: unknown): void {
     root.setAttribute('role', 'alert')
     root.setAttribute('tabindex', '-1')
     const heading = document.createElement('h1')
-    heading.textContent = 'Elysia could not initialize.'
+    heading.textContent = t('Elysia could not initialize.')
     const detail = document.createElement('p')
-    detail.textContent = 'Reload the interface, or close and reopen Elysia if the problem continues.'
+    detail.textContent = t('Reload the interface, or close and reopen Elysia if the problem continues.')
     const reload = document.createElement('button')
     reload.type = 'button'
-    reload.textContent = 'Reload interface'
+    reload.textContent = t('Reload interface')
     reload.addEventListener('click', () => { window.location.reload() })
     root.replaceChildren(heading, detail, reload)
     window.requestAnimationFrame(() => {

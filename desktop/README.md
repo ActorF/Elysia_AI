@@ -1,257 +1,145 @@
 # Elysia Desktop
 
-React + TypeScript, hosted by Electron with a local Python Backend.
-This guide covers development, verification, and native boundaries.
-For product setup, start with the [project README](../README.md).
+**0.1.0 · 2026-10-24 delivery snapshot.** Electron + React/TypeScript with a local Python backend. For the installer and first launch, use the [project README](../README.md) or [English overview](../README.en.md).
 
-## Run locally
+## Run from source
 
-Prepare the repository's `.venv` and a running Ollama instance with the
-configured Chat model. A root `.env` is optional. In a new **PowerShell**
-window, use the actual checkout path; this example assumes `D:\Elysia_AI`:
+Requires Windows x64, Python 3.14 with pip, Node.js 24, Git, and a running local Ollama instance. Use **CMD**; replace the example checkout path if needed:
 
-```powershell
-Set-Location -LiteralPath 'D:\Elysia_AI\desktop'
+```bat
+cd /d "D:\Elysia_AI"
+py -3.14 -m venv .venv
+.venv\Scripts\python.exe -m pip install --upgrade pip
+.venv\Scripts\python.exe -m pip install -r requirements.txt
+ollama pull qwen3.5:9b
+cd desktop
 npm.cmd ci
 npm.cmd run dev
 ```
 
-In **CMD**, replace the first line with `cd /d "D:\Elysia_AI\desktop"`.
-Run `npm.cmd ci` only for initial setup or after dependency updates; later
-launches need just the directory change and `npm.cmd run dev`.
-Using `npm.cmd` also avoids PowerShell's `npm.ps1` execution-policy errors.
+Later launches need only the directory change and `npm.cmd run dev`. Repeat dependency installation after requirements or lockfile changes. A root `.env` is optional for basic chat.
 
-The command builds Main/Preload, starts Vite, opens Electron, and owns
-`.venv\Scripts\python.exe desktop_backend.py` until exit.
-`npm run dev:renderer` is a browser-only preview; Backend, microphone,
-and Desktop Pet integration require the Electron window.
+The development command builds Main/Preload, starts Vite, and opens Electron with the repository's Python backend. Closing the app or pressing Ctrl+C ends the managed development processes. `npm.cmd run dev:renderer` is a browser preview; native tools, backend integration, and audio require Electron.
 
-Optional features use separately prepared local assets:
+## Data and configuration
 
-| Capability | Requirements |
+The installed app defaults to `%APPDATA%\Elysia\data`. Electron keeps its profile and bootstrap pointer under `%APPDATA%\Elysia`; source development may use a different Electron profile. Always use **Settings → Data & storage** to find the active root.
+
+| Location | Contents |
 | --- | --- |
-| Project Sources | Pinned Ollama `qwen3-embedding:0.6b`; see [embeddings](../docs/07-LOCAL-EMBEDDINGS-VECTOR-STORE.md). |
-| Speech recognition | `requirements-stt.txt` and a complete `models/weights/faster-whisper/<model>/` directory. |
-| Speech playback | GPT-SoVITS runtime, checkpoints/reference audio under `models/weights/gpt-sovits/`, and active-root `workspace/settings/voice-profiles.json`. |
-| Song Cover | Private CUDA/WSL runtimes in the [Song Cover guide](../docs/15-SONG-COVER.md); unavailable in the current installer. |
-| Image generation | Reviewed ComfyUI, a complete Python interpreter, and SDXL checkpoint selected in Settings → 图片生成; see [local images](../docs/16-LOCAL-IMAGE-GENERATION.md). |
-| Desktop Pet | A supported external program selected in Settings; see [character presentation](../docs/14-LIVE2D-RUNTIME.md). |
+| `<data-root>/workspace` | Chats, Projects, memory, sources, settings, gallery, and saved Work/Vision records |
+| `<data-root>/logs` | Diagnostic logs |
+| `<data-root>/cache` | Rebuildable application cache |
+| `<data-root>/models` | Installed-app speech assets and runtimes |
+| `<checkout>/models` | Source-development speech assets and runtimes |
 
-These assets are not downloaded automatically or bundled. Text Chat does not
-require them. For speech recognition, run from the repository root:
+A data move carries assets inside the active root, but does not relocate the Electron profile, Ollama models, source-checkout models, or external runtimes. Close Elysia before backing up both the active root and Electron profile. Use the application's temporary-data cleanup; `models/cache` contains installed runtimes and is not disposable cache. [Full storage contract](../docs/13-PRODUCTION-DATA-LAYOUT.md)
 
-```powershell
-.\.venv\Scripts\python.exe -m pip install -r requirements-stt.txt
-```
+Chat defaults to `qwen3.5:9b` at `http://localhost:11434`. Settings accepts local Ollama models and loopback addresses; remote/cloud models are unsupported. Interface language, theme, and the saved user name are configurable in Settings. Model weights are never downloaded automatically by Elysia.
 
-Place the complete model in `models/weights/faster-whisper/small/`, select it
-in Settings, and restart the Backend. Supported names are `tiny`, `base`,
-`small`, `medium`, `large-v3`, and `turbo`. CPU is the default to leave GPU
-room for Ollama and GPT-SoVITS. Model directories stay Git-ignored.
+## Interface and permissions
 
-## Interface essentials
+- `Ctrl+,` opens Settings; `Ctrl+K` searches chats; `Ctrl+B` toggles navigation. Enter sends and Shift+Enter inserts a line.
+- The icon rail, project conversation tree, central chat, and bottom composer share one rounded frame. Light mode uses pearl white, rose gray, pink actions, and lilac selections; dark mode uses plum surfaces. A faint champagne outline and native caption colors follow the theme.
+- Hover, focus, or click information icons for help. Escape dismisses the current layer. Commands, file changes, sources, and errors remain inspectable.
+- Work defaults to **Ask before acting**. Each CMD command requires an inline Yes / No decision. **Allow CMD commands** runs commands directly with the current Windows user's access, including files and network. Structured file tools stay within the selected Workspace; CMD is not limited to that folder.
+- Stop terminates managed command processes. CMD changes have no automatic Undo. Work retries reuse results without rerunning actions; ordinary chat retries can refresh time and online evidence.
+- Deep thinking requests a model capability. Elysia's thoughts summarizes actual processing stages rather than exposing private model reasoning.
+- Chat attachments are not automatically indexed. Add Project sources and explicitly enable their use for a grounded answer. Memory participates in context, without a separate memory editor.
 
-| Action | Behavior |
+For complete behavior, see [Work](../docs/17-WORKFLOW-AND-DESKTOP-AGENT.md), [Vision](../docs/18-VISION-AND-SCREEN.md), [Internet](../docs/19-INTERNET-AND-SERVICES.md), and [Project sources](../docs/12-KNOWLEDGE-UI-TESTING.md).
+
+## Optional features
+
+| Capability | Setup |
 | --- | --- |
-| `Ctrl+,` / `Ctrl+K` / `Ctrl+B` | Settings / Chat search / toggle navigation. |
-| Enter / Shift+Enter | Send / new line; IME composition never sends. |
-| Work permissions | Beside the model: conversation only, read-only, ask before actions (default), or allow supported desktop actions. File access stays inside the selected Workspace. |
-| Deep thinking | Shows an explicit on/off state and enables the local model's thinking mode for this Work reply. Compact activity rows show actual tool results; recent file changes come from recorded operations. Retrying an answer never repeats actions. |
-| Dictate | Listens continuously, transcribes bounded segments in order, and appends final text to the draft without sending. Stop closes the microphone and drains pending transcription. |
-| Voice Call | Opens a separate window and automatically sends each completed utterance to the current Chat. Mute pauses capture; End call or Escape releases its audio resources. |
-| Read aloud | Speaks one persisted Assistant reply. Ordinary text Chat is silent by default. |
-| 图片生成 | Opens the generator and private Gallery. Progress, cancellation, deletion, preview and native PNG export use the owned Backend. |
-| Use Project Sources | Opts the current turn or retry into the Chat's canonical Project corpus; reload or a context change resets the choice. |
+| Project sources | `ollama pull qwen3-embedding:0.6b`, then import and index Project files. |
+| Internet | Off by default. Enable in Settings for model-selected search and city weather; external writes require a separate review. CMD permissions are independent of this switch. |
+| OCR and image questions | Tesseract with language data for OCR, or a compatible installed local Ollama vision model. Captures and analysis require explicit actions. |
+| Image generation | Trusted ComfyUI, full Python interpreter, and compatible SDXL model selected in Settings. [Guide](../docs/16-LOCAL-IMAGE-GENERATION.md) |
+| Song covers | Source-only CUDA/WSL runtimes and authorized assets; not supported by the installer. [Guide](../docs/15-SONG-COVER.md) |
+| Desktop pet | A supported external program, disabled by default. [Guide](../docs/14-LIVE2D-RUNTIME.md) |
 
-Chat attachments remain message data; they are not automatically indexed.
-Unsent text is saved per Chat, and renderer refresh reconnects to requests
-still owned by Electron. Settings labels live and restart-required changes.
+Optional runtimes and large models are not bundled. Their absence does not block text chat. Hardware performance, voice quality, and third-party runtime compatibility must be checked on the actual machine.
 
-### Voice settings
+## Optional voice setup
 
-| Setting | Default / range | Applies |
-| --- | --- | --- |
-| Speak Voice Call replies | On / On or Off | Next admitted operation |
-| Speech volume | 100 / 0–100% | Each admitted clip; 0 silences playback without stopping synthesis |
-| Speech rate | 100 / 50–200% | After Backend restart |
-| Voice profile | `default` / configured logical ID | After Backend restart |
-| Voice emotion | `neutral` / ten reviewed values | After Backend restart; selects the TTS reference |
+The shared Python runtime includes Faster-Whisper libraries and its small Silero VAD asset, but no recognition checkpoints. `requirements-stt.txt` is a compatibility entry point to the same runtime list; installing `requirements.txt` already includes these libraries.
 
-Emotions are `neutral`, `happy`, `sad`, `caring`, `moved`, `playful`,
-`affectionate`, `teasing`, `serious`, and `surprised`.
-The character panel selects static art by application state; Voice Call uses
-a fixed background. Neither view changes its artwork with Voice Emotion.
-Retired `captionsEnabled`, `transcriptReviewMode`, and `automaticRelisten`
-fields remain migration-compatible but do not control the current UI.
+1. Use the installed app's active data root or, for development, the checkout as the model asset root.
+2. Place a complete recognition model at `models/weights/faster-whisper/small/` under that root. Supported names are `tiny`, `base`, `small`, `medium`, `large-v3`, and `turbo`. Select it in Settings and restart the backend. CPU is the default.
+3. For speech playback, prepare the GPT-SoVITS runtime under `models/cache/GPT-SoVITS-v2-240821/` and authorized weights/reference audio under `models/weights/gpt-sovits/`.
+4. Copy [voice_profiles.example.json](../config/voice_profiles.example.json) to the active data root's `workspace/settings/voice-profiles.json`. Replace every Schema v2 asset placeholder with its real relative path, byte size, and SHA256, plus the exact reference text and language. Use `/` in relative paths.
+5. Select the configured profile in Settings and restart the backend. The desktop owns its speech worker; stop any independently started GPT-SoVITS API before desktop playback.
 
-## Verify
+For profiles marked `local-evaluation-only`, source development requires an explicit `GPT_SOVITS_ALLOW_LOCAL_EVALUATION=True` opt-in after reviewing asset rights and paths; it grants no redistribution permission.
 
-From the repository root:
+Dictate appends text to the draft without sending. Voice Call sends completed utterances to the current chat; Mute pauses capture, and End call/Escape releases it. Text chat is silent unless read-aloud is requested. Speech volume applies to each new clip; model, profile, emotion, and rate changes may require the restart indicated in Settings.
 
-```powershell
-python scripts/check_python_documentation.py
-```
+Use the [voice validation guide](../docs/03-VOICE-PERFORMANCE-SAFETY-RIGHTS.md) for device checks and local synthesis verification. Automated tests do not establish microphone quality, echo cancellation, GPU speed, or long-session stability.
 
-From `desktop`:
+## Verify changes
 
-```powershell
-npm run docs:check
-npm run lint
-npm run typecheck
-npm test
-npm run build
-npm audit --audit-level=high
-```
-
-`npm test` includes contract and UI tests. Use `npm run test:contract` or
-`npm run test:ui` for a focused run. UI tests use a sandboxed test preload
-excluded from the application. Documentation checks enforce structure;
-explanations still require review under [AGENTS.md](../AGENTS.md).
-
-### Device checks
-
-Real-device observations remain **pending**, following the owner's 2026-09-22
-waiver as a delivery gate. Automated checks do not establish subjective audio
-quality, room/headset echo behavior, interruption latency, extended hardware
-stability, or screen-reader quality.
-
-For a new run, record the date/commit, Windows version, microphone, speaker,
-room conditions, model/device/profile/emotion, session length, turn count,
-interruption attempts/false triggers/delay, and screen reader. Check:
-
-- Dictate through silence and speech longer than 30 seconds; Stop drains in
-  order. Navigation or device failure discards pending audio without losing
-  accepted text or editing another Chat.
-- Voice Call preserves the draft and staged attachments, sends one final
-  transcript per utterance, and listens again after the exact turn settles.
-- Mute, End call, context changes, and failures release the correct audio
-  owner; late callbacks cannot reopen a retired call.
-- Sustained speech interrupts only with verified echo cancellation. Record
-  quiet-room, speaker-echo, and headset results; unavailable AEC leaves the
-  current reply running.
-- Read aloud, volume 0, live/restart-required settings, keyboard navigation,
-  and screen-reader announcements behave as described above.
-
-Performance and lifecycle-soak evidence, with their limits, are in the
-[Voice acceptance record](../docs/03-VOICE-PERFORMANCE-SAFETY-RIGHTS.md).
-
-### Local synthesis
-
-Copy `config/voice_profiles.example.json` to ignored active-root
-`workspace/settings/voice-profiles.json` and configure authorized local assets.
-The catalog requires Schema v2: replace every asset's placeholder `path`,
-`bytes`, and lowercase 64-character `sha256` with its actual values. Use `/`
-in relative asset paths, including on Windows; weights and reference audio
-must remain under `models/weights/gpt-sovits/`. Legacy string-only paths are
-not accepted. Fill in the exact reference text and language for each emotion.
-
-For a `local-evaluation-only` profile, keep
-`GPT_SOVITS_ALLOW_LOCAL_EVALUATION=False` until its rights and paths have been
-explicitly reviewed, then opt in with `GPT_SOVITS_ALLOW_LOCAL_EVALUATION=True`
-in the root `.env` and restart the Backend. Local opt-in does not grant
-redistribution rights.
-
-Desktop playback owns its GPT-SoVITS worker under
-`models/cache/GPT-SoVITS-v2-240821/`; keep the independent loopback API stopped
-while testing desktop playback. Verify ordered clips, per-clip volume, reload
-recovery, and cleanup on exit.
-
-The independent API smoke accepts loopback-IP HTTP, WAV/AAC, and assets below
-`models/weights/gpt-sovits/`. The recorded local acceptance runtime can be
-started in a separate CMD window, then stopped with Ctrl+C:
+From the repository root in CMD:
 
 ```bat
-cd /d D:\Elysia_AI\models\cache\GPT-SoVITS-v2-240821
-runtime\python.exe -X utf8 api_v2.py -c GPT_SoVITS\configs\tts_infer_elysia.yaml -a 127.0.0.1 -p 9880
+call .venv\Scripts\activate.bat
+python scripts/check_python_documentation.py
+python scripts/check_distribution_assets.py
+python -m pytest -q
+cd desktop
+npm.cmd run docs:check
+npm.cmd run lint
+npm.cmd run typecheck
+npm.cmd test
+npm.cmd audit --audit-level=high
 ```
 
-That runtime and YAML are local examples, not repository content. Use a runtime
-and Profile whose paths and rights you have reviewed. From the repository root:
+`npm.cmd test` runs contract and UI tests. Focused commands are `npm.cmd run test:contract` and `npm.cmd run test:ui`. UI checks launch real Electron windows; run them sequentially and avoid interacting with those windows. The test preload is excluded from distribution. Source documentation must satisfy [AGENTS.md](../AGENTS.md).
 
-```powershell
-.\.venv\Scripts\python.exe scripts/smoke_gpt_sovits.py --profile default --emotion neutral --emotion happy --emotion sad --emotion caring --emotion moved --emotion playful --emotion affectionate --emotion teasing --emotion serious --emotion surprised
+## Build the Windows EXE
+
+From `desktop` in CMD, activate the repository's Python 3.14 environment so the packaging script uses the correct interpreter:
+
+```bat
+call ..\.venv\Scripts\activate.bat
+npm.cmd ci
+npm.cmd run make
 ```
 
-The smoke synthesizes a fixed sentence twice per emotion in memory.
-`service_binding_unverified` confirms API compatibility, not loaded-model
-identity; stopping the API must produce `service_unreachable`.
+Output:
 
-## Package and audit
+- `out/Elysia-Setup-0.1.0.exe` — installer.
+- `out/win-unpacked/Elysia.exe` — unpacked application; keep its complete surrounding directory.
 
-From `desktop`, `npm run package` creates `out/win-unpacked`; `npm run make`
-also builds an unsigned NSIS installer. The shell package does not bundle
-Python, Ollama, or private model runtimes. For development-only use, set
-`ELYSIA_PROJECT_ROOT` and `ELYSIA_PYTHON` to the checkout and interpreter.
+`make` stages the backend, builds the app, creates the NSIS installer, and runs package/installer smoke checks. For only an unpacked build, use `npm.cmd run package`. These are alternatives; running both repeats the build. Build downloads require internet access.
 
-The scoped `@electron/get@3.1.0` → `global-agent@4.1.3` override preserves
-the downloader's CommonJS proxy bootstrap while removing the legacy formatter
-chain; `tests/packaging-proxy.test.mjs` checks that compatibility offline.
+The package contains isolated CPython 3.14, application-local Microsoft runtime DLLs, allowlisted backend resources, and dependencies pinned by `requirements-runtime.txt`. It excludes developer `.env`, private data, large models, reference audio, and external runtimes. [backend-runtime.json](./backend-runtime.json) and [package_backend.py](../scripts/package_backend.py) define the runtime source, hashes, and allowlist. Packaged startup ignores development Python overrides.
 
-Audit the actual package and extracted ASAR before distribution:
+Recheck an existing build with `npm.cmd run smoke:package` and `npm.cmd run smoke:installer`. These use isolated data; installer smoke extracts and runs the payload in a fresh path without registering an installation. They do not certify every model, peripheral, or clean-machine upgrade/uninstall scenario.
 
-```powershell
-npm run package
-$auditRoot = Join-Path ([IO.Path]::GetTempPath()) ("elysia-package-audit-" + [guid]::NewGuid().ToString("N"))
-New-Item -ItemType Directory -Path $auditRoot | Out-Null
-$auditListing = Join-Path $auditRoot "asar-listing.txt"
-$auditExtracted = Join-Path $auditRoot "extracted"
-npx --no-install asar list .\out\win-unpacked\resources\app.asar | Set-Content -Encoding utf8 $auditListing
-npx --no-install asar extract .\out\win-unpacked\resources\app.asar $auditExtracted
-..\.venv\Scripts\python.exe ..\scripts\check_distribution_assets.py --unpacked-tree .\out\win-unpacked --asar-listing $auditListing --extracted-asar-tree $auditExtracted
+### Audit distribution assets
+
+After building, run from `desktop` in CMD:
+
+```bat
+set "ELYSIA_AUDIT_DIR=%TEMP%\elysia-package-audit-%RANDOM%-%RANDOM%"
+mkdir "%ELYSIA_AUDIT_DIR%"
+npx.cmd --no-install asar list out\win-unpacked\resources\app.asar > "%ELYSIA_AUDIT_DIR%\asar-listing.txt"
+npx.cmd --no-install asar extract out\win-unpacked\resources\app.asar "%ELYSIA_AUDIT_DIR%\extracted"
+..\.venv\Scripts\python.exe ..\scripts\check_distribution_assets.py --unpacked-tree out\win-unpacked --asar-listing "%ELYSIA_AUDIT_DIR%\asar-listing.txt" --extracted-asar-tree "%ELYSIA_AUDIT_DIR%\extracted"
 ```
 
-The audit checks Git, package paths, and reviewed artwork bytes. Models, voice
-catalogs, reference audio, and external Desktop Pet programs remain excluded.
-Read [MODEL_LICENSE.md](../MODEL_LICENSE.md) before publishing; official signet
-icons and generated fan artwork are outside any source-code license.
-The audit folder is disposable after review.
+The audit checks package paths, archive contents, and reviewed artwork. Keep runtime license notices. Read [MODEL_LICENSE.md](../MODEL_LICENSE.md) before distribution; the source [MIT License](../LICENSE) does not license third-party character artwork, audio, or model weights.
 
-For a visible-window benchmark, use PowerShell 7.4+ from `desktop`:
+## Release
 
-```powershell
-pwsh -NoProfile -File .\benchmarks\measure-shell.ps1 `
-  -Executable .\out\win-unpacked\Elysia.exe -Runs 10
-```
+The [Windows release workflow](../.github/workflows/release.yml) runs validation and builds the installer. Manual runs retain downloadable build artifacts. A `v<version>` tag must match `desktop/package.json`. After successful validation, a tagged run preserves any existing Release and its assets; only when no Release exists for that tag does it create a **draft** with the EXE and `SHA256SUMS.txt`. Publishing a new draft is a separate maintainer action. A local build does not upload anything.
 
-This does not measure Backend readiness or first Chat. See the
-[Electron decision](../docs/decisions/0001-desktop-shell.md) for measurements
-and migration gates.
+The 0.1.0 installer is unsigned. Verify the release checksum and test installation, upgrade, and uninstall on the intended Windows environment before broader distribution.
 
-## Native boundaries
+## Architecture references
 
-- React has no direct Node.js, Python, Chat, or Memory access. Main validates
-  origin and top frame; the sandboxed preload exposes only
-  [contracts.ts](electron/contracts.ts). Each Python child uses a fresh
-  authenticated handshake and the shared [protocol](../desktop_protocol/README.md).
-- Project Sources require explicit intake and turn-level consent. A global
-  lease protects lifecycle work, grounded answers, and verified export.
-  Export survives renderer reload, is not cancellable from React, and reports
-  success only after receipt validation; native paths remain private.
-- Dictation PCM is transient and bounded. Transcription returns final text,
-  normalized with OpenCC `t2s`. Reply-time interruption requires verified AEC;
-  held interruption audio expires within 10 seconds.
-- Speech bytes use private fd3 framing and trusted preload playback. React
-  receives sanitized status only. Exact request/Chat ownership prevents stale
-  cancellation; a missing selected speaker fails the clip. Runtime manifests
-  prove launch consistency, not full provenance; speech caching stays off.
-- Images use independent bounded fd4 PNG framing and one-use preview URLs.
-  Main owns Save dialogs and native export paths. Incomplete run recovery
-  requires native confirmation and preserves its files in private quarantine.
-- Main serializes Ollama, image, GPT-SoVITS and Song Cover GPU work through
-  private fd5 admission. Cancellation retains capacity until physical cleanup;
-  external Ollama residency must be cleared before another model starts.
-- Desktop Pet is off by default. Main revalidates pinned program identities,
-  owns only its child, and preserves external configuration. Path-based launch
-  retains a check-to-use interval. The reviewed launcher uses `RunAsInvoker`
-  without administrator rights.
-- Notifications are off by default, silent, and use fixed Main-owned copy.
-  Reminders run only while Elysia is open and unattended; busy intervals are
-  consumed without catch-up. There is no background task or startup entry.
-- Settings uses closed schemas, optimistic revisions, and atomic replacement.
-  [Data storage](../docs/13-PRODUCTION-DATA-LAYOUT.md) verifies migrations and
-  retains recovery copies; generic cleanup does not delete user content.
+The renderer uses the sandboxed preload contract; Electron Main owns native permissions, processes, persistence, and the Python connection. Model, voice, image, and Work execution share managed cancellation and resource ownership.
 
-Further contracts: [Work](../docs/17-WORKFLOW-AND-DESKTOP-AGENT.md) ·
-[Vision](../docs/18-VISION-AND-SCREEN.md) ·
-[Internet](../docs/19-INTERNET-AND-SERVICES.md) ·
-[Song Cover](../docs/15-SONG-COVER.md).
+[Source guide](../SOURCE_FILE_GUIDE.md) · [Desktop protocol](../desktop_protocol/README.md) · [IPC contracts](./electron/contracts.ts) · [Architecture decision](../docs/decisions/0001-desktop-shell.md) · [Documentation index](../docs/README.md)

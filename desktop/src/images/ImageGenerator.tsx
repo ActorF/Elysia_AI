@@ -4,12 +4,15 @@
  * sends structured descriptions and logical artifact/profile identifiers only.
  */
 
+import { t, useTranslation, getDateLocale } from '../i18n/LocaleProvider.tsx'
+import { formatUiError } from '../i18n/ui-error.ts'
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import type { ImagePreviewCapability, ImageSettingsSummary } from '../../electron/image-client.ts'
 import type { ImageArtifact, ImageGenerateParams, ImageGalleryListResult } from '../../electron/protocol.ts'
 import { MAX_IMAGE_PROMPT_COMPONENT_CODE_POINTS } from '../../electron/protocol.ts'
 import './ImageGenerator.css'
 import { Icon } from '../design-system/Icon.tsx'
+import { HelpHint } from '../design-system/HelpHint.tsx'
 
 interface ImageGeneratorProps {
   sidebarOpen?: boolean
@@ -31,6 +34,7 @@ const promptFields: Array<{ key: PromptField; label: string; placeholder: string
   { key: 'lighting', label: '光线', placeholder: '例如：温暖逆光' },
   { key: 'negativePrompt', label: '负面词', placeholder: '例如：模糊，畸形的手' },
 ]
+const sizePresetLabels: Record<string, string> = { square: 'Square', portrait: 'Portrait', landscape: 'Landscape' }
 const pageSize = 12
 const stageLabels: Record<string, string> = {
   validating: '检查生成描述', probing: '检查本地模型', submitting: '准备生成',
@@ -49,15 +53,16 @@ function errorText(error: unknown, fallback: string): string {
 
 function artifactTime(value: string): string {
   const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN')
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString(getDateLocale())
 }
 
 /** Generate the fixed adult Elysia character with chosen LoRAs and manage saved images. */
 export function ImageGenerator({ active = true, onOpenSettings, onToggleSidebar, sidebarOpen }: ImageGeneratorProps) {
+  useTranslation()
   const [settings, setSettings] = useState<ImageSettingsSummary | null>(null)
   const [settingsLoading, setSettingsLoading] = useState(active && window.elysiaDesktop !== undefined)
   const [settingsError, setSettingsError] = useState<string | null>(
-    window.elysiaDesktop === undefined ? '请在 Elysia 桌面应用中使用图片生成。' : null,
+    window.elysiaDesktop === undefined ? t("请在 Elysia 桌面应用中使用图片生成。") : null,
   )
   const [profileId, setProfileId] = useState('')
   const [sizePresetId, setSizePresetId] = useState('')
@@ -151,11 +156,11 @@ export function ImageGenerator({ active = true, onOpenSettings, onToggleSidebar,
         setProfileId(selection.current.profileId)
         setSizePresetId(size)
         setLoras(adapters)
-      } else setSettingsError(errorText(setup.reason, '无法读取本地图片设置。'))
+      } else setSettingsError(errorText(setup.reason, t("无法读取本地图片设置。")))
       if (imageRevision === galleryRevision.current) {
         if (images.status === 'fulfilled') setGallery(images.value)
         else if (setup.status === 'fulfilled' && setup.value.configured) {
-          setGalleryError(errorText(images.reason, '无法加载画廊。'))
+          setGalleryError(errorText(images.reason, t("无法加载画廊。")))
         }
         setGalleryLoading(false)
       }
@@ -183,7 +188,7 @@ export function ImageGenerator({ active = true, onOpenSettings, onToggleSidebar,
       setSizePresetId(size)
       setLoras(adapters)
     } catch (error) {
-      if (mounted.current) setSettingsError(errorText(error, '无法检查本地模型。'))
+      if (mounted.current) setSettingsError(errorText(error, t("无法检查本地模型。")))
     } finally {
       if (mounted.current) setSettingsLoading(false)
     }
@@ -199,7 +204,7 @@ export function ImageGenerator({ active = true, onOpenSettings, onToggleSidebar,
       const next = await api.getImageGallery({ limit: pageSize, offset })
       if (mounted.current && revision === galleryRevision.current) setGallery(next)
     } catch (error) {
-      if (mounted.current && revision === galleryRevision.current) setGalleryError(errorText(error, '无法加载画廊。'))
+      if (mounted.current && revision === galleryRevision.current) setGalleryError(errorText(error, t("无法加载画廊。")))
     } finally {
       if (mounted.current && revision === galleryRevision.current) setGalleryLoading(false)
     }
@@ -216,7 +221,7 @@ export function ImageGenerator({ active = true, onOpenSettings, onToggleSidebar,
       const next = await api.openImagePreview(artifactId)
       if (mounted.current && revision === previewRevision.current) setPreview(next)
     } catch (error) {
-      if (mounted.current && revision === previewRevision.current) setPreviewError(errorText(error, '无法打开图片预览。'))
+      if (mounted.current && revision === previewRevision.current) setPreviewError(errorText(error, t("无法打开图片预览。")))
     } finally {
       if (mounted.current && revision === previewRevision.current) setPreviewLoading(null)
     }
@@ -250,7 +255,7 @@ export function ImageGenerator({ active = true, onOpenSettings, onToggleSidebar,
         await openPreview(result.artifact.artifactId)
       }
     } catch (error) {
-      if (mounted.current) setGenerationError(errorText(error, '图片生成未完成，请检查模型后重试。'))
+      if (mounted.current) setGenerationError(errorText(error, t("图片生成未完成，请检查模型后重试。")))
     } finally {
       running.current = false
       progressRequestId.current = null
@@ -271,7 +276,7 @@ export function ImageGenerator({ active = true, onOpenSettings, onToggleSidebar,
       // Keep admission closed until the generation promise reaches terminal.
     } catch (error) {
       if (mounted.current) {
-        setGenerationError(errorText(error, '无法取消图片任务。'))
+        setGenerationError(errorText(error, t("无法取消图片任务。")))
         setCancelling(false)
       }
     }
@@ -286,7 +291,7 @@ export function ImageGenerator({ active = true, onOpenSettings, onToggleSidebar,
       const result = await api.exportImageArtifact(artifactId)
       if (mounted.current && result.exported) setNotice('图片已导出。')
     } catch (error) {
-      if (mounted.current) setGalleryError(errorText(error, '无法导出图片。'))
+      if (mounted.current) setGalleryError(errorText(error, t("无法导出图片。")))
     } finally {
       if (mounted.current) setArtifactBusy(null)
     }
@@ -308,7 +313,7 @@ export function ImageGenerator({ active = true, onOpenSettings, onToggleSidebar,
       const nextOffset = gallery?.items.length === 1 ? Math.max(0, (gallery?.offset ?? 0) - pageSize) : gallery?.offset ?? 0
       await loadGallery(nextOffset)
     } catch (error) {
-      if (mounted.current) setGalleryError(errorText(error, '无法删除图片。'))
+      if (mounted.current) setGalleryError(errorText(error, t("无法删除图片。")))
     } finally {
       if (mounted.current) setArtifactBusy(null)
     }
@@ -345,42 +350,43 @@ export function ImageGenerator({ active = true, onOpenSettings, onToggleSidebar,
     setSeed(String(crypto.getRandomValues(new Uint32Array(1))[0]))
   }
 
-  return <section className="image-generator" aria-label="图片生成器">
-    {onToggleSidebar && <div className="image-studio-navigation"><button type="button"
-      className="icon-button" aria-label="Open navigation" aria-expanded={sidebarOpen}
-      aria-controls="app-sidebar" onClick={onToggleSidebar}><Icon name="menu" /></button><span>图片生成</span></div>}
+  return <section className="image-generator" aria-label={t("图片生成器")}>
     <header className="image-generator-heading">
-      <div><h1>爱莉希雅</h1><p>{selectedProfile?.displayName ?? '本地图片生成'}</p></div>
+      <div className="image-studio-title">
+        {onToggleSidebar && <button type="button" className="icon-button"
+          aria-label={t("Open navigation")} aria-expanded={sidebarOpen}
+          aria-controls="app-sidebar" onClick={onToggleSidebar}><Icon name="menu" /></button>}
+        <div><h1>{t("爱莉希雅")}</h1><p>{selectedProfile?.displayName ?? t("本地图片生成")}</p></div>
+      </div>
       <div className="image-studio-tools">
-        <section className={`image-readiness ${settings?.ready ? 'is-ready' : ''}`} aria-label="图片运行环境">
+        <section className={`image-readiness ${settings?.ready ? 'is-ready' : ''}`} aria-label={t("图片运行环境")}>
           <span className="image-readiness-dot" aria-hidden="true" />
-          <strong>{settingsLoading ? '检查中…' : settings?.ready ? '模型已就绪' : settings ? readinessLabels[settings.state] : '无法读取模型'}</strong>
-          <button type="button" disabled={settingsLoading || generating} onClick={() => { void refreshSettings() }} aria-label="重新检查">↻</button>
+          <strong>{settingsLoading ? t("检查中…") : settings?.ready ? t("模型已就绪") : settings ? t(readinessLabels[settings.state]) : t("无法读取模型")}</strong>
+          <button type="button" disabled={settingsLoading || generating} onClick={() => { void refreshSettings() }} aria-label={t("重新检查")}>↻</button>
         </section>
-        {onOpenSettings && <button type="button" onClick={onOpenSettings} disabled={generating}>模型设置</button>}
+        {onOpenSettings && <button type="button" onClick={onOpenSettings} disabled={generating}>{t("模型设置")}</button>}
       </div>
     </header>
-    {settings && !settings.ready && <p className="image-runtime-message">{settings.message}</p>}
-    {settingsError && <p role="alert">{settingsError}</p>}
+    {settings && !settings.ready && <p className="image-runtime-message">{t(settings.message)}</p>}
+    {settingsError && <p role="alert">{formatUiError(settingsError)}</p>}
     <div className="image-studio-layout">
-      <form className="image-generation-form" aria-label="图片生成描述" onSubmit={(event) => { void generate(event) }}>
+      <form className="image-generation-form" aria-label={t("图片生成描述")} onSubmit={(event) => { void generate(event) }}>
         <fieldset disabled={generating || settingsLoading || !settings?.ready}>
-          <label className="image-scene-field"><span>画面描述</span>
-            <textarea aria-label="画面描述" value={prompts.scene} required rows={5}
-              placeholder="例如：爱莉希雅穿着白色长裙，站在黄昏的花园中，微笑着望向镜头。"
+          <label className="image-scene-field"><span>{t("画面描述")}</span>
+            <textarea aria-label={t("画面描述")} value={prompts.scene} required rows={5}
+              placeholder={t("例如：爱莉希雅穿着白色长裙，站在黄昏的花园中，微笑着望向镜头。")}
               maxLength={MAX_IMAGE_PROMPT_COMPONENT_CODE_POINTS}
               onChange={(event) => { setPrompts({ ...prompts, scene: event.currentTarget.value }) }} />
-            <small>固定角色：成年虚构爱莉希雅 · 粉色长发 · 紫色眼睛</small>
           </label>
           <div className="image-field-grid">
-            <label className="image-field-wide">尺寸<select aria-label="图片尺寸" value={sizePresetId} onChange={(event) => { selection.current.sizePresetId = event.currentTarget.value; setSizePresetId(event.currentTarget.value) }}>
-              {!selectedProfile && <option value="">请先选择模型</option>}
-              {selectedProfile?.sizePresets.map((preset) => <option key={preset.presetId} value={preset.presetId}>{preset.presetId} · {preset.width} × {preset.height}</option>)}
+            <label className="image-field-wide">{t("尺寸")}<select aria-label={t("图片尺寸")} value={sizePresetId} onChange={(event) => { selection.current.sizePresetId = event.currentTarget.value; setSizePresetId(event.currentTarget.value) }}>
+              {!selectedProfile && <option value="">{t("请先选择模型")}</option>}
+              {selectedProfile?.sizePresets.map((preset) => <option key={preset.presetId} value={preset.presetId}>{t(sizePresetLabels[preset.presetId] ?? preset.presetId)} · {preset.width} × {preset.height}</option>)}
             </select></label>
           </div>
-          <section className="image-lora-options" aria-label="LoRA 选择">
-            <div className="image-lora-heading"><h2>LoRA</h2><span>{loras.length ? `已选 ${loras.length} / 4` : '不使用 LoRA'}</span></div>
-            {!selectedProfile?.loras?.length && <p>尚未导入 LoRA，可在模型设置中添加。</p>}
+          <section className="image-lora-options" aria-label={t("LoRA 选择")}>
+            <div className="image-lora-heading"><h2>{t("LoRA")}</h2><span>{loras.length ? t("已选 {length} / 4", { length: loras.length }) : t("不使用 LoRA")}</span></div>
+            {!selectedProfile?.loras?.length && <p>{t("尚未导入 LoRA，可在模型设置中添加。")}</p>}
             {selectedProfile?.loras?.map((lora) => {
               const selected = loras.find((value) => value.loraId === lora.loraId)
               return <div className={`image-lora-card ${selected ? 'is-selected' : ''}`} key={lora.loraId}>
@@ -388,71 +394,71 @@ export function ImageGenerator({ active = true, onOpenSettings, onToggleSidebar,
                   disabled={!lora.available || (!selected && loras.length >= 4)}
                   onChange={(event) => { chooseLora(lora.loraId, event.currentTarget.checked) }} />
                   <span>{lora.displayName}</span></label>
-                {!lora.available && <small>{lora.message}</small>}
-                {selected && <label className="image-lora-strength">强度<input type="number" min="0" max="2" step="any"
-                  aria-label={`${lora.displayName} 强度`} value={selected.strength} aria-invalid={!strengthValid(selected.strength)}
+                {!lora.available && <small>{t(lora.message)}</small>}
+                {selected && <label className="image-lora-strength">{t("强度")}<input type="number" min="0" max="2" step="any"
+                  aria-label={t("{displayName} 强度", { displayName: lora.displayName })} value={selected.strength} aria-invalid={!strengthValid(selected.strength)}
                   onChange={(event) => { changeStrength(lora.loraId, event.currentTarget.value) }} /></label>}
-                {selected && !strengthValid(selected.strength) && <small className="image-field-error">请输入 0 至 2 的数值。</small>}
+                {selected && !strengthValid(selected.strength) && <small className="image-field-error">{t("请输入 0 至 2 的数值。")}</small>}
               </div>
             })}
           </section>
-          <details className="image-advanced"><summary>更多参数</summary><div className="image-field-grid">
-            {(settings?.profiles.length ?? 0) > 1 && <label className="image-field-wide">模型<select aria-label="图片模型" value={profileId}
+          <details className="image-advanced"><summary>{t("更多参数")}</summary><div className="image-field-grid">
+            {(settings?.profiles.length ?? 0) > 1 && <label className="image-field-wide">{t("模型")}<select aria-label={t("图片模型")} value={profileId}
               onChange={(event) => { chooseProfile(event.currentTarget.value) }}>
               {settings?.profiles.map((profile) => <option key={profile.profileId} value={profile.profileId}>{profile.displayName}</option>)}
             </select></label>}
             {promptFields.map((field) => <label className={field.key === 'negativePrompt' ? 'image-field-wide' : ''} key={field.key}>
-              <span>{field.label}</span><input aria-label={field.label} value={prompts[field.key]} placeholder={field.placeholder}
+              <span>{t(field.label)}</span><input aria-label={t(field.label)} value={prompts[field.key]} placeholder={t(field.placeholder)}
                 maxLength={MAX_IMAGE_PROMPT_COMPONENT_CODE_POINTS}
                 onChange={(event) => { setPrompts({ ...prompts, [field.key]: event.currentTarget.value }) }} />
             </label>)}
-            <label className="image-field-wide">Seed<div className="image-seed-control">
-              <input aria-label="Seed" inputMode="numeric" value={seed} pattern="[0-9]+" aria-invalid={!seedValid}
+            <label className="image-field-wide">{t("Seed")}<div className="image-seed-control">
+              <input aria-label={t("Seed")} inputMode="numeric" value={seed} pattern="[0-9]+" aria-invalid={!seedValid}
                 onChange={(event) => { setSeed(event.currentTarget.value) }} />
-              <button type="button" onClick={randomizeSeed}>随机 Seed</button></div>
-              {!seedValid && <span className="image-field-error">请输入 0 至 9007199254740991 的整数。</span>}
-              <small>保留相同 Seed 与描述，便于再次生成。</small>
+              <button type="button" onClick={randomizeSeed}>{t("随机 Seed")}</button></div>
+              {!seedValid && <span className="image-field-error">{t("请输入 0 至 9007199254740991 的整数。")}</span>}
+              <HelpHint label={t("Seed")}>{t("保留相同 Seed 与描述，便于再次生成。")}</HelpHint>
             </label>
           </div></details>
         </fieldset>
         <div className="image-generation-actions">
-          <button type="submit" className="image-primary" disabled={!canGenerate}>{generating ? '正在生成…' : '生成图片'}</button>
-          {generating && <button type="button" onClick={() => { void cancel() }} disabled={cancelling}>{cancelling ? '取消中…' : '取消生成'}</button>}
+          <button type="submit" className="image-primary" disabled={!canGenerate}>{generating ? t("正在生成…") : t("生成图片")}</button>
+          {generating && <button type="button" onClick={() => { void cancel() }} disabled={cancelling}>{cancelling ? t("取消中…") : t("取消生成")}</button>}
         </div>
-        {generating && <div className="image-progress"><div><span>{cancelling ? '正在停止本地图片任务…' : stageLabels[progress.stage] ?? '正在准备图片任务…'}</span><span>{progress.completed}%</span></div>
-          <progress max={100} value={progress.completed} aria-label="图片生成进度" />
-          <p>进度按实际阶段更新，生成阶段可能需要较长时间。</p></div>}
-        {generationError && <p role="alert">{generationError}</p>}
-        {notice && <p role="status" className="image-notice">{notice}</p>}
+        {generating && <div className="image-progress"><div><span>{cancelling ? t("正在停止本地图片任务…") : t(stageLabels[progress.stage] ?? "正在准备图片任务…")}</span><span>{progress.completed}%</span></div>
+          <progress max={100} value={progress.completed} aria-label={t("图片生成进度")} />
+          <HelpHint label={t("图片生成进度")}>{t("进度按实际阶段更新，生成阶段可能需要较长时间。")}</HelpHint></div>}
+        {generationError && <p role="alert">{formatUiError(generationError)}</p>}
+        {notice && <p role="status" className="image-notice">{t(notice)}</p>}
       </form>
-      <section className="image-gallery" aria-label="图片画廊">
-        <div className="image-gallery-heading"><div><h2>画廊</h2><p>你的生成作品，保存在本机。</p></div>
-          <button type="button" disabled={galleryLoading} onClick={() => { void loadGallery(gallery?.offset ?? 0) }}>刷新画廊</button></div>
-        {previewLoading && <p role="status">正在打开预览…</p>}
-        {previewError && <p role="alert">{previewError}</p>}
-        {preview && <figure className="image-preview"><img src={preview.url} width={preview.width} height={preview.height} alt="生成图片预览"
+      <section className="image-gallery" aria-label={t("图片画廊")}>
+        <div className="image-gallery-heading"><div><h2>{t("画廊")} <HelpHint label={t("图片画廊")}>{t("你的生成作品，保存在本机。")}</HelpHint></h2></div>
+          <button type="button" disabled={galleryLoading} onClick={() => { void loadGallery(gallery?.offset ?? 0) }}>{t("刷新画廊")}</button></div>
+        {previewLoading && <p role="status">{t("正在打开预览…")}</p>}
+        {previewError && <p role="alert">{formatUiError(previewError)}</p>}
+        {preview && <figure className="image-preview"><img src={preview.url} width={preview.width} height={preview.height} alt={t("生成图片预览")}
           onError={() => { setPreview(null); setPreviewError('预览已失效，请重新打开图片。') }} />
-          <figcaption>{preview.width} × {preview.height}<button type="button" onClick={() => { ++previewRevision.current; setPreview(null) }}>关闭预览</button></figcaption></figure>}
-        {galleryLoading && <p className="image-empty" role="status">正在加载画廊…</p>}
-        {galleryError && <p role="alert">{galleryError}</p>}
-        {!galleryLoading && !gallery?.items.length && <div className="image-empty"><span aria-hidden="true">✧</span><strong>从第一张作品开始</strong><p>完成生成后，图片会出现在这里。</p></div>}
-        <div className="image-artifact-grid">{gallery?.items.map((artifact: ImageArtifact) => <article className="image-artifact" key={artifact.artifactId} aria-label={`图片 Seed ${artifact.seed}`}>
+          <figcaption>{preview.width} × {preview.height}<button type="button" onClick={() => { ++previewRevision.current; setPreview(null) }}>{t("关闭预览")}</button></figcaption></figure>}
+        {galleryLoading && <p className="image-empty" role="status">{t("正在加载画廊…")}</p>}
+        {galleryError && <p role="alert">{formatUiError(galleryError)}</p>}
+        {!galleryLoading && !gallery?.items.length && <div className="image-empty"><strong>{t("从第一张作品开始")}</strong><p>{t("完成生成后，图片会出现在这里。")}</p></div>}
+        <div className="image-artifact-grid">{gallery?.items.map((artifact: ImageArtifact) => <article className="image-artifact" key={artifact.artifactId} aria-label={t("图片 Seed {seed}", { seed: artifact.seed })}>
           <button className="image-artifact-open" type="button" disabled={previewLoading === artifact.artifactId || artifactBusy !== null}
-            onClick={() => { void openPreview(artifact.artifactId) }} aria-label={`预览图片 Seed ${artifact.seed}`}>
-            <span aria-hidden="true">✧</span><span>{artifact.width} × {artifact.height}</span><span>打开预览</span></button>
-          <div className="image-artifact-meta"><strong>Seed {artifact.seed}</strong><time dateTime={artifact.createdAt}>{artifactTime(artifact.createdAt)}</time>
-            <span>{settings?.profiles.find((profile) => profile.profileId === artifact.profileId)?.displayName ?? '本地生成'}</span></div>
-          <div className="image-artifact-actions"><button type="button" disabled={artifactBusy !== null} onClick={() => { void exportArtifact(artifact.artifactId) }}>导出</button>
-            <button type="button" disabled={artifactBusy !== null} onClick={() => { setDeleteCandidate(artifact.artifactId) }}>删除</button></div>
-          {deleteCandidate === artifact.artifactId && <section className="image-delete-confirmation" role="alertdialog" aria-label="确认删除图片">
-            <p>从画廊永久删除这张图片？已导出的副本会保留。</p><div>
-              <button type="button" disabled={artifactBusy !== null} onClick={() => { setDeleteCandidate(null) }}>保留图片</button>
-              <button type="button" className="image-danger" disabled={artifactBusy !== null} onClick={() => { void deleteArtifact(artifact.artifactId) }}>确认删除</button>
+            onClick={() => { void openPreview(artifact.artifactId) }} aria-label={t("预览图片 Seed {seed}", { seed: artifact.seed })}>
+            <span>{artifact.width} × {artifact.height}</span><span>{t("打开预览")}</span></button>
+          <div className="image-artifact-meta"><strong>{t("Seed ")}{artifact.seed}</strong><time dateTime={artifact.createdAt}>{artifactTime(artifact.createdAt)}</time>
+            <span>{settings?.profiles.find((profile) => profile.profileId === artifact.profileId)?.displayName ?? t("本地生成")}</span></div>
+          <div className="image-artifact-actions"><button type="button" disabled={artifactBusy !== null} onClick={() => { void exportArtifact(artifact.artifactId) }}>{t("导出")}</button>
+            <button type="button" disabled={artifactBusy !== null} onClick={() => { setDeleteCandidate(artifact.artifactId) }}>{t("Delete")}</button></div>
+          {deleteCandidate === artifact.artifactId && <section className="image-delete-confirmation" role="alertdialog" aria-label={t("确认删除图片")}>
+            <p>{t("从画廊永久删除这张图片？已导出的副本会保留。")}</p><div>
+              <button type="button" disabled={artifactBusy !== null} onClick={() => { setDeleteCandidate(null) }}>{t("保留图片")}</button>
+              <button type="button" className="image-danger" disabled={artifactBusy !== null} onClick={() => { void deleteArtifact(artifact.artifactId) }}>{t("确认删除")}</button>
             </div></section>}
         </article>)}</div>
-        {gallery && (gallery.offset > 0 || gallery.hasMore) && <nav className="image-gallery-pagination" aria-label="画廊分页">
-          <button type="button" disabled={galleryLoading || gallery.offset === 0} onClick={() => { void loadGallery(Math.max(0, gallery.offset - pageSize)) }}>上一页</button>
-          <span>第 {Math.floor(gallery.offset / pageSize) + 1} 页</span><button type="button" disabled={galleryLoading || !gallery.hasMore} onClick={() => { void loadGallery(gallery.offset + pageSize) }}>下一页</button>
+        {gallery && (gallery.offset > 0 || gallery.hasMore) && <nav className="image-gallery-pagination" aria-label={t("画廊分页")}>
+          <button type="button" disabled={galleryLoading || gallery.offset === 0} onClick={() => { void loadGallery(Math.max(0, gallery.offset - pageSize)) }}>{t("上一页")}</button>
+          <span>{t("Page {page}", { page: Math.floor(gallery.offset / pageSize) + 1 })}</span><button type="button" disabled={galleryLoading || !gallery.hasMore} onClick={() => { void loadGallery(gallery.offset + pageSize) }}>{t("下一页")}</button>
         </nav>}
       </section>
     </div>

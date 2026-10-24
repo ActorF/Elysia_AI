@@ -1,0 +1,105 @@
+# Build a verified self-contained Windows installer; tagged builds become draft releases.
+name: Windows release
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  windows-installer:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-runtime.txt
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Install Python dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Install desktop dependencies
+        run: npm ci --prefix desktop
+      - name: Audit desktop dependency vulnerabilities
+        run: npm audit --audit-level=high --prefix desktop
+      - name: Verify tag matches installer version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          $version = (Get-Content desktop/package.json -Raw | ConvertFrom-Json).version
+          if ($env:GITHUB_REF_NAME -ne "v$version") { throw 'Tag must match desktop/package.json version.' }
+      - name: Check Python documentation
+        run: python scripts/check_python_documentation.py
+      - name: Check distribution boundary
+        run: python scripts/check_distribution_assets.py
+      - name: Test Python
+        run: python -m pytest -q
+      - name: Check desktop documentation
+        run: npm run docs:check --prefix desktop
+      - name: Lint desktop
+        run: npm run lint --prefix desktop
+      - name: Check desktop types
+        run: npm run typecheck --prefix desktop
+      - name: Test desktop contracts
+        run: npm run test:contract --prefix desktop
+      - name: Test desktop interface
+        run: npm run test:ui --prefix desktop
+      - name: Build installer and exercise the packaged backend and EXE
+        working-directory: desktop
+        run: npm run make
+      - name: List application archive
+        working-directory: desktop
+        run: npx --no-install asar list out/win-unpacked/resources/app.asar > out/asar-listing.txt
+      - name: Extract application archive for audit
+        working-directory: desktop
+        run: npx --no-install asar extract out/win-unpacked/resources/app.asar out/asar-audit
+      - name: Audit packaged resources and archive
+        run: >-
+          python scripts/check_distribution_assets.py --unpacked-tree desktop/out/win-unpacked
+          --asar-listing desktop/out/asar-listing.txt --extracted-asar-tree desktop/out/asar-audit
+      - name: Record installer checksums
+        run: |
+          $checksums = Get-ChildItem desktop/out/Elysia-Setup-*.exe | ForEach-Object {
+            $digest = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$digest  $($_.Name)"
+          }
+          $checksums | Set-Content desktop/out/SHA256SUMS.txt -Encoding ascii
+      - name: Save reviewable installer artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: Elysia-windows-installer
+          if-no-files-found: error
+          path: |
+            desktop/out/Elysia-Setup-*.exe
+            desktop/out/SHA256SUMS.txt
+            desktop/out/packaged-first-launch.png
+      - name: Create draft GitHub release for a version tag
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $releaseAssets = @((Get-ChildItem -LiteralPath desktop/out -Filter 'Elysia-Setup-*.exe').FullName)
+          if ($releaseAssets.Count -ne 1) { throw 'Expected exactly one verified installer.' }
+          # A locally verified installer may already have been published. Keep
+          # that release and its checksums intact when CI verifies the same tag.
+          $releaseTags = @(gh api --paginate "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" --jq '.[].tag_name')
+          if ($LASTEXITCODE -ne 0) { throw 'Could not inspect existing releases.' }
+          if ($releaseTags -contains $env:GITHUB_REF_NAME) {
+            Write-Host 'Release already exists; preserving its reviewed assets.'
+            exit 0
+          }
+          gh release create "$env:GITHUB_REF_NAME" @releaseAssets desktop/out/SHA256SUMS.txt --verify-tag --draft --generate-notes

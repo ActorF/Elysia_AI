@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import test from 'node:test'
+import { localOllamaTarget } from '../dist-electron/local-ollama-origin.js'
 
 import {
   OLLAMA_GPU_MAX_RESPONSE_BYTES,
@@ -19,10 +20,10 @@ function json(response, value, headers = {}) {
   response.end(JSON.stringify(value))
 }
 
-async function withServer(handler, run) {
+async function withServer(handler, run, hostname = '127.0.0.1') {
   const server = createServer(handler)
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
-  const origin = `http://127.0.0.1:${server.address().port}`
+  await new Promise((resolve) => server.listen(0, hostname, resolve))
+  const origin = `http://${hostname}:${server.address().port}`
   try { await run(origin, server) }
   finally {
     server.closeAllConnections()
@@ -35,6 +36,23 @@ async function body(request) {
   for await (const piece of request) chunks.push(piece)
   return JSON.parse(Buffer.concat(chunks).toString('utf8'))
 }
+
+test('all consumers share canonical loopback targets without allowing numeric aliases or URL extras', () => {
+  for (const [origin, hostname, port] of [
+    ['http://localhost:11434/', '127.0.0.1', 11434],
+    ['http://127.0.0.2:11435', '127.0.0.2', 11435],
+    ['http://127.255.255.255', '127.255.255.255', 80],
+    ['http://[::1]:11434', '::1', 11434],
+    ['http://[0:0:0:0:0:0:0:1]:11434', '::1', 11434],
+  ]) assert.deepEqual(localOllamaTarget(origin), { hostname, port })
+  for (const origin of [
+    'http://127.1:11434', 'http://127.00.0.1:11434', 'http://127.0.0.256:11434',
+    'http://localhost:11434?private', 'http://localhost:11434#private',
+    'http://localhost:11434\\private', 'http://localhost:11434\n',
+    'http://[::ffff:127.0.0.1]:11434', 'http://[::2]:11434',
+    'http://localhost:0', 'http://localhost:65536',
+  ]) assert.throws(() => localOllamaTarget(origin), TypeError)
+})
 
 test('GPU models are unloaded once and confirmed absent while CPU-only models remain untouched', async () => {
   const posts = []
@@ -88,6 +106,15 @@ test('a literal localhost origin bypasses DNS proxies and ambient daemon credent
   }
 })
 
+test('a different 127/8 loopback address is preserved when probing the configured daemon', async () => {
+  let requests = 0
+  await withServer((_request, response) => {
+    requests += 1
+    json(response, { models: [] })
+  }, async origin => { await quiesceOllama(origin) }, '127.0.0.2')
+  assert.equal(requests, 1)
+})
+
 test('an initially refused connection means there is no listening resident daemon', async () => {
   let origin
   await withServer((_request, response) => json(response, { models: [] }), async (value) => { origin = value })
@@ -106,7 +133,7 @@ test('refusal after observing GPU residency fails closed instead of claiming cle
 
 for (const origin of [
   'https://127.0.0.1:11434', 'http://example.com:11434', 'http://127.1:11434',
-  'http://2130706433:11434', 'http://0x7f000001:11434', 'http://127.0.0.2:11434',
+  'http://2130706433:11434', 'http://0x7f000001:11434', 'http://128.0.0.1:11434',
   'http://user:private@127.0.0.1:11434', 'http://127.0.0.1:11434/path',
   'http://127.0.0.1:11434?query=1', 'http://127.0.0.1:11434#fragment',
   ' http://127.0.0.1:11434', 'http://127.0.0.1:0', 'http://127.0.0.1:65536',

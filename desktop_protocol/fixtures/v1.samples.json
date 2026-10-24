@@ -5,6 +5,103 @@
   },
   "validClientMessages": [
     {
+      "name": "read saved name",
+      "message": {
+        "type": "request",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "profile-fixture",
+        "method": "profile.get",
+        "params": {}
+      }
+    },
+    {
+      "name": "rename legacy profile",
+      "message": {
+        "type": "request",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "profile-fixture",
+        "method": "profile.update",
+        "params": {
+          "expectedUserName": "Ying",
+          "userName": "小星 ✨"
+        }
+      }
+    },
+    {
+      "name": "rename empty legacy profile",
+      "message": {
+        "type": "request",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "profile-fixture",
+        "method": "profile.update",
+        "params": {
+          "expectedUserName": "",
+          "userName": "星"
+        }
+      }
+    },
+    {
+      "name": "Work full permission",
+      "message": {
+        "type": "request",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "Work-full",
+        "method": "chat.stream",
+        "params": {
+          "chatId": "chat_fixture",
+          "message": "调低音量",
+          "speakReply": false,
+          "workOptions": {
+            "thinking": "deep",
+            "permission": "full"
+          }
+        }
+      }
+    },
+    {
+      "name": "Work CMD receipt",
+      "message": {
+        "type": "request",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "Work-command-result",
+        "method": "chat.work.resolve",
+        "params": {
+          "requestId": "work-generation",
+          "chatId": "chat_fixture",
+          "callId": "work_call_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "result": {
+            "status": "succeeded",
+            "text": "CMD exited with code 0.",
+            "error": null,
+            "command": {
+              "command": "ver",
+              "cwd": "C:\\Users",
+              "stdout": "Microsoft Windows\r\n",
+              "stderr": "",
+              "exitCode": 0,
+              "termination": "exit",
+              "truncated": false
+            }
+          }
+        }
+      }
+    },
+    {
       "name": "Work options",
       "message": {
         "type": "request",
@@ -1093,6 +1190,60 @@
   ],
   "validServerMessages": [
     {
+      "name": "saved profile name",
+      "message": {
+        "type": "response",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "profile-fixture",
+        "ok": true,
+        "result": {
+          "kind": "profile",
+          "userName": "小星 ✨"
+        }
+      }
+    },
+    {
+      "name": "empty legacy profile name",
+      "message": {
+        "type": "response",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "profile-fixture",
+        "ok": true,
+        "result": {
+          "kind": "profile",
+          "userName": ""
+        }
+      }
+    },
+    {
+      "name": "Work CMD request",
+      "message": {
+        "type": "event",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "requestId": "work-generation",
+        "event": "chat.work.request",
+        "data": {
+          "chatId": "chat_fixture",
+          "callId": "work_call_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tool": "run_command",
+          "arguments": {
+            "command": "ver",
+            "cwd": "C:\\Users",
+            "timeoutMs": 30000
+          }
+        }
+      }
+    },
+    {
       "name": "chat.work.request",
       "message": {
         "type": "event",
@@ -1162,6 +1313,33 @@
           "query": "public research",
           "language": "en"
         }
+      }
+    },
+    {
+      "name": "weather Internet request event",
+      "message": {
+        "type": "event",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "event": "chat.internet.request",
+        "requestId": "chat-weather-1",
+        "data": {
+          "chatId": "chat_fixture",
+          "searchId": "internet_search_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "query": "Shanghai",
+          "language": "en",
+          "kind": "weather",
+          "when": "tomorrow"
+        }
+      }
+    },
+    {
+      "name": "automatic research phase event",
+      "message": {
+        "type": "event",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "event": "chat.research.status",
+        "requestId": "chat-weather-1",
+        "data": { "chatId": "chat_fixture", "stage": "weather" }
       }
     },
     {
@@ -4272,6 +4450,164 @@
   ],
   "invalidClientMessages": [
     {
+      "name": "name edit rejects blank",
+      "message": {
+        "type": "request",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "profile-fixture",
+        "method": "profile.update",
+        "params": {
+          "expectedUserName": "User",
+          "userName": ""
+        }
+      }
+    },
+    {
+      "name": "name edit rejects newline",
+      "message": {
+        "type": "request",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "profile-fixture",
+        "method": "profile.update",
+        "params": {
+          "expectedUserName": "User",
+          "userName": "New\nname"
+        }
+      }
+    },
+    {
+      "name": "name edit rejects unrelated profile fields",
+      "message": {
+        "type": "request",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "profile-fixture",
+        "method": "profile.update",
+        "params": {
+          "expectedUserName": "User",
+          "userName": "New",
+          "launchCount": 0
+        }
+      }
+    },
+    {
+      "name": "name edit rejects overlength",
+      "message": {
+        "type": "request",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "profile-fixture",
+        "method": "profile.update",
+        "params": {
+          "expectedUserName": "User",
+          "userName": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        }
+      }
+    },
+    {
+      "name": "Work CMD receipt rejects UNC current directory",
+      "message": {
+        "type": "request",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "Work-command-result",
+        "method": "chat.work.resolve",
+        "params": {
+          "requestId": "work-generation",
+          "chatId": "chat_fixture",
+          "callId": "work_call_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "result": {
+            "status": "succeeded",
+            "text": "CMD exited with code 0.",
+            "error": null,
+            "command": {
+              "command": "ver",
+              "cwd": "\\\\server\\share",
+              "stdout": "Microsoft Windows\r\n",
+              "stderr": "",
+              "exitCode": 0,
+              "termination": "exit",
+              "truncated": false
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "Work CMD receipt rejects multiline command",
+      "message": {
+        "type": "request",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "Work-command-result",
+        "method": "chat.work.resolve",
+        "params": {
+          "requestId": "work-generation",
+          "chatId": "chat_fixture",
+          "callId": "work_call_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "result": {
+            "status": "succeeded",
+            "text": "CMD exited with code 0.",
+            "error": null,
+            "command": {
+              "command": "echo first\r\necho second",
+              "cwd": "C:\\Users",
+              "stdout": "Microsoft Windows\r\n",
+              "stderr": "",
+              "exitCode": 0,
+              "termination": "exit",
+              "truncated": false
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "Work CMD success contradicts exit code",
+      "message": {
+        "type": "request",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "Work-command-result",
+        "method": "chat.work.resolve",
+        "params": {
+          "requestId": "work-generation",
+          "chatId": "chat_fixture",
+          "callId": "work_call_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "result": {
+            "status": "succeeded",
+            "text": "CMD exited with code 0.",
+            "error": null,
+            "command": {
+              "command": "ver",
+              "cwd": "C:\\Users",
+              "stdout": "Microsoft Windows\r\n",
+              "stderr": "",
+              "exitCode": 1,
+              "termination": "exit",
+              "truncated": false
+            }
+          }
+        }
+      }
+    },
+    {
       "name": "Work rejects elevated permission",
       "message": {
         "type": "request",
@@ -5498,6 +5834,89 @@
     }
   ],
   "invalidServerMessages": [
+    {
+      "name": "profile result rejects private fields",
+      "message": {
+        "type": "response",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "profile-fixture",
+        "ok": true,
+        "result": {
+          "kind": "profile",
+          "userName": "Name",
+          "project": "private"
+        }
+      }
+    },
+    {
+      "name": "Work CMD request rejects UNC current directory",
+      "message": {
+        "type": "event",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "requestId": "work-generation",
+        "event": "chat.work.request",
+        "data": {
+          "chatId": "chat_fixture",
+          "callId": "work_call_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tool": "run_command",
+          "arguments": {
+            "command": "ver",
+            "cwd": "\\\\server\\share",
+            "timeoutMs": 30000
+          }
+        }
+      }
+    },
+    {
+      "name": "Work CMD request rejects multiline command",
+      "message": {
+        "type": "event",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "requestId": "work-generation",
+        "event": "chat.work.request",
+        "data": {
+          "chatId": "chat_fixture",
+          "callId": "work_call_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tool": "run_command",
+          "arguments": {
+            "command": "echo first\necho second",
+            "cwd": "C:\\Users",
+            "timeoutMs": 30000
+          }
+        }
+      }
+    },
+    {
+      "name": "Work CMD rejects relative directory",
+      "message": {
+        "type": "event",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "requestId": "work-generation",
+        "event": "chat.work.request",
+        "data": {
+          "chatId": "chat_fixture",
+          "callId": "work_call_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "tool": "run_command",
+          "arguments": {
+            "command": "ver",
+            "cwd": "relative",
+            "timeoutMs": 30000
+          }
+        }
+      }
+    },
     {
       "name": "Work rejects out of range volume",
       "message": {

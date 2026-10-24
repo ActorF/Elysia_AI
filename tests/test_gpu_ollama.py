@@ -67,7 +67,7 @@ class _Sdk:
         self.events.append("invoke")
         if self.error:
             raise ConnectError("private HTTP detail")
-        return AIMessage(content="Local answer.")
+        return AIMessage(content="Local answer.", response_metadata={"done": True, "done_reason": "stop"})
 
     def stream(self, messages: object, **options: object) -> Iterator[AIMessageChunk]:
         """Retain an observable stream owner through exhaustion or explicit close."""
@@ -84,6 +84,7 @@ class _Sdk:
             if self.error:
                 raise ConnectError("private HTTP detail")
             yield AIMessageChunk(content=" answer.")
+            yield AIMessageChunk(content="", response_metadata={"done": True, "done_reason": "stop"})
         finally:
             self.events.append("http-close")
 
@@ -115,7 +116,7 @@ def test_direct_generation_including_hidden_calls_holds_gpu_for_http(monkeypatch
         assert payload is not None and payload["keep_alive"] == 0
         assert events == ["grant"]
         events.append("http")
-        return {"message": {"content": "Answer."}}
+        return {"message": {"content": "Answer."}, "done": True, "done_reason": "stop"}
 
     monkeypatch.setattr(direct_model.OllamaChatModel, "_request_json", _request)
     model = direct_model.OllamaChatModel("fixture:latest", "http://127.0.0.1:11434")
@@ -168,7 +169,7 @@ def test_desktop_localhost_request_uses_the_literal_ipv4_loopback_endpoint(
 
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             requests.append((self.path, self.headers["Host"], body))
-            payload = b'{"message":{"content":"Local endpoint."}}'
+            payload = b'{"message":{"content":"Local endpoint."},"done":true,"done_reason":"stop"}'
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(payload)))
@@ -206,7 +207,7 @@ def test_direct_work_inference_uses_same_admission_and_zero_residency(monkeypatc
     def _request(self: object, method: str, route: str, payload: dict[str, object] | None = None) -> dict[str, object]:
         assert payload is not None and payload["think"] is True and payload["keep_alive"] == 0
         events.append("http")
-        return {"message": {"content": "Work answer."}}
+        return {"message": {"content": "Work answer."}, "done": True, "done_reason": "stop"}
 
     monkeypatch.setattr(direct_model.OllamaChatModel, "_request_json", _request)
     model = direct_model.OllamaChatModel("fixture:latest", "http://127.0.0.1:11434")
@@ -224,7 +225,7 @@ def test_direct_legacy_payload_and_availability_probe_do_not_acquire_gpu(monkeyp
         if route == "/api/tags":
             return {"models": [{"name": "fixture:latest"}]}
         assert payload is not None and "keep_alive" not in payload
-        return {"message": {"content": "Answer."}}
+        return {"message": {"content": "Answer."}, "done": True, "done_reason": "stop"}
 
     monkeypatch.setattr(direct_model.OllamaChatModel, "_request_json", _request)
     model = direct_model.OllamaChatModel("fixture:latest", "http://127.0.0.1:11434")

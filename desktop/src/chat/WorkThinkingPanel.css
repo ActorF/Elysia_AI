@@ -1,23 +1,57 @@
-/* Keep factual Work activity and audited file changes quiet, unboxed, and readable inside the conversation. */
+/* Keep factual Work activity compact, with optional stage summaries and bordered audit cards in Elysia's palette. */
 
 .work-thinking-panel,
-.work-file-changes { width: 100%; min-width: 0; color: var(--color-text-secondary); font-size: var(--font-size-sm); }
-.work-activity-current { display: flex; align-items: center; gap: .55rem; min-width: 0; min-height: 1.8rem; }
+.work-file-changes { width: 100%; min-width: 0; color: var(--color-text-secondary); font-size: var(--font-size-md); }
+.work-activity-current { display: flex; align-items: baseline; flex-wrap: wrap; gap: var(--space-2); min-width: 0; min-height: var(--control-height-sm); line-height: var(--line-height-relaxed); }
 .work-activity-current > svg,
-.work-file-changes li > svg { flex: 0 0 1rem; width: 1rem; height: 1rem; color: var(--color-text-muted); }
+.work-file-changes li > svg { flex: 0 0 var(--icon-size-sm); width: var(--icon-size-sm); height: var(--icon-size-sm); color: var(--color-text-muted); }
+.work-activity-current > svg { align-self: center; }
 .work-activity-status { flex: 0 0 auto; }
-.work-activity-step { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--color-text-muted); }
-.work-activity-dot { flex: 0 0 .4rem; width: .4rem; height: .4rem; margin: 0 .3rem; border-radius: 50%; background: var(--color-accent-secondary); animation: work-activity-pulse 1.6s ease-in-out infinite; }
-.work-activity-results { display: grid; gap: .35rem; margin: .35rem 0 0; padding: 0 0 0 1.55rem; list-style: none; }
-.work-activity-results li { display: flex; gap: .5rem; align-items: baseline; }
+/* Tool output may include an unbroken path; wrapping preserves the actual step
+   on narrow screens instead of requiring a hover to read a truncated label. */
+.work-activity-step { flex: 1 1 12rem; min-width: 0; overflow-wrap: anywhere; color: var(--color-text-muted); }
+.work-activity-dot { flex: 0 0 var(--space-1); align-self: center; width: var(--space-1); height: var(--space-1); margin-inline: var(--space-1); border-radius: var(--radius-full); background: var(--color-accent); animation: work-activity-pulse 1.6s ease-in-out infinite; }
+.work-thoughts { position: relative; min-width: 0; margin-top: var(--space-2); }
+.work-thoughts > .help-hint { position: absolute; top: 0; right: 0; margin: 0; }
+.work-thoughts-disclosure > summary { display: flex; align-items: center; gap: var(--space-2); min-height: 1.5rem; padding-inline-end: 2rem; color: var(--color-text-muted); font-size: var(--font-size-sm); cursor: pointer; list-style: none; }
+.work-thoughts-disclosure > summary::-webkit-details-marker { display: none; }
+.work-thoughts-disclosure > summary > svg { flex: none; width: var(--icon-size-sm); height: var(--icon-size-sm); }
+.work-thoughts-disclosure > summary::after { content: '›'; margin-inline-start: var(--space-1); font-size: var(--font-size-lg); line-height: 1; transition: transform 120ms ease; }
+.work-thoughts-disclosure[open] > summary::after { transform: rotate(90deg); }
+.work-thoughts-stages { display: grid; gap: var(--space-3); margin: var(--space-3) 0 0 var(--space-2); padding: 0 0 0 var(--space-4); border-inline-start: 1px solid var(--color-border); list-style: none; }
+.work-thoughts-stage { min-width: 0; font-size: var(--font-size-sm); line-height: var(--line-height-relaxed); }
+.work-thoughts-stage summary { cursor: pointer; color: var(--color-text-secondary); overflow-wrap: anywhere; }
+.work-thoughts-stage p { margin: var(--space-2) 0 0; color: var(--color-text-muted); overflow-wrap: anywhere; white-space: pre-wrap; }
+.work-thoughts summary:focus-visible,
+.work-file-more > summary:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-ring-offset); border-radius: var(--radius-sm); }
+.work-activity-results { display: grid; gap: var(--space-2); margin: var(--space-2) 0 0; padding: 0 0 0 var(--space-6); list-style: none; }
+.work-activity-results li { display: flex; gap: var(--space-2); align-items: baseline; min-width: 0; }
 .work-activity-results li > span { color: var(--color-text-muted); }
-.work-activity-results p { margin: 0; line-height: 1.6; overflow-wrap: anywhere; }
-.work-file-changes { margin-top: 1.1rem; }
-.work-file-changes h3 { margin: 0 0 .45rem; color: var(--color-text-muted); font-size: var(--font-size-xs); font-weight: 500; }
-.work-file-changes ul { display: grid; gap: .1rem; margin: 0; padding: 0; list-style: none; }
-.work-file-changes li { display: flex; align-items: center; gap: .6rem; padding: .4rem 0; min-width: 0; }
-.work-file-change-path { min-width: 0; flex: 1; overflow-wrap: anywhere; line-height: 1.5; }
+.work-activity-results p { min-width: 0; margin: 0; line-height: var(--line-height-relaxed); overflow-wrap: anywhere; }
+.work-command-results { display: grid; gap: var(--space-3); margin-top: var(--space-3); min-width: 0; }
+.work-command-result { min-width: 0; border-top: 1px solid var(--color-border); padding-top: var(--space-2); }
+.work-command-result summary { cursor: pointer; color: var(--color-text-primary); overflow-wrap: anywhere; }
+.work-command-directory { overflow-wrap: anywhere; margin-block: var(--space-2); }
+.work-command-source,
+.work-command-output { box-sizing: border-box; max-width: 100%; max-height: 20rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: var(--space-3); border-radius: var(--radius-sm); background: var(--color-bg-surface); color: var(--color-text-primary); font-size: var(--font-size-xs); }
+.work-command-outcome { display: flex; flex-wrap: wrap; gap: var(--space-3); }
+.work-command-output-label { margin: var(--space-3) 0 var(--space-1); font-size: var(--font-size-xs); }
+.work-command-truncated { margin-block: var(--space-2); color: var(--color-text-muted); }
+.work-file-changes { box-sizing: border-box; margin-top: var(--space-5); border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-bg-surface); overflow: hidden; }
+.work-file-changes-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: var(--space-2); padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--color-border); }
+.work-file-changes h3 { margin: 0; color: var(--color-text-secondary); font-size: var(--font-size-sm); font-weight: var(--font-weight-medium); }
+.work-file-changes ul { display: grid; margin: 0; padding: var(--space-1) var(--space-4); list-style: none; }
+.work-file-changes li { display: flex; align-items: baseline; gap: var(--space-3); padding-block: var(--space-2); min-width: 0; }
+.work-file-changes li + li { border-top: 1px solid var(--color-border); }
+.work-file-changes li > svg { align-self: flex-start; margin-top: var(--space-1); }
+.work-file-change-path { min-width: 0; flex: 1; overflow-wrap: anywhere; line-height: var(--line-height-relaxed); }
 .work-file-change-path code { font-size: var(--font-size-xs); }
 .work-file-change-kind { flex: 0 0 auto; color: var(--color-text-muted); font-size: var(--font-size-xs); }
-@keyframes work-activity-pulse { 50% { opacity: .35; } }
-@media (prefers-reduced-motion: reduce) { .work-activity-dot { animation: none; } }
+.work-file-review { min-height: var(--control-height-sm); padding: var(--space-1) var(--space-3); font-size: var(--font-size-xs); }
+.work-file-more { border-top: 1px solid var(--color-border); }
+.work-file-more > summary { padding: var(--space-3) var(--space-4); color: var(--color-text-muted); font-size: var(--font-size-xs); cursor: pointer; overflow-wrap: anywhere; }
+@keyframes work-activity-pulse { 50% { opacity: .4; } }
+@media (prefers-reduced-motion: reduce) {
+  .work-activity-dot { animation: none; }
+  .work-thoughts-disclosure > summary::after { transition: none; }
+}

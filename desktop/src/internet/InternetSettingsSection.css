@@ -1,15 +1,15 @@
 /* Keep independently saved Internet controls readable within the shared Settings form. */
 
 .internet-settings fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
-.internet-enable { display: flex; align-items: center; gap: .6rem; font-weight: 600; }
-.internet-enable-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .75rem; padding: .8rem 0; }
+.internet-enable { display: flex; align-items: center; gap: var(--space-2); font-weight: var(--font-weight-medium); }
+.internet-enable-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-3); padding: var(--space-3) 0; }
 .internet-enable input { accent-color: var(--color-accent); }
-.internet-advanced, .internet-privacy { margin-top: 1rem; }
+.internet-advanced, .internet-privacy { margin-top: var(--space-4); }
 .internet-settings summary { color: var(--color-text-secondary); font-size: var(--font-size-sm); cursor: pointer; }
-.internet-settings details[open] > summary { margin-bottom: 1rem; }
-.internet-settings textarea { width: 100%; box-sizing: border-box; resize: vertical; min-height: 6rem; padding: .65rem; color: inherit; background: var(--color-bg-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); font: inherit; }
-.internet-settings .internet-policy-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin: .75rem 0; }
-.internet-settings button { padding: .45rem .7rem; }
+.internet-settings details[open] > summary { margin-bottom: var(--space-4); }
+.internet-settings textarea { width: 100%; box-sizing: border-box; resize: vertical; min-height: 6rem; padding: var(--space-3); color: inherit; background: var(--color-bg-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); font: inherit; }
+.internet-settings .internet-policy-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); margin: var(--space-3) 0; }
+.internet-settings button { min-height: var(--control-height-sm); padding: var(--space-2) var(--space-3); }
 .internet-settings p, .internet-settings li, .internet-settings small { overflow-wrap: anywhere; }
 .internet-settings p { font-size: var(--font-size-sm); line-height: var(--line-height-normal); }
-.internet-settings .settings-field-grid { margin-top: 1rem; }
+.internet-settings .settings-field-grid { margin-top: var(--space-4); }

@@ -6,6 +6,8 @@
  * path, private file identity, hash, prompt, or vector payload.
  */
 
+import { t, useTranslation, getDateLocale } from '../i18n/LocaleProvider.tsx'
+import { formatUiError } from '../i18n/ui-error.ts'
 import { useState } from 'react'
 
 import type {
@@ -18,9 +20,15 @@ import {
   LoadingState,
 } from '../design-system/Feedback.tsx'
 import { Icon } from '../design-system/Icon.tsx'
+import { HelpHint } from '../design-system/HelpHint.tsx'
 import './Knowledge.css'
 
 const DISPLAYED_OPERATION_LIMIT = 6
+
+const operationPhaseLabels: Record<KnowledgeOperation['phase'], string> = {
+  preparing: 'Preparing', importing: 'Importing', indexing: 'Indexing', revoking: 'Revoking',
+  cleaning: 'Cleaning up', publishing: 'Publishing', completed: 'Completed',
+}
 
 export interface ProjectSourcesPanelProps {
   activeRequestId: string | null
@@ -57,18 +65,18 @@ export interface ProjectSourcesPanelProps {
 
 function formatBytes(sizeBytes: number): string {
   if (sizeBytes < 1024) {
-    return `${sizeBytes} B`
+    return t("{sizeBytes} B", { sizeBytes: sizeBytes })
   }
   if (sizeBytes < 1024 * 1024) {
-    return `${(sizeBytes / 1024).toFixed(1)} KB`
+    return t("{value1} KB", { value1: (sizeBytes / 1024).toFixed(1) })
   }
-  return `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`
+  return t("{value1} MB", { value1: (sizeBytes / (1024 * 1024)).toFixed(1) })
 }
 
 function formatTimestamp(value: string): string {
   const timestamp = Date.parse(value)
   return Number.isFinite(timestamp)
-    ? new Intl.DateTimeFormat('en', {
+    ? new Intl.DateTimeFormat(getDateLocale(), {
         dateStyle: 'medium',
         timeStyle: 'short',
       }).format(timestamp)
@@ -78,49 +86,49 @@ function formatTimestamp(value: string): string {
 function sourceStateLabel(source: KnowledgeSource): string {
   switch (source.state) {
     case 'ready':
-      return 'Ready'
+      return t("Ready")
     case 'unindexed':
-      return 'Not indexed'
+      return t("Not indexed")
     case 'stale':
-      return 'Needs reindex'
+      return t("Needs reindex")
     case 'revoked':
-      return 'Revoked'
+      return t("Revoked")
     case 'processing':
-      return 'Processing'
+      return t("Processing")
   }
 }
 
 function operationKindLabel(operation: KnowledgeOperation): string {
   switch (operation.kind) {
     case 'add':
-      return 'Adding source'
+      return t("Adding source")
     case 'replace':
-      return 'Replacing source'
+      return t("Replacing source")
     case 'reindex':
-      return 'Reindexing source'
+      return t("Reindexing source")
     case 'rebuild':
-      return 'Rebuilding Project knowledge'
+      return t("Rebuilding Project knowledge")
     case 'revoke':
-      return 'Revoking Project knowledge'
+      return t("Revoking Project knowledge")
     case 'delete':
-      return 'Deleting source'
+      return t("Deleting source")
   }
 }
 
 function operationStateLabel(operation: KnowledgeOperation): string {
   switch (operation.state) {
     case 'running':
-      return 'Running'
+      return t("Running")
     case 'cancel_requested':
-      return 'Stopping safely'
+      return t("Stopping safely")
     case 'recovery_required':
-      return 'Recovery required'
+      return t("Recovery required")
     case 'succeeded':
-      return 'Completed'
+      return t("Completed")
     case 'cancelled':
-      return 'Cancelled'
+      return t("Cancelled")
     case 'failed':
-      return 'Failed'
+      return t("Failed")
   }
 }
 
@@ -129,28 +137,28 @@ function operationErrorExplanation(errorCode: string | null): string | null {
     case null:
       return null
     case 'index_profile_changed':
-      return 'The local index configuration changed. Rebuild the Project corpus before using it.'
+      return t("The local index configuration changed. Rebuild the Project corpus before using it.")
     case 'source_selection_lost':
-      return 'The app restarted before the selected source could be recorded. Add the file again.'
+      return t("The app restarted before the selected source could be recorded. Add the file again.")
     case 'rollback_cleanup_failed':
     case 'cancel_cleanup_failed':
-      return 'Temporary indexed data still needs safe cleanup. Run recovery before another change.'
+      return t("Temporary indexed data still needs safe cleanup. Run recovery before another change.")
     case 'recovery_exhausted':
-      return 'Automatic recovery reached its safe retry limit. Review the local Backend logs before retrying.'
+      return t("Automatic recovery reached its safe retry limit. Review the local Backend logs before retrying.")
     case 'add_failed':
-      return 'The source could not be added without weakening Project authorization.'
+      return t("The source could not be added without weakening Project authorization.")
     case 'replace_failed':
-      return 'The replacement did not reach a safe published state. Run recovery.'
+      return t("The replacement did not reach a safe published state. Run recovery.")
     case 'reindex_failed':
-      return 'The source could not be reindexed. Its previous authorization was not silently replaced.'
+      return t("The source could not be reindexed. Its previous authorization was not silently replaced.")
     case 'rebuild_failed':
-      return 'The complete Project corpus could not be rebuilt. Run recovery before answering from it.'
+      return t("The complete Project corpus could not be rebuilt. Run recovery before answering from it.")
     case 'revoke_failed':
-      return 'The Project corpus could not reach a durable revoked state. Run recovery.'
+      return t("The Project corpus could not reach a durable revoked state. Run recovery.")
     case 'delete_failed':
-      return 'Deletion did not finish across every local store. The source remains unavailable while recovery is required.'
+      return t("Deletion did not finish across every local store. The source remains unavailable while recovery is required.")
     default:
-      return 'The operation stopped at a safe boundary. Run recovery or retry the requested action.'
+      return t("The operation stopped at a safe boundary. Run recovery or retry the requested action.")
   }
 }
 
@@ -179,6 +187,7 @@ function SourceRow({
   onReindex,
   onReplace,
 }: SourceRowProps) {
+  useTranslation()
   const processing = source.state === 'processing'
   const mutationDisabled = disabled || processing
   const indexMutationDisabled = mutationDisabled || projectRevoked
@@ -193,7 +202,7 @@ function SourceRow({
             <span>{formatBytes(source.sizeBytes)}</span>
             {source.publishedAt !== null && (
               <time dateTime={source.publishedAt}>
-                Indexed {formatTimestamp(source.publishedAt)}
+                {t("Indexed ")}{formatTimestamp(source.publishedAt)}
               </time>
             )}
           </div>
@@ -209,32 +218,28 @@ function SourceRow({
           disabled={indexMutationDisabled}
           onClick={() => { onReplace(source.sourceId) }}
         >
-          Replace
-        </button>
+          {t("Replace")}</button>
         <button
           type="button"
           className="knowledge-action"
           disabled={indexMutationDisabled}
           onClick={() => { onReindex(source.sourceId) }}
         >
-          Reindex
-        </button>
+          {t("Reindex")}</button>
         <button
           type="button"
           className="knowledge-action"
           disabled={mutationDisabled}
           onClick={() => { onExport(source.sourceId) }}
         >
-          Export original
-        </button>
+          {t("Export original")}</button>
         <button
           type="button"
           className="knowledge-action danger"
           disabled={mutationDisabled}
           onClick={() => { onDelete(source.sourceId) }}
         >
-          Delete
-        </button>
+          {t("Delete")}</button>
       </div>
     </li>
   )
@@ -245,6 +250,7 @@ interface OperationRowProps {
 }
 
 function OperationRow({ operation }: OperationRowProps) {
+  useTranslation()
   const explanation = operationErrorExplanation(operation.errorCode)
   const active = operation.state === 'running'
     || operation.state === 'cancel_requested'
@@ -257,8 +263,8 @@ function OperationRow({ operation }: OperationRowProps) {
           <strong>{operationKindLabel(operation)}</strong>
           <div className="knowledge-operation-meta">
             <span>{operationStateLabel(operation)}</span>
-            <span>Phase: {operation.phase}</span>
-            {operation.attempt > 0 && <span>Recovery attempt {operation.attempt}</span>}
+            <span>{t("Phase: ")}{t(operationPhaseLabels[operation.phase])}</span>
+            {operation.attempt > 0 && <span>{t("Recovery attempt ")}{operation.attempt}</span>}
           </div>
         </div>
         <time dateTime={operation.updatedAt}>
@@ -270,7 +276,7 @@ function OperationRow({ operation }: OperationRowProps) {
           <progress
             max={100}
             value={operation.progressPercent}
-            aria-label={`${operationKindLabel(operation)} progress`}
+            aria-label={t("{value1} progress", { value1: operationKindLabel(operation) })}
           />
           <span>{operation.progressPercent}%</span>
         </div>
@@ -303,6 +309,7 @@ export function ProjectSourcesPanel({
   onRevoke,
   onStop,
 }: ProjectSourcesPanelProps) {
+  useTranslation()
   const [pendingAction, setPendingAction] = useState<string | null>(null)
   const [localError, setLocalError] = useState<string | null>(null)
   const operations = state?.operations ?? []
@@ -335,7 +342,7 @@ export function ProjectSourcesPanel({
       setLocalError(
         actionError instanceof Error
           ? actionError.message
-          : `Could not ${actionName.toLocaleLowerCase()}.`,
+          : t("Could not {value1}.", { value1: t(actionName).toLocaleLowerCase(getDateLocale()) }),
       )
     } finally {
       setPendingAction(null)
@@ -344,7 +351,7 @@ export function ProjectSourcesPanel({
 
   function confirmDelete(source: KnowledgeSource): void {
     if (!window.confirm(
-      `Delete ${source.fileName} from ${projectName}? It will be revoked before local index and original data are removed.`,
+      t("Delete {fileName} from {projectName}? It will be revoked before local index and original data are removed.", { fileName: source.fileName, projectName: projectName }),
     )) {
       return
     }
@@ -353,7 +360,7 @@ export function ProjectSourcesPanel({
 
   function confirmRevoke(): void {
     if (!window.confirm(
-      `Revoke all Project Sources in ${projectName}? Owned originals remain, but Chats cannot use them until you rebuild.`,
+      t("Revoke all Project Sources in {projectName}? Owned originals remain, but Chats cannot use them until you rebuild.", { projectName: projectName }),
     )) {
       return
     }
@@ -365,15 +372,13 @@ export function ProjectSourcesPanel({
   return (
     <section
       className="knowledge-panel"
-      aria-label={`Project Sources for ${projectName}`}
+      aria-label={t("Project Sources for {projectName}", { projectName: projectName })}
       data-project-id={projectId}
     >
       <div className="knowledge-panel-header">
         <div>
-          <h3>Project Sources</h3>
-          <p>
-            Indexed locally for Chats in this Project. Other Projects cannot use this corpus.
-          </p>
+          <h3>{t("Project Sources")}</h3>
+          <HelpHint label={t("Project Sources")}>{t("Indexed locally for Chats in this Project. Other Projects cannot use this corpus.")}</HelpHint>
         </div>
         <span className="project-count">{sources.length}</span>
       </div>
@@ -381,40 +386,38 @@ export function ProjectSourcesPanel({
       {displayedError !== null && (
         <InlineAlert
           tone="error"
-          title="Project Sources action failed"
+          title={t("Project Sources action failed")}
           onDismiss={() => {
             setLocalError(null)
             onDismissError()
           }}
         >
-          {displayedError}
+          {formatUiError(displayedError)}
         </InlineAlert>
       )}
 
       {readOnly && (
         <p className="knowledge-read-only-note" role="status">
-          This Project is archived. Sources and history are visible, but lifecycle actions are read-only.
-        </p>
+          {t("This Project is archived. Sources and history are visible, but lifecycle actions are read-only.")}</p>
       )}
 
       {!available && (
         <p className="knowledge-read-only-note" role="status">
-          Project Sources are unavailable until the local Backend reconnects with knowledge management support.
-        </p>
+          {t("Project Sources are unavailable until the local Backend reconnects with knowledge management support.")}</p>
       )}
 
-      <div className="knowledge-panel-actions" aria-label="Project knowledge actions">
+      <div className="knowledge-panel-actions" aria-label={t("Project knowledge actions")}>
         <button
           type="button"
           className="knowledge-action primary"
           disabled={actionsDisabled || mutationBlocked || projectRevoked}
           title={projectRevoked
-            ? 'Rebuild the revoked corpus before adding another source.'
+            ? t("Rebuild the revoked corpus before adding another source.")
             : undefined}
           onClick={() => { void runAction('Add sources', onAdd) }}
         >
           <Icon name="plus" />
-          <span>{pendingAction === 'Add sources' ? 'Adding…' : 'Add sources'}</span>
+          <span>{pendingAction === 'Add sources' ? t("Adding…") : t("Add sources")}</span>
         </button>
         <button
           type="button"
@@ -422,8 +425,7 @@ export function ProjectSourcesPanel({
           disabled={actionsDisabled || mutationBlocked || sources.length === 0}
           onClick={() => { void runAction('Rebuild Project knowledge', onRebuild) }}
         >
-          Rebuild all
-        </button>
+          {t("Rebuild all")}</button>
         <button
           type="button"
           className="knowledge-action danger"
@@ -435,8 +437,7 @@ export function ProjectSourcesPanel({
           }
           onClick={confirmRevoke}
         >
-          Revoke all
-        </button>
+          {t("Revoke all")}</button>
         <button
           type="button"
           className="knowledge-action"
@@ -448,8 +449,7 @@ export function ProjectSourcesPanel({
           }
           onClick={() => { void runAction('Recover Project knowledge', onRecover) }}
         >
-          Recover
-        </button>
+          {t("Recover")}</button>
         <button
           type="button"
           className="knowledge-action"
@@ -461,21 +461,19 @@ export function ProjectSourcesPanel({
           }
           onClick={() => { void runAction('Stop Project knowledge operation', onStop) }}
         >
-          {recoverable?.state === 'cancel_requested' ? 'Stopping…' : 'Stop current'}
+          {recoverable?.state === 'cancel_requested' ? t("Stopping…") : t("Stop current")}
         </button>
       </div>
 
       {loading && state === null ? (
         <LoadingState
-          title="Loading Project Sources"
-          description="Reading canonical source and recovery state from the local Backend."
+          title={t("Loading Project Sources")}
         />
       ) : sources.length === 0 ? (
         <p className="knowledge-empty">
-          No Project Sources yet. Add a supported document to index it locally.
-        </p>
+          {t("No Project Sources yet. Add a supported document to index it locally.")}</p>
       ) : (
-        <ul className="knowledge-source-list" aria-label="Project Sources">
+        <ul className="knowledge-source-list" aria-label={t("Project Sources")}>
           {sources.map((source) => (
             <SourceRow
               key={source.sourceId}
@@ -499,7 +497,7 @@ export function ProjectSourcesPanel({
 
       {displayedOperations.length > 0 && (
         <section aria-labelledby="knowledge-operation-history-heading">
-          <h4 id="knowledge-operation-history-heading">Recent operations</h4>
+          <h4 id="knowledge-operation-history-heading">{t("Recent operations")}</h4>
           <ul className="knowledge-operation-list">
             {displayedOperations.map((operation) => (
               <OperationRow key={operation.operationId} operation={operation} />

@@ -83,7 +83,9 @@ def test_system_rules_preserve_requested_persona_contract() -> None:
     assert "（轻笑一声，眼神里……）" in system_rules
     assert "不主动自称 AI、语言模型、程序" in system_rules
     assert "没有执行工具就不声称操作完成" in system_rules
-    assert "把芽衣与原作中的关系直接套在 Ying 身上" in system_rules
+    assert "把芽衣与原作中的关系直接套在用户身上" in system_rules
+    assert "Ying" not in system_rules
+    assert "`User` 是通用角色标签，不是真实姓名" in system_rules
 
 
 def test_system_rules_accept_utf8_bom_and_trim_outer_whitespace(

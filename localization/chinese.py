@@ -215,19 +215,27 @@ def _restore_literal_text(text: str, protected: tuple[str, ...]) -> str:
     marker_pattern = re.compile(
         re.escape(_PLACEHOLDER_OPEN) + r"(\d+)" + re.escape(_PLACEHOLDER_CLOSE)
     )
-    restored_indexes: list[int] = []
+    restored_indexes: set[int] = set()
 
-    def restore(match: re.Match[str]) -> str:
-        """Resolve one ordered marker back to its original literal."""
+    def restore(match: re.Match[str], parent_index: int = len(protected)) -> str:
+        """Expand one literal and any earlier markers that it contains."""
 
         index = int(match.group(1))
-        if index >= len(protected):
+        if index >= parent_index:
             raise RuntimeError("Assistant literal marker is invalid.")
-        restored_indexes.append(index)
-        return protected[index]
+        if index in restored_indexes:
+            raise RuntimeError("Assistant literal markers were not preserved.")
+        restored_indexes.add(index)
+        # A URL or path used as a Markdown label can surround the destination's
+        # earlier marker. Restore that nesting without weakening the exactly-
+        # once check. Protection only wraps markers from earlier passes, so
+        # strictly decreasing indexes reject cycles and forward references.
+        return marker_pattern.sub(
+            lambda nested: restore(nested, index), protected[index]
+        )
 
     restored = marker_pattern.sub(restore, text)
-    if sorted(restored_indexes) != list(range(len(protected))):
+    if len(restored_indexes) != len(protected):
         raise RuntimeError("Assistant literal markers were not preserved.")
     if _PLACEHOLDER_OPEN in restored or _PLACEHOLDER_CLOSE in restored:
         raise RuntimeError("Assistant literal marker restoration is incomplete.")
@@ -287,7 +295,10 @@ def _remove_stage_directions(
             )
             if group is not None
         )
-        if not _looks_like_stage_direction(body):
+        # A cue may contain a citation or executable example after a comma.
+        # Removing its protected literal would both lose useful answer content
+        # and violate restoration's integrity check; preserve the whole aside.
+        if _PLACEHOLDER_OPEN in body or not _looks_like_stage_direction(body):
             return match.group(0)
         removed = True
         return match.group("indent")

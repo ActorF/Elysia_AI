@@ -4,7 +4,10 @@
  * Detailed metadata remains confined to optional legacy installation repair.
  */
 
+import { t, useTranslation } from '../i18n/LocaleProvider.tsx'
+import { formatUiError } from '../i18n/ui-error.ts'
 import { useEffect, useRef, useState } from 'react'
+import { HelpHint } from '../design-system/HelpHint.tsx'
 import type { ImageAssetImportParams, ImageProfileMetadata, ImageSettingsSummary } from '../../electron/image-client.ts'
 import './ImageSettingsSection.css'
 
@@ -42,13 +45,19 @@ function validMetadata(metadata: ImageProfileMetadata): boolean {
 }
 
 function errorText(error: unknown): string {
-  return error instanceof Error && error.message ? error.message : '无法检查或保存本地图片设置，请重试。'
+  return error instanceof Error && error.message ? error.message : t("无法检查或保存本地图片设置，请重试。")
 }
 
 /** Show installed assets and start native imports while retaining owned maintenance state. */
 export function ImageSettingsSection({ active = true }: ImageSettingsSectionProps) {
+  useTranslation()
   const [status, setStatus] = useState<ImageSettingsSummary | null>(null)
   const [metadata, setMetadata] = useState<ImageProfileMetadata>(initialMetadata)
+  const [modelNameEdited, setModelNameEdited] = useState(false)
+  // Only the untouched application default follows language changes. Once the
+  // user edits this field, its exact value is retained as model metadata.
+  const modelDisplayName = modelNameEdited ? metadata.displayName : t('本地 SDXL')
+  const metadataValid = validMetadata({ ...metadata, displayName: modelDisplayName })
   const [selectedTarget, setSelectedTarget] = useState('')
   const [maintenance, setMaintenance] = useState<'checkpoint' | 'lora' | 'repair' | 'recovery' | null>(null)
   const [loading, setLoading] = useState(active && window.elysiaDesktop !== undefined)
@@ -127,7 +136,7 @@ export function ImageSettingsSection({ active = true }: ImageSettingsSectionProp
   }
 
   async function configure(): Promise<void> {
-    if (api === undefined || busy || installing.current || !validMetadata(metadata)) return
+    if (api === undefined || busy || installing.current || !metadataValid) return
     const revision = ++operation.current
     const previousRevision = status?.revision ?? 0
     installing.current = true
@@ -136,7 +145,7 @@ export function ImageSettingsSection({ active = true }: ImageSettingsSectionProp
     setNotice(null)
     try {
       const next = await api.configureImageInstallation({
-        ...metadata, displayName: metadata.displayName.trim(),
+        ...metadata, displayName: modelDisplayName.trim(),
         checkpointSource: metadata.checkpointSource.trim(), checkpointLicense: metadata.checkpointLicense.trim(),
       })
       if (!mounted.current || revision !== operation.current) return
@@ -178,77 +187,77 @@ export function ImageSettingsSection({ active = true }: ImageSettingsSectionProp
       // never submit unrelated preferences through implicit form submission.
       if (event.key === 'Enter' && event.target instanceof HTMLInputElement) event.preventDefault()
     }}>
-    <div className="settings-section-heading"><h2 id="image-settings-heading">本地图片生成</h2>
-      <p>为爱莉希雅选择主模型与 LoRA，作品保存在本机。</p></div>
-    {api === undefined && <p role="alert">请在 Elysia 桌面应用中配置本地图片生成。</p>}
-    <div className={`image-settings-readiness ${status?.ready ? 'is-ready' : ''}`} aria-label="本地图片模型状态">
+    <div className="settings-section-heading"><h2 id="image-settings-heading">{t("本地图片生成")}</h2>
+      <HelpHint label={t("本地图片生成")}>{t("为爱莉希雅选择主模型与 LoRA，作品保存在本机。")}</HelpHint></div>
+    {api === undefined && <p role="alert">{t("请在 Elysia 桌面应用中配置本地图片生成。")}</p>}
+    <div className={`image-settings-readiness ${status?.ready ? 'is-ready' : ''}`} aria-label={t("本地图片模型状态")}>
       <span className="image-settings-state-dot" aria-hidden="true" />
-      <div><strong>{loading ? '正在检查模型…' : status ? stateLabels[status.state] : '尚未读取图片配置'}</strong>
-        {status && <p>{stateGuidance[status.state]}</p>}
+      <div><strong>{loading ? t("正在检查模型…") : status ? t(stateLabels[status.state]) : t("尚未读取图片配置")}</strong>
+        {status && !status.ready && <p>{t(stateGuidance[status.state])}</p>}
         {status?.state === 'recovery_required' && <button type="button" className="secondary-button image-settings-recovery"
           onClick={() => { void recover() }} disabled={api === undefined || busy}>
-          {maintenance === 'recovery' ? '正在恢复…' : '保留文件并恢复'}
+          {maintenance === 'recovery' ? t("正在恢复…") : t("保留文件并恢复")}
         </button>}
       </div>
     </div>
-    {error !== null && <p role="alert">{error}</p>}
-    {notice !== null && <p className="image-settings-notice" role="status">{notice}</p>}
+    {error !== null && <p role="alert">{formatUiError(error)}</p>}
+    {notice !== null && <p className="image-settings-notice" role="status">{t(notice)}</p>}
     <div className="image-settings-actions">
       <button type="button" className="primary-button" disabled={api === undefined || busy}
-        onClick={() => { void importAsset('checkpoint') }}>{maintenance === 'checkpoint' ? '正在导入 Checkpoint…' : '导入 Checkpoint'}</button>
+        onClick={() => { void importAsset('checkpoint') }}>{maintenance === 'checkpoint' ? t("正在导入 Checkpoint…") : t("导入 Checkpoint")}</button>
       <button type="button" className="secondary-button" disabled={api === undefined || busy || !targetProfileId}
-        onClick={() => { void importAsset('lora') }}>{maintenance === 'lora' ? '正在导入 LoRA…' : '导入 LoRA'}</button>
+        onClick={() => { void importAsset('lora') }}>{maintenance === 'lora' ? t("正在导入 LoRA…") : t("导入 LoRA")}</button>
       <button type="button" className="secondary-button" disabled={api === undefined || busy}
-        onClick={() => { void refresh() }}>重新检查</button>
+        onClick={() => { void refresh() }}>{t("重新检查")}</button>
     </div>
-    {(status?.profiles.length ?? 0) > 1 && <label className="settings-field image-settings-target"><span>LoRA 适用模型</span>
-      <select aria-label="LoRA 适用模型" value={targetProfileId} disabled={api === undefined || busy}
+    {(status?.profiles.length ?? 0) > 1 && <label className="settings-field image-settings-target"><span>{t("LoRA 适用模型")}</span>
+      <select aria-label={t("LoRA 适用模型")} value={targetProfileId} disabled={api === undefined || busy}
         onChange={(event) => { setSelectedTarget(event.currentTarget.value) }}>
         {status?.profiles.map((profile) => <option key={profile.profileId} value={profile.profileId}>{profile.displayName}</option>)}
       </select>
     </label>}
-    <p className="image-settings-consent">选择文件后确认即可添加，无需填写模型资料。</p>
-    {status?.profiles.length ? <div className="image-settings-profiles" aria-label="已配置图片模型">
+    <HelpHint label={t("导入 Checkpoint")}>{t("选择文件后确认即可添加，无需填写模型资料。")}</HelpHint>
+    {status?.profiles.length ? <div className="image-settings-profiles" aria-label={t("已配置图片模型")}>
       {status.profiles.map((profile) => <article key={profile.profileId}>
-        <div className="image-settings-model-heading"><div><span className="image-settings-eyebrow">主模型</span>
+        <div className="image-settings-model-heading"><div><span className="image-settings-eyebrow">{t("主模型")}</span>
           <h3>{profile.displayName}</h3></div>
-          {status.defaultProfileId === profile.profileId && <span className="image-settings-default">默认模型</span>}
+          {status.defaultProfileId === profile.profileId && <span className="image-settings-default">{t("默认模型")}</span>}
         </div>
-        {profile.loras?.length ? <ul className="image-settings-loras" aria-label={`${profile.displayName} 已配置 LoRA`}>
+        {profile.loras?.length ? <ul className="image-settings-loras" aria-label={t("{displayName} 已配置 LoRA", { displayName: profile.displayName })}>
           {profile.loras.map((lora) => <li key={lora.loraId}>
-            <div><strong>{lora.displayName}</strong><span className={lora.available ? '' : 'is-unavailable'}>{lora.available ? '已就绪' : '需要检查'}</span></div>
-            {!lora.available && <p>{lora.message}</p>}
+            <div><strong>{lora.displayName}</strong><span className={lora.available ? '' : 'is-unavailable'}>{lora.available ? t("已就绪") : t("需要检查")}</span></div>
+            {!lora.available && <p>{t(lora.message)}</p>}
           </li>)}
-        </ul> : <p className="image-settings-empty">尚未添加 LoRA，也可以直接使用主模型生成。</p>}
+        </ul> : <p className="image-settings-empty">{t("尚未添加 LoRA，也可以直接使用主模型生成。")}</p>}
       </article>)}
     </div> : null}
     <details className="image-settings-advanced">
-      <summary>高级安装修复</summary>
-      <p>仅在需要替换或修复运行环境时使用。重新选择安装会替换当前图片配置，请填写实际适用的资料。</p>
+      <summary>{t("高级安装修复")}</summary>
+      <p>{t("仅在需要替换或修复运行环境时使用。重新选择安装会替换当前图片配置，请填写实际适用的资料。")}</p>
       <fieldset disabled={api === undefined || busy}>
         <div className="settings-field-grid">
-          <label className="settings-field"><span>图片模型名称</span><input aria-label="图片模型名称" value={metadata.displayName} maxLength={80}
-            onChange={(event) => { setMetadata({ ...metadata, displayName: event.currentTarget.value }) }} /></label>
-          <label className="settings-field"><span>图片模型 ID</span><input aria-label="图片模型 ID" value={metadata.profileId} maxLength={64} spellCheck={false}
+          <label className="settings-field"><span>{t("图片模型名称")}</span><input aria-label={t("图片模型名称")} value={modelDisplayName} maxLength={80}
+            onChange={(event) => { setModelNameEdited(true); setMetadata({ ...metadata, displayName: event.currentTarget.value }) }} /></label>
+          <label className="settings-field"><span>{t("图片模型 ID")}</span><input aria-label={t("图片模型 ID")} value={metadata.profileId} maxLength={64} spellCheck={false}
             onChange={(event) => { setMetadata({ ...metadata, profileId: event.currentTarget.value }) }} /></label>
-          <label className="settings-field"><span>模型提示词格式</span><select aria-label="模型提示词格式" value={metadata.promptDialect}
+          <label className="settings-field"><span>{t("模型提示词格式")}</span><select aria-label={t("模型提示词格式")} value={metadata.promptDialect}
             onChange={(event) => { setMetadata({ ...metadata, promptDialect: event.currentTarget.value as ImageProfileMetadata['promptDialect'] }) }}>
-            <option value="sdxl-natural">SDXL 自然语言</option><option value="pony-tags">Pony 标签</option><option value="illustrious-tags">Illustrious 标签</option>
+            <option value="sdxl-natural">{t("SDXL 自然语言")}</option><option value="pony-tags">{t("Pony 标签")}</option><option value="illustrious-tags">{t("Illustrious 标签")}</option>
           </select></label>
-          <label className="settings-field"><span>默认图片尺寸</span><select aria-label="默认图片尺寸" value={metadata.defaultSizePresetId}
+          <label className="settings-field"><span>{t("默认图片尺寸")}</span><select aria-label={t("默认图片尺寸")} value={metadata.defaultSizePresetId}
             onChange={(event) => { setMetadata({ ...metadata, defaultSizePresetId: event.currentTarget.value as ImageProfileMetadata['defaultSizePresetId'] }) }}>
-            <option value="square">方形 · 1024 × 1024</option><option value="portrait">竖图 · 832 × 1216</option><option value="landscape">横图 · 1216 × 832</option>
+            <option value="square">{t("方形 · 1024 × 1024")}</option><option value="portrait">{t("竖图 · 832 × 1216")}</option><option value="landscape">{t("横图 · 1216 × 832")}</option>
           </select></label>
-          <label className="settings-field image-settings-wide"><span>模型来源</span><input aria-label="模型来源" value={metadata.checkpointSource} maxLength={512}
+          <label className="settings-field image-settings-wide"><span>{t("模型来源")}</span><input aria-label={t("模型来源")} value={metadata.checkpointSource} maxLength={512}
             onChange={(event) => { setMetadata({ ...metadata, checkpointSource: event.currentTarget.value }) }} /></label>
-          <label className="settings-field image-settings-wide"><span>模型许可证</span><input aria-label="模型许可证" value={metadata.checkpointLicense} maxLength={512}
+          <label className="settings-field image-settings-wide"><span>{t("模型许可证")}</span><input aria-label={t("模型许可证")} value={metadata.checkpointLicense} maxLength={512}
             onChange={(event) => { setMetadata({ ...metadata, checkpointLicense: event.currentTarget.value }) }} /></label>
         </div>
-        <button type="button" className="secondary-button" disabled={!validMetadata(metadata)} onClick={() => { void configure() }}>
-          {maintenance === 'repair' ? '正在选择与校验安装…' : '重新选择并确认安装'}
+        <button type="button" className="secondary-button" disabled={!metadataValid} onClick={() => { void configure() }}>
+          {maintenance === 'repair' ? t("正在选择与校验安装…") : t("重新选择并确认安装")}
         </button>
       </fieldset>
     </details>
-    {maintenance !== null && <p role="status">请完成系统选择与确认。文件校验可能需要一段时间。</p>}
+    {maintenance !== null && <p role="status">{t("请完成系统选择与确认。文件校验可能需要一段时间。")}</p>}
   </section>
 }

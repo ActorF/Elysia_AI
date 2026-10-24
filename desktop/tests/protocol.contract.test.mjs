@@ -5116,6 +5116,7 @@ test('Backend keeps an initialized child available for Settings repair', async (
     backend.getSnapshot().capabilities,
     ['settings.management', 'voice.settings'],
   )
+  assert.equal(backend.getSnapshot().initializationErrorCode, 'backend.initialization_failed')
 
   const getting = backend.getSettings()
   const request = JSON.parse(writes.at(-1))
@@ -5136,6 +5137,21 @@ test('Backend keeps an initialized child available for Settings repair', async (
 
   assert.equal((await gettingVoice).revision, voiceResponse.result.revision)
   assert.equal(backend.child, child)
+})
+
+test('Backend startup recovery codes survive inspection but never leak across lifecycle transitions or unrelated failures', () => {
+  const backend = new BackendProcess('.', () => undefined)
+  for (const status of ['starting', 'handshaking', 'initializing', 'stopping', 'stopped', 'ready']) {
+    backend.failInitialization('A local model needs setup.', 'backend.model_missing')
+    assert.equal(backend.getSnapshot().initializationErrorCode, 'backend.model_missing')
+    backend.updateSnapshot({})
+    assert.equal(backend.getSnapshot().initializationErrorCode, 'backend.model_missing')
+    backend.updateSnapshot({ status })
+    assert.equal(backend.getSnapshot().initializationErrorCode, undefined)
+  }
+  backend.failInitialization('A local model needs setup.', 'backend.ollama_unavailable')
+  backend.fail('The process exited unexpectedly.')
+  assert.equal(backend.getSnapshot().initializationErrorCode, undefined)
 })
 
 test('Backend restart settles only after ready and rejects on error', async () => {

@@ -1,6 +1,9 @@
 /** Review native source provenance and user-supplied interpretation before a separate, expiring Chat draft export. */
 
+import { t, useTranslation, getDateLocale } from '../i18n/LocaleProvider.tsx'
+import { formatUiError } from '../i18n/ui-error.ts'
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { HelpHint } from '../design-system/HelpHint.tsx'
 import type { InternetSource } from '../../electron/internet-protocol.ts'
 import { parseInternetReview, parseInternetReviewRequest, parseInternetReviewText,
   type InternetReview, type InternetReviewClient, type InternetReviewRequest } from '../../electron/internet-review-protocol.ts'
@@ -20,10 +23,11 @@ interface InternetSourceReviewProps {
   onChatDraft(text: string): void
 }
 
-function dateLabel(value: string | null): string { return value === null ? 'Unknown' : new Date(value).toLocaleString() }
+function dateLabel(value: string | null): string { return value === null ? t("Unknown") : new Date(value).toLocaleString(getDateLocale()) }
 
 /** Compare explicitly selected sources without presenting agreement or timestamps as verified truth. */
 export function InternetSourceReview({ api, chatId, projectId, lifecycleEpoch, sources, ready, disabled, onBusyChange, onChatDraft }: InternetSourceReviewProps) {
+  useTranslation()
   const [selected, setSelected] = useState<string[]>([])
   const [claim, setClaim] = useState('')
   const [interpretation, setInterpretation] = useState<InternetReviewRequest['interpretation']>('source_report')
@@ -79,7 +83,7 @@ export function InternetSourceReview({ api, chatId, projectId, lifecycleEpoch, s
       const next = parseInternetReview(await api.reviewInternetSources(expected))
       if (token !== version.current) return
       if (next.owner.chatId !== chatId || next.owner.projectId !== projectId || JSON.stringify(next.request) !== JSON.stringify(expected)
-        || next.sources.some(source => JSON.stringify(sources.find(item => item.id === source.id)) !== JSON.stringify(source))) throw new Error('Review provenance changed.')
+        || next.sources.some(source => JSON.stringify(sources.find(item => item.id === source.id)) !== JSON.stringify(source))) throw new Error(t("Review provenance changed."))
       if (Date.parse(next.expiresAt) <= Date.now()) { setNotice('This comparison expired. Compare the sources again.'); return }
       setReview(next)
     } catch { if (token === version.current) setError('Could not compare these sources. Review the current selection and try again.') }
@@ -93,49 +97,47 @@ export function InternetSourceReview({ api, chatId, projectId, lifecycleEpoch, s
     try {
       const resolved = parseInternetReviewText(await api.getInternetReviewText({ chatId, reviewId }))
       if (token !== version.current) return
-      if (resolved.review.id !== reviewId || JSON.stringify(resolved.review) !== JSON.stringify(review) || Date.parse(resolved.review.expiresAt) <= Date.now()) throw new Error('The comparison expired or changed.')
+      if (resolved.review.id !== reviewId || JSON.stringify(resolved.review) !== JSON.stringify(review) || Date.parse(resolved.review.expiresAt) <= Date.now()) throw new Error(t("The comparison expired or changed."))
       onChatDraft(resolved.text); setNotice('Source comparison added to your Chat draft. Review the message before sending.')
     } catch { if (token === version.current) { setReview(null); setError('This comparison expired or changed. Compare the sources again before adding them to a draft.') } }
     finally { physicalPending.current = false; setPending(false); onBusyChange(false) }
   }
 
   const locked = !ready || disabled || pending || api === undefined
-  return <section className="internet-comparison" aria-label="Internet source comparison" aria-busy={pending}>
-    <h3>Compare sources</h3>
-    <p>Select up to five sources and a question. Review their provenance before adding them to your draft.</p>
+  return <section className="internet-comparison" aria-label={t("Internet source comparison")} aria-busy={pending}>
+    <h3>{t("Compare sources")} <HelpHint label={t("About this comparison")}>{t("Select up to five sources and a question. Review their provenance before adding them to your draft.") + ' ' + t("This comparison checks provenance; it does not verify that a claim is true. Question: up to 2,000 UTF-8 bytes. Uncertainty: up to 1,000 bytes. Event dates are your input; publication and edit dates describe the source.")}</HelpHint></h3>
     <div className="internet-comparison-sources">{sources.map((source, index) => <label key={source.id}>
       <input type="checkbox" checked={selected.includes(source.id)} disabled={locked || selected.length >= 5 && !selected.includes(source.id)} onChange={event => {
         edit(); setSelected(current => event.target.checked ? [...current, source.id] : current.filter(id => id !== source.id))
       }} />{index + 1}. {source.title} · {new URL(source.url).hostname}
     </label>)}</div>
-    {sources.length === 0 && <p>Search or read a page to add sources for comparison.</p>}
-    <label>Question or claim<textarea value={claim} maxLength={2000} disabled={locked} rows={2} onChange={event => { edit(); setClaim(event.target.value) }} /></label>
+    {sources.length === 0 && <p>{t("Search or read a page to add sources for comparison.")}</p>}
+    <label>{t("Question or claim")}<textarea value={claim} maxLength={2000} disabled={locked} rows={2} onChange={event => { edit(); setClaim(event.target.value) }} /></label>
     <div className="internet-comparison-fields">
-      <label>Interpretation<select value={interpretation} disabled={locked} onChange={event => { edit(); setInterpretation(event.target.value as InternetReviewRequest['interpretation']) }}>
-        <option value="source_report">What the sources report</option><option value="inference">My inference</option>
+      <label>{t("Interpretation")}<select value={interpretation} disabled={locked} onChange={event => { edit(); setInterpretation(event.target.value as InternetReviewRequest['interpretation']) }}>
+        <option value="source_report">{t("What the sources report")}</option><option value="inference">{t("My inference")}</option>
       </select></label>
-      <label>Event date you supplied (optional)<input type="date" value={eventDate} disabled={locked} onChange={event => { edit(); setEventDate(event.target.value) }} /></label>
+      <label>{t("Event date you supplied (optional)")}<input type="date" value={eventDate} disabled={locked} onChange={event => { edit(); setEventDate(event.target.value) }} /></label>
     </div>
-    <label>Uncertainty or conflicting information (optional)<textarea value={uncertainty} maxLength={1000} disabled={locked} rows={2} onChange={event => { edit(); setUncertainty(event.target.value) }} /></label>
-    <details className="internet-help"><summary>About this comparison</summary><p>This comparison checks provenance; it does not verify that a claim is true. Question: up to 2,000 UTF-8 bytes. Uncertainty: up to 1,000 bytes. Event dates are your input; publication and edit dates describe the source.</p></details>
-    <button className="internet-primary" type="button" disabled={locked || !valid} onClick={() => { void compare() }}>{pending ? 'Reviewing comparison…' : 'Compare selected sources'}</button>
-    {error !== null && <p role="alert">{error}</p>}
-    {notice !== null && <p role="status">{notice}</p>}
-    {review !== null && <section className="internet-comparison-result" aria-label="Reviewed source comparison">
+    <label>{t("Uncertainty or conflicting information (optional)")}<textarea value={uncertainty} maxLength={1000} disabled={locked} rows={2} onChange={event => { edit(); setUncertainty(event.target.value) }} /></label>
+    <button className="internet-primary" type="button" disabled={locked || !valid} onClick={() => { void compare() }}>{pending ? t("Reviewing comparison…") : t("Compare selected sources")}</button>
+    {error !== null && <p role="alert">{formatUiError(error)}</p>}
+    {notice !== null && <p role="status">{t(notice)}</p>}
+    {review !== null && <section className="internet-comparison-result" aria-label={t("Reviewed source comparison")}>
       <h3>{review.request.claim}</h3>
-      <p>Interpretation: {review.request.interpretation === 'inference' ? 'Inference — not a directly established source fact' : 'Source report — not independently verified'}</p>
-      <p>User-supplied event date: {review.request.eventDate ?? 'Unknown'}</p>
-      <p>Uncertainty: {review.request.uncertainty || 'Not independently verified.'}</p>
-      <ul aria-label="Source comparison warnings">{review.warnings.map(warning => <li key={warning}>{warning}</li>)}</ul>
-      {review.sources.map(source => <article key={source.id} aria-label={`Compared source ${source.title}`}>
+      <p>{t("Interpretation: ")}{review.request.interpretation === 'inference' ? t("Inference — not a directly established source fact") : t("Source report — not independently verified")}</p>
+      <p>{t("User-supplied event date: ")}{review.request.eventDate ?? t("Unknown")}</p>
+      <p>{t("Uncertainty: ")}{review.request.uncertainty || t("Not independently verified.")}</p>
+      <ul aria-label={t("Source comparison warnings")}>{review.warnings.map(warning => <li key={warning}>{t(warning)}</li>)}</ul>
+      {review.sources.map(source => <article key={source.id} aria-label={t("Compared source {title}", { title: source.title })}>
         <h4>{source.title}</h4><p>{new URL(source.url).hostname} · {source.url}</p>
-        <dl><div><dt>Published</dt><dd>{dateLabel(source.publishedAt)}</dd></div><div><dt>Last edited</dt><dd>{dateLabel(source.modifiedAt)}</dd></div><div><dt>Retrieved</dt><dd>{dateLabel(source.fetchedAt)}</dd></div></dl>
-        {source.fromCache && <p>Cached source; its retrieval time is preserved.</p>}
-        {source.truncated && <p>This source was shortened.</p>}
+        <dl><div><dt>{t("Published")}</dt><dd>{dateLabel(source.publishedAt)}</dd></div><div><dt>{t("Last edited")}</dt><dd>{dateLabel(source.modifiedAt)}</dd></div><div><dt>{t("Retrieved")}</dt><dd>{dateLabel(source.fetchedAt)}</dd></div></dl>
+        {source.fromCache && <p>{t("Cached source; its retrieval time is preserved.")}</p>}
+        {source.truncated && <p>{t("This source was shortened.")}</p>}
         <pre className="internet-page-text">{source.content ?? source.snippet}</pre>
       </article>)}
-      <p>This review expires at {dateLabel(review.expiresAt)}. Draft exports include bounded excerpts and direct source URLs.</p>
-      <button className="internet-primary" type="button" disabled={locked} onClick={() => { void exportReview() }}>Add comparison to Chat draft</button>
+      <p>{t("This review expires at ")}{dateLabel(review.expiresAt)}{t(". Draft exports include bounded excerpts and direct source URLs.")}</p>
+      <button className="internet-primary" type="button" disabled={locked} onClick={() => { void exportReview() }}>{t("Add comparison to Chat draft")}</button>
     </section>}
   </section>
 }

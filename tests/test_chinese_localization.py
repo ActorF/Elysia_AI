@@ -133,6 +133,78 @@ def test_assistant_reply_preserves_indented_code_and_paths_with_spaces() -> None
         "/home/繁體 資料/檔案.txt。"
     )
 
+@pytest.mark.parametrize(
+    ("reply", "expected"),
+    (
+        (
+            "請參考 [https://example.org/繁體](https://example.org/資料)。",
+            "请参考 [https://example.org/繁體](https://example.org/資料)。",
+        ),
+        (
+            "請參考 [/繁體](https://example.org/資料)。",
+            "请参考 [/繁體](https://example.org/資料)。",
+        ),
+        (
+            "請參考 [D:/繁體](https://example.org/資料)。",
+            "请参考 [D:/繁體](https://example.org/資料)。",
+        ),
+        (
+            "**smiling, [來源](https://example.org/繁體)** 請參考來源。",
+            "**smiling, [来源](https://example.org/繁體)** 请参考来源。",
+        ),
+        (
+            "（微笑，請執行 `繁體變數`）這是範例。",
+            "（微笑，请执行 `繁體變數`）这是范例。",
+        ),
+    ),
+)
+def test_assistant_reply_preserves_nested_literals_and_cited_asides(
+    reply: str,
+    expected: str,
+) -> None:
+    """Keep citation literals intact in complete and arbitrarily split replies."""
+
+    assert normalize_assistant_reply(reply) == expected
+    chunkings = [(reply[:split], reply[split:]) for split in range(1, len(reply))]
+    chunkings.append(tuple(reply))
+    for chunks in chunkings:
+        normalizer = AssistantReplyStreamNormalizer()
+        emitted: list[str] = []
+        for chunk in chunks:
+            emitted.extend(normalizer.push(chunk))
+        emitted.extend(normalizer.finish())
+        assert "".join(emitted) == expected
+
+
+@pytest.mark.parametrize(
+    ("masked", "protected"),
+    (
+        ("", ("literal",)),
+        ("\ue0000\ue001\ue0000\ue001", ("literal",)),
+        ("\ue0001\ue001", ("literal",)),
+        ("\ue0000\ue001", ("\ue0000\ue001",)),
+        ("\ue0000\ue001", ("\ue0001\ue001", "literal")),
+        ("\ue0001\ue001", ("literal", "\ue0000\ue001\ue0000\ue001")),
+        ("\ue0000\ue001", ("incomplete \ue000",)),
+    ),
+)
+def test_literal_restoration_rejects_missing_duplicate_and_forged_markers(
+    masked: str,
+    protected: tuple[str, ...],
+) -> None:
+    """Nested restoration must not accept dropped, reused, or cyclic markers."""
+
+    with pytest.raises(RuntimeError, match="Assistant literal marker"):
+        chinese_module._restore_literal_text(masked, protected)
+
+
+def test_assistant_reply_rejects_user_supplied_literal_markers() -> None:
+    """Reserve the marker alphabet so model text cannot forge literal ownership."""
+
+    with pytest.raises(ValueError, match="reserved placeholder"):
+        normalize_assistant_reply("\ue0000\ue001")
+
+
 def test_stream_normalizer_holds_phrase_and_split_stage_direction() -> None:
     """Retain context across arbitrary token boundaries before exposing text."""
 

@@ -7,17 +7,17 @@ import test from 'node:test'
 import vm from 'node:vm'
 import ts from 'typescript'
 import { InternetPolicyService } from '../dist-electron/internet-policy.js'
-import { codePointLength, hasNonBlankCodePoint, MAX_IDENTIFIER_LENGTH, MAX_MESSAGE_LENGTH, MAX_ATTACHMENT_FILE_COUNT } from '../dist-electron/protocol.js'
+import { codePointLength, hasNonBlankCodePoint, trimProtocolBlankCharacters, MAX_IDENTIFIER_LENGTH, MAX_MESSAGE_LENGTH, MAX_ATTACHMENT_FILE_COUNT } from '../dist-electron/protocol.js'
 
 const text = await readFile(new URL('../electron/main.ts', import.meta.url), 'utf8')
 const source = ts.createSourceFile('main.ts', text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
-const names = ['parseChatRequest', 'requireInternetPolicy', 'resolveAutomaticInternet', 'hasActiveInternetWork', 'trackInternetOperation', 'retireInternetResearch']
+const names = ['parseChatRequest', 'parseRetryChatRequest', 'parseChatId', 'beginChatWithInternet', 'requireInternetPolicy', 'resolveAutomaticInternet', 'hasActiveInternetWork', 'trackInternetOperation', 'retireInternetResearch']
 const selected = source.statements.filter(node => ts.isFunctionDeclaration(node) && names.includes(node.name?.text))
 assert.equal(selected.length, names.length)
 const register = source.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'registerIpcHandlers')
 const handlers = register.body.statements.filter(node => ts.isExpressionStatement(node) && ts.isCallExpression(node.expression)
-  && ts.isStringLiteral(node.expression.arguments[0]) && node.expression.arguments[0].text === 'backend:send-message')
-assert.equal(handlers.length, 1)
+  && ts.isStringLiteral(node.expression.arguments[0]) && ['backend:send-message', 'backend:retry-message'].includes(node.expression.arguments[0].text))
+assert.equal(handlers.length, 2)
 const compiled = ts.transpileModule([...selected, ...handlers].map(node => node.getText(source)).join('\n')
   + '\nmodule.exports = {resolveAutomaticInternet,hasActiveInternetWork,retireInternetResearch};', {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
@@ -53,19 +53,22 @@ async function fixture(t, enabled = true) {
       snapshot.activeGeneration = { requestId: 'generation_automatic', chatId: request.chatId, stopping: false }
       return { requestId: snapshot.activeGeneration.requestId }
     } }
+  backend.beginRetry = (request, automatic) => backend.beginChat(request, automatic)
   const host = { module: { exports: {} }, AbortController, AbortSignal,
-    codePointLength, hasNonBlankCodePoint, MAX_IDENTIFIER_LENGTH, MAX_MESSAGE_LENGTH, MAX_ATTACHMENT_FILE_COUNT,
+    codePointLength, hasNonBlankCodePoint, trimProtocolBlankCharacters, MAX_IDENTIFIER_LENGTH, MAX_MESSAGE_LENGTH, MAX_ATTACHMENT_FILE_COUNT,
     backendProcess: backend, internetPolicyService: policy, internetTransport: {}, automaticInternetTurn: null,
     internetRequests: new Set(), internetResearchController: null, internetWriteController: null,
     internetResearchGeneration: 0, internetReviewStore: { clear() {} }, internetReviewScope: null,
     shutdownStarted: false, dataStorageOperation: null,
     assertTrustedSender: event => { if (!event.trusted) throw new Error('Untrusted sender.') },
     requireBackend: () => host.backendProcess,
-    searchChatInternet: (_transport, request, signal) => { searches.push({ request, signal }); return drain.promise },
+    searchChatInternet: (_transport, request, signal, onReading) => { searches.push({ kind: 'search', request, signal, onReading }); return drain.promise },
+    readChatWeather: (_transport, request, signal) => { searches.push({ kind: 'weather', request, signal }); return drain.promise },
     ipcMain: { handle: (channel, callback) => callbacks.set(channel, callback) } }
   vm.runInNewContext(compiled, host, { timeout: 1000 })
   return { host, api: host.module.exports, policy, calls, searches, owner, snapshot, backend, hydration, drain,
     send: (request = chat, trusted = true) => callbacks.get('backend:send-message')({ trusted }, request),
+    retry: (request = { chatId, userMessageId: 'user_last', assistantMessageId: 'assistant_last', speakReply: false }, trusted = true) => callbacks.get('backend:retry-message')({ trusted }, request),
     request: () => ({ requestId: snapshot.activeGeneration.requestId, chatId,
       searchId: `internet_search_${'a'.repeat(32)}`, query: 'current Python release', language: 'en' }),
     update: changes => { const state = policy.getState(); return policy.update({ expectedRevision: state.revision,
@@ -78,6 +81,26 @@ test('The send IPC authenticates and rejects a Renderer-supplied automatic Inter
   await assert.rejects(f.send({ ...chat, automaticInternet: true }), /invalid/u)
   assert.deepEqual(f.calls, [])
   assert.equal(f.host.automaticInternetTurn, null)
+})
+
+test('Retry authenticates, refuses Renderer network grants and uses the current policy for fresh research', async t => {
+  const request = { chatId, userMessageId: 'user_last', assistantMessageId: 'assistant_last', speakReply: false }
+  const rejected = await fixture(t)
+  await assert.rejects(rejected.retry(request, false), /Untrusted/u)
+  await assert.rejects(rejected.retry({ ...request, automaticInternet: true }), /invalid/u)
+  assert.deepEqual(rejected.calls, [])
+  for (const mode of ['chat', 'off', 'work', 'grounded']) {
+    const f = await fixture(t, mode !== 'off')
+    if (mode === 'work') f.owner.value.mode = 'work'
+    await f.retry(mode === 'grounded' ? { ...request, useProjectKnowledge: true } : request)
+    assert.equal(f.calls[0].automatic, mode === 'chat')
+    if (mode !== 'chat') { assert.equal(f.host.automaticInternetTurn, null); continue }
+    const pending = f.api.resolveAutomaticInternet(f.request(), new AbortController().signal)
+    await tick()
+    assert.equal(f.searches.length, 1)
+    f.drain.resolve(evidence)
+    assert.deepEqual(plain(await pending), { sources: evidence, error: null })
+  }
 })
 
 test('Only enabled ordinary Chat captures a native policy revision; Work, grounding and Off remain local', async t => {
@@ -165,6 +188,37 @@ test('Matching generation searches once, holds native capacity and returns evide
   assert.deepEqual(plain(await pending), { sources: evidence, error: null })
   assert.equal(f.api.hasActiveInternetWork(), false)
   assert.equal(f.policy.hasActiveWork(), false)
+})
+
+test('Weather routes the bounded forecast request through the same native turn lease', async t => {
+  const f = await fixture(t)
+  await f.send()
+  const request = { ...f.request(), kind: 'weather', query: 'Chicago', when: 'tomorrow' }
+  const pending = f.api.resolveAutomaticInternet(request, new AbortController().signal)
+  await tick()
+  assert.equal(f.searches[0].kind, 'weather')
+  assert.deepEqual(plain(f.searches[0].request), request)
+  assert.equal(f.policy.hasActiveWork(), true)
+  f.drain.resolve(evidence)
+  assert.deepEqual(plain(await pending), { sources: evidence, error: null })
+  assert.equal(f.policy.hasActiveWork(), false)
+})
+
+test('Page reading uses the captured domain policy and stops publishing progress after revocation', async t => {
+  const f = await fixture(t)
+  await f.update({ allowedDomains: ['example.org'] })
+  await f.send()
+  let reads = 0
+  const pending = f.api.resolveAutomaticInternet(f.request(), new AbortController().signal, () => { reads++ })
+  await tick()
+  assert.deepEqual(plain(f.searches[0].request.allowedDomains), [...f.policy.getState().allowedDomains])
+  f.searches[0].onReading()
+  assert.equal(reads, 1)
+  await f.update({ enabled: false })
+  f.searches[0].onReading()
+  assert.equal(reads, 1)
+  f.drain.resolve(evidence)
+  assert.equal((await pending).error, 'cancelled')
 })
 
 test('The automatic callback refuses stale policy, generation, owner, mode and application authority', async t => {

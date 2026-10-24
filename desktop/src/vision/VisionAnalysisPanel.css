@@ -1,22 +1,22 @@
 /* Style the single active local-analysis form and keep evidence distinct from model setup without nested panel chrome. */
 
-.vision-analysis { display: grid; gap: 1.1rem; min-width: 0; }
-.vision-analysis-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .5rem; min-width: 0; }
-.vision-analysis-heading .tool-tabs { background: var(--color-bg-soft); padding: .2rem; }
-.vision-panel .vision-analysis-heading .tool-tabs > button { flex: 0 1 auto; min-height: 1.85rem; border: 0; box-shadow: none; }
+.vision-analysis { display: grid; gap: var(--space-4); min-width: 0; }
+.vision-analysis-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-2); min-width: 0; }
+.vision-analysis-heading .tool-tabs { background: var(--color-bg-soft); padding: var(--space-1); }
+.vision-panel .vision-analysis-heading .tool-tabs > button { flex: 0 1 auto; min-height: var(--control-height-sm); border: 0; box-shadow: none; }
 .vision-analysis h3 { margin: 0; font-size: var(--font-size-sm); }
-.vision-provider { display: grid; gap: 1rem; min-width: 0; }
+.vision-provider { display: grid; gap: var(--space-4); min-width: 0; }
 .vision-provider > button { justify-self: stretch; }
 .vision-panel .vision-provider-intro { color: var(--color-text-primary); font-size: var(--font-size-sm); }
 .vision-panel :is(.vision-provider-status, .vision-provider-note) { color: var(--color-text-muted); font-size: var(--font-size-xs); }
-.vision-analysis-controls { display: flex; flex-wrap: wrap; align-items: end; gap: .65rem; }
+.vision-analysis-controls { display: flex; flex-wrap: wrap; align-items: end; gap: var(--space-3); }
 .vision-analysis-controls > button:first-child { order: 2; border-color: transparent; background: transparent; color: var(--color-text-secondary); padding-inline: 0; }
 .vision-analysis-controls > .tool-primary { order: 3; }
 .vision-analysis-controls label { display: grid; flex: 1 1 10rem; gap: var(--space-1); min-width: 0; font-size: var(--font-size-sm); }
-.vision-analysis-controls select { max-width: 100%; padding: var(--space-1); color: var(--color-text-primary); background: var(--color-bg-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); }
-.vision-ocr-result { display: grid; gap: .85rem; min-width: 0; padding: 1rem 0 0; border-top: 1px solid var(--color-border); }
+.vision-analysis-controls select { max-width: 100%; padding: var(--space-2); color: var(--color-text-primary); background: var(--color-bg-surface); border: 1px solid var(--color-border-strong); border-radius: var(--radius-md); min-height: var(--control-height-md); }
+.vision-ocr-result { display: grid; gap: var(--space-3); min-width: 0; padding: var(--space-4) 0 0; }
 .vision-ocr-result > strong { font-size: var(--font-size-xs); font-weight: 500; }
-.vision-ocr-result pre { margin: 0; max-height: 14rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--font-size-sm); }
+.vision-ocr-result pre { margin: 0; max-height: 14rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--font-size-sm); line-height: var(--line-height-relaxed); }
 .vision-ocr-positions { position: relative; width: min(100%, 20rem); }
 .vision-ocr-positions img { display: block; width: 100%; height: 100%; }
 .vision-ocr-positions span { position: absolute; border: 1px solid var(--color-accent); background: color-mix(in srgb, var(--color-accent) 12%, transparent); }

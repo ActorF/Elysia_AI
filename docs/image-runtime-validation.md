@@ -1,13 +1,111 @@
-# 本地图片生成真实环境验收
+# 图片运行环境与验收记录
+
+此页统一保存图片运行环境的来源审计与实际生成证据。记录日期为 2026-10-16 至 2026-10-18，只代表当时的模型、硬件与版本；其中的本机路径是历史验收位置，不是安装 EXE 后自动具备的资源。部分旧模型和临时输出已清理，见下文对应记录。
+
+日常安装与使用请先阅读[本地图片生成指南](16-LOCAL-IMAGE-GENERATION.md)。原始审计 JSON、来源清单与测试摘要继续单独保存，便于机器核验。
+
+## 运行环境审计
+
+本次审计针对独立的 `models/cache/image-acceptance` 安装，不修改项目 Python 环境，不导入 Torch/ComfyUI、不启动推理，也不把依赖静态检查当成 GPU 验收。目标解释器的启动仍依赖其已经审核的 `_pth`/`site` 配置。
+
+## 本次结果
+
+完整快照保存在 [image-runtime-audit-2026-10-16.json](image-runtime-audit-2026-10-16.json)，生成时间为 `2026-10-16T19:38:14.774406+00:00`。
+
+| 检查 | 结果 |
+| --- | --- |
+| Python / pip | 3.13.14 / 26.2.1 |
+| Distribution | 89 个；`pip inspect` 与独立 metadata 清单一致 |
+| `pip check` | `No broken requirements found.` |
+| RECORD SHA-256 | 45,733 个唯一文件、4,334,040,326 字节通过；无 Hash 或尺寸不匹配 |
+| 预期空摘要 | 15,369 个 RECORD 自身或字节码条目；其他空摘要文件为 0 |
+| 未记录文件 | 0；未记录字节码不纳入该数字 |
+| 来源 Pin | 8 个 Archive/模型/许可/Wheel/本机配置摘要全部匹配；ComfyUI Revision 匹配且受版本控制文件无修改 |
+| OSV | 92/92 个精确/公开版本查询完成；命中包 0 |
+| Manifest 发现 | `torchvision==0.29.0+cu130` 的 RECORD 有 198 个规范化重复路径 |
+
+本次命令返回 `1`，保留上述 Manifest 发现。重复来自 `/` 与 `\` 两种分隔符：197 个非 RECORD 文件同时存在空摘要行与带摘要行，所有带摘要行均已独立验证，没有互相冲突的摘要；另一个重复是 RECORD 自身。工具没有修改、去重或重新安装 torchvision，也没有把这份安装称为没有审计发现的完整认证。
+
+## 可复现输入
+
+固定来源、模型许可和本机修改记录在 [image-runtime-provenance.json](image-runtime-provenance.json)。源码与依赖树审计和真实生成测试分别记录，互不替代。
+
+| 对象 | 复核输入 |
+| --- | --- |
+| ComfyUI | 官方 `v0.41.0`，Commit `98cc0bf84b7cb1383654c5b402e7612d875d6d22` |
+| NVIDIA Portable Archive | SHA-256 `7ff446d6904a9eecdfa07870a06238cc33a6204dcd31726edc6783efd080ac34` |
+| SDXL Base 1.0 | 官方仓库 Revision `76d28af79639c28a79fa5c6c6468febd3490a37e`，Checkpoint SHA-256 `31e35c80fc4829d14f90153f4c74cd59c90b779f6afe05a74cd6120b893f7e5b` |
+| Embedded Python | 安装随附 Python 3.13.14；具体版本字符串写入审计 JSON |
+| 本机 `_pth` 调整 | 原始 SHA-256 `5caee11a202b73328941593a3bea1a0540ddafc15a2fafc939be4520dd96e381`；审核后 `2d517fda409ddcaa916ffb15d73ec87161aa39a5512609aba85eab45a81895b9` |
+
+`_pth` 仅改为准确的绝对 ComfyUI、Python Zip、解释器和 site-packages 根，唯一执行行仍是 `import site`。这是本机受信安装调整，不把这些依赖路径当成每次生成请求的输入，也不声称官方 Archive 原样包含这一修改。
+
+Portable 原始安装的 `pip check` 缺少三个已经声明的模板资源依赖：`comfyui-workflow-templates-media-image==0.3.160`、`…-other==0.3.229`、`…-video==0.3.101`。本次只向该独立安装补齐三份 universal wheel；每份先核对官方 PyPI JSON SHA-256，再以 `--no-index --no-deps` 安装。精确 Wheel 摘要、版本和来源保存在 provenance 文件；项目 `.venv` 未安装或升级依赖。
+
+官方来源：[ComfyUI Release](https://github.com/Comfy-Org/ComfyUI/releases/tag/v0.41.0)、[SDXL Checkpoint](https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/blob/76d28af79639c28a79fa5c6c6468febd3490a37e/sd_xl_base_1.0.safetensors)、[Python 模块路径说明](https://docs.python.org/3.13/using/windows.html#finding-modules)。
+
+## 复现命令
+
+在 CMD 中从仓库根运行：
+
+```bat
+.venv\Scripts\python.exe scripts\audit_image_runtime.py ^
+  --python models\cache\image-acceptance\ComfyUI_windows_portable\python_embeded\python.exe ^
+  --acceptance-root models\cache\image-acceptance ^
+  --provenance docs\image-runtime-provenance.json ^
+  --output docs\image-runtime-audit-2026-10-16.json ^
+  --query-osv
+```
+
+工具执行有界的 `pip check`/`pip inspect`，交叉核对安装身份，读取每个 `.dist-info` 的许可与依赖声明，并核验 `RECORD` 中的 SHA-256、尺寸、文件身份及目录身份。合法的 Scripts/share 相对条目可在解释器根内读取；逃逸、静态链接、reparse、多硬链接、文件变化、未知摘要与未记录文件均有可见结果。正常的空摘要 RECORD 自身和字节码单独计数。目录检查按身份缓存并在结束时复核，审计要求安装在检查期间保持稳定，不提供抵抗恶意并发替换的原子文件系统快照。
+
+默认每次文件清单最多 512 个 Distribution、500,000 个清单/扫描条目、单文件 8 GiB、累计读取 64 GiB、20 分钟；Provenance 哈希另有相同的有界预算。子命令有输出与时间预算。`pip inspect` 显式使用 UTF-8，避免 Windows ANSI 编码截断非 ASCII 元数据。工具不安装、升级或修复运行环境。
+
+返回码 `0` 要求依赖关系、身份交叉检查、文件和来源摘要全部通过，OSV 全量查询完成且没有命中；`1` 表示报告已写入但存在发现、遗漏或未请求/未完成的漏洞查询；`2` 表示无法完整审计。离线执行可省略 `--query-osv`，报告会明确记录 `not-requested`。
+
+## 许可与覆盖范围
+
+ComfyUI 随附 [GPL v3 文本](https://github.com/Comfy-Org/ComfyUI/blob/98cc0bf84b7cb1383654c5b402e7612d875d6d22/LICENSE)；SDXL 的固定版本使用 [CreativeML Open RAIL++-M](https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/blob/76d28af79639c28a79fa5c6c6468febd3490a37e/LICENSE.md)，附有使用限制和分发条件。包的 License/License-Expression、Classifier、License-File 与核验过的随附许可文件均进入完整 JSON 清单。元数据缺失、长许可文本和混合许可不能被简化成统一的“允许分发”。当前仓库不分发该 Portable、Checkpoint 或运行时依赖。
+
+本次两个包没有 License/License-Expression 或许可 Classifier：`comfy-aimdo` 和 `comfyui_frontend_package`。`comfy-aimdo` 的随附 LICENSE 已通过 RECORD 核验，正文声明 GPL v3；[对应版本上游文件](https://github.com/Comfy-Org/comfy-aimdo/blob/v0.5.6/LICENSE) 可独立复查。Frontend Wheel 的 [PyPI 元数据](https://pypi.org/pypi/comfyui-frontend-package/1.55.17/json) 也未声明许可；[同版本上游 LICENSE](https://github.com/Comfy-Org/ComfyUI_frontend/blob/v1.55.17/LICENSE) 是 GPL v3 文本。这些人工补充没有改写安装元数据，也不认证 Wheel 所有前端第三方组件。另有 15 个包没有在已核验的 `.dist-info` 条目中检出许可文件，完整清单仍保留其实际声明；不能由此推导统一的分发许可。
+
+`RECORD` 是安装器提供的本地清单，能够发现清单与文件不一致，不能证明清单没有与文件一同被篡改，也不等同于发布者签名。它不认证未记录文件、空摘要字节码、ComfyUI 的任意未来修改或所有 CPython/原生 DLL 的组成与许可。Archive 与模型摘要只把本次文件关联到审核过的来源。
+
+漏洞查询使用 [OSV 官方 Batch API](https://google.github.io/osv.dev/post-v1-querybatch/)，提交包名和精确版本，处理分页；带 CUDA 本地版本标签的包同时查询其公开版本。服务不可用、形状错误、超时或分页超过预算都明确记为 `incomplete`。命中 ID 保留到报告并链接原始记录；查询结果只是生成时点的 PyPI 数据库视图，不能覆盖未知漏洞、驱动、CPython 与所有 bundled CUDA/FFmpeg/OpenSSL 等原生组件。
+
+`pip check` 通过只证明已声明的 Python 版本约束当前可满足。实际 ComfyUI 启动、生成、取消、失败、关闭、显存峰值、残留和持续运行由独立真实验收报告记录。
+
+## 2026-10-18 用户指定的本地资产
+
+本次根据用户明确指定的两个本机文件导入，不从仓库分发或重新发布模型。完整 SHA-256 与发布者版本 API 的文件摘要逐项匹配；安全格式检查确认第一个是 SDXL Checkpoint，第二个是 SDXL LoRA。原文件保留，私有副本以摘要命名；既有 SDXL Profile 和默认模型不变。
+
+| 资产 | 发布者版本与 SHA-256 |
+| --- | --- |
+| WAI Illustrious SDXL v8.0，6,938,040,682 字节 | [WAI0731，版本 1183765](https://civitai.com/models/827184?modelVersionId=1183765)；`63e5c28bf8ae348136c9f9cdbfde14d8a4a5daa13306e09a7752104b2fae2006` |
+| Hikari Elysia IL v1，28,947,460 字节 | [hi_ka_ri，版本 1318587](https://civitai.com/models/774891?modelVersionId=1318587)；`06ba4cd1cfb9b2e9ce181299f2546fc1db4cb64bab8a3c8ceb0aa108075a9e18` |
+
+发布页在复核时声明：WAI 允许 Image 与 RentCivit 范围的商业使用，允许衍生；Hikari 要求署名，商业许可仅列 RentCivit、不允许衍生，说明禁止转载。两个来源声明分别保存在其受信 Profile/LoRA 中，没有套用 SDXL Base 的统一许可。上述为发布者当时的条款记录，使用与分发仍应核对对应版本页面；摘要关联文件，不证明发布者拥有全部底层权利。原始 API 快照只保留在本机忽略目录。
+
+该 LoRA 使用 ComfyUI 内置 [LoraLoader](https://github.com/Comfy-Org/docs/blob/main/built-in-nodes/LoraLoader.mdx)，未增加 Custom Node、依赖包或元数据触发词。导入与选择不改变现有原创、虚构、明确成年、单人生成合同；没有新增内容模式。
+
+## Elysia 专用配置与风格 LoRA
+
+用户随后明确改为仅使用成年虚构 Elysia，主模型只保留 WAI，默认 Profile 改为 `wai-illustrious-v80`；Hikari 作为角色 LoRA，新增 `honkai-starrail-style-v1` 风格 LoRA，可单独或同时选择。Elysia 使用独立的固定身份合同，不再以原创角色确认代表该身份，仍没有内容模式。
+
+新增本机 `Honkai_Starrail_Style_Lora.safetensors` 为 SDXL/Illustrious LoRA，57,447,636 字节，完整 SHA-256 `0b1876635cfc93bbab11731a224472a5316b05cc4dd3213370a868d0e944c18b` 与 [FlyingOyster 发布版本 1852115](https://civitai.com/models/1636274?modelVersionId=1852115) 的文件记录完全匹配。发布页复核时允许不署名、商业图像/托管/模型销售及衍生；记录保存对应版本来源和条款摘要，不将其推导成对底层全部权利的认证。它使用相同内置 Loader，不增加安装依赖，也不读取元数据中的训练标签作为指令。
+
+用户已逐项批准清理旧 SDXL Base、已安装运行时的下载包和五个旧临时验收目录，共 332 个文件、9,314,432,892 字节。当前唯一使用中的 ComfyUI/Python、WAI、两个 LoRA 私有副本与三个原文件保留。正式 Gallery 四份文件在操作前后逐字节摘要一致。旧下载包与验收原始 PNG 已删除，因此上文审计/旧 Soak 为历史记录；复现其完整来源核验需恢复对应固定摘要的输入。清理回执及变更前配置备份保留在本机忽略目录 `tmp/elysia-studio-acceptance/operator-bda887d6610149609c82f87455b07a7d`。
+
+## 真实环境验收
 
 2026-10-16 基线验收使用 Windows、RTX 4070 SUPER 12 GiB、官方 ComfyUI v0.41.0
 便携运行时和官方 SDXL Base 1.0。安装、模型、运行目录和 Gallery 均放在
 忽略的验收目录，未覆盖用户的正式图片配置。来源、固定摘要、许可证和
-依赖清单见 [运行时审计](17-LOCAL-IMAGE-RUNTIME-AUDIT.md)。
+依赖清单见 [运行时审计](#运行环境审计)。
 
-## 已准备好的本机安装位置
+## 历史基线安装位置
 
-本机已下载模型并准备好便携 Python，设置页选择受信安装时可使用：
+以下是 2026-10-16 基线验收所使用的位置，旧 SDXL Checkpoint 已在后续清理中删除。新安装应在设置页选择自己的 ComfyUI、Python 和模型：
 
 | 项目 | 路径 |
 | --- | --- |
@@ -175,7 +273,7 @@ GPU 采样报告全卡已用显存的基线、峰值和末次值，其中包含�
 
 ## 2026-10-18 WAI 与可选 LoRA 桥接验收
 
-用户明确指定的 Checkpoint/LoRA 已导入正式配置的已有模型根，保留两份原文件、原 SDXL Profile 和默认模型。正式配置仅增加 `wai-illustrious-v80` 与其 `hikari-elysia-il-v1` 目录项，Revision 1→2。来源、精确摘要和各自条款见[资产补充审计](17-LOCAL-IMAGE-RUNTIME-AUDIT.md#2026-10-18-用户指定的本地资产)。此导入采用用户对给定文件的明确授权，未伪称自动点击原生确认窗口；日常产品流程由 Main 原生选择和确认，相关分支由 Manager/UI 测试覆盖。
+用户明确指定的 Checkpoint/LoRA 已导入正式配置的已有模型根，保留两份原文件、原 SDXL Profile 和默认模型。正式配置仅增加 `wai-illustrious-v80` 与其 `hikari-elysia-il-v1` 目录项，Revision 1→2。来源、精确摘要和各自条款见[资产补充审计](#2026-10-18-用户指定的本地资产)。此导入采用用户对给定文件的明确授权，未伪称自动点击原生确认窗口；日常产品流程由 Main 原生选择和确认，相关分支由 Manager/UI 测试覆盖。
 
 真实生成仍使用独立的 `tmp/image-lora-acceptance/3014d71d3d4d42b1b3f9fda5ee19a13c` 数据根，没有向正式 Gallery 添加或删除图片。沿用同一 ComfyUI 安装、1024×1024、28 Steps、Seed 420042，提示词为原创虚构、明确 28 岁、穿完整外套/衬衫/长裙的花园人物，没有角色触发词。分别运行生产 Backend/Main GPU Broker/私有 fd4/原生导出链路：
 
@@ -200,7 +298,7 @@ npm run smoke:image-backend -- --data-root <另一个独立验收根> --profile 
 
 ## Elysia 专用界面与双 LoRA 实测
 
-用户随后选择只保留 WAI 主模型，以 Hikari 作为角色 LoRA、Honkai Star Rail 作为风格 LoRA。正式配置现为 Revision 3；旧 SDXL、运行时下载包和五个旧验收目录已按逐项确认的清单删除，正式画廊及正在使用的 ComfyUI 保留。清理范围和来源见[运行时审计补充](17-LOCAL-IMAGE-RUNTIME-AUDIT.md#elysia-专用配置与风格-lora)。上文旧报告路径为历史位置，不再承诺原始临时 PNG 仍存在。
+用户随后选择只保留 WAI 主模型，以 Hikari 作为角色 LoRA、Honkai Star Rail 作为风格 LoRA。正式配置现为 Revision 3；旧 SDXL、运行时下载包和五个旧验收目录已按逐项确认的清单删除，正式画廊及正在使用的 ComfyUI 保留。清理范围和来源见[运行时审计补充](#elysia-专用配置与风格-lora)。上文旧报告路径为历史位置，不再承诺原始临时 PNG 仍存在。
 
 新生成页固定成年虚构 Elysia，主要显示画面描述、尺寸和 LoRA 多选/强度，其他参数折叠；设置页正常导入仅需选择文件。截图检查了桌面与窄窗口布局，完整 Playwright 346 项全部通过，Python 全套 5,022 项通过；后续缺失文件恢复的独立测试另行覆盖。普通导入没有 ID/来源/许可表单，高级安装修复仍折叠保留原入口。
 

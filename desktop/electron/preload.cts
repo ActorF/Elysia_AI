@@ -3,6 +3,7 @@
  */
 
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
+import type { WorkCommandApprovalDecision, WorkActivity } from './work-agent-protocol.js'
 import type { InternetPolicyState, UpdateInternetPolicyRequest } from './internet-policy-protocol.js'
 import type { InternetResearchState, InternetSearchRequest, InternetReadRequest, InternetSourceRequest, InternetSourceText, InternetWeatherRequest, InternetGithubRequest } from './internet-protocol.js'
 import type { InternetReview, InternetReviewRequest, InternetReviewLookup } from './internet-review-protocol.js'
@@ -30,6 +31,8 @@ import type {
   DesktopApi,
   DesktopThemePreference,
   DesktopSettingsState,
+  UserProfileState,
+  UpdateUserProfileRequest,
   KnowledgeExportResult,
   KnowledgeOperationReceipt,
   KnowledgeState,
@@ -77,6 +80,20 @@ import {
   type VoiceCallWindowAction,
   type VoiceCallWindowState,
 } from './voice-call-contracts.js'
+
+// Chromium retains the caption CSS environment variables in native fullscreen
+// on Windows. Main owns the actual state; keep this one-way hint out of the
+// public bridge so the renderer cannot issue arbitrary window commands.
+ipcRenderer.on('window:fullscreen-changed', (_event, fullscreen: unknown) => {
+  // Main's TypeScript target intentionally excludes DOM globals. Describe only
+  // the narrow preload-owned DOM access instead of enabling browser APIs there.
+  const root = (globalThis as unknown as {
+    document?: { documentElement: { dataset: Record<string, string> } | null }
+  }).document?.documentElement
+  if (typeof fullscreen === 'boolean' && root) {
+    root.dataset.windowFullscreen = String(fullscreen)
+  }
+})
 
 const MAX_DROPPED_ATTACHMENT_FILES = 10
 const TRUSTED_SPEECH_PLAY_CHANNEL = 'elysia:trusted-speech-play:v1'
@@ -825,6 +842,8 @@ ipcRenderer.on(
 )
 
 const desktopApi: DesktopApi = {
+  resolveWorkCommandApproval: (request: WorkCommandApprovalDecision) =>
+    ipcRenderer.invoke('work:command-approval', request) as Promise<{ ok: boolean; activity?: WorkActivity }>,
   reviewInternetSources: (request: InternetReviewRequest) => ipcRenderer.invoke('desktop:internet-research:review', request) as Promise<InternetReview>,
   getInternetReviewText: (request: InternetReviewLookup) => ipcRenderer.invoke('desktop:internet-research:review-text', request) as Promise<{ review: InternetReview; text: string }>,
   getInternetResearch: (chatId: string) => ipcRenderer.invoke('desktop:internet-research:get', chatId) as Promise<InternetResearchState>,
@@ -906,6 +925,12 @@ const desktopApi: DesktopApi = {
     ipcRenderer.invoke(
       'window:set-theme',
       theme,
+    ) as Promise<void>,
+
+  setInterfaceLocale: (locale: 'en' | 'zh-CN') =>
+    ipcRenderer.invoke(
+      'window:set-interface-locale',
+      locale,
     ) as Promise<void>,
 
   getDesktopPetState: () =>
@@ -1012,6 +1037,11 @@ const desktopApi: DesktopApi = {
     ipcRenderer.invoke(
       'settings:get',
     ) as Promise<DesktopSettingsState>,
+
+  getProfile: () => ipcRenderer.invoke('profile:get') as Promise<UserProfileState>,
+
+  updateProfile: (request: UpdateUserProfileRequest) =>
+    ipcRenderer.invoke('profile:update', request) as Promise<UserProfileState>,
 
   updateSettings: (request: UpdateDesktopSettingsRequest) =>
     ipcRenderer.invoke(

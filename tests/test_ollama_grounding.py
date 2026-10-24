@@ -177,11 +177,15 @@ class _SessionFactory:
         return session
 
 
-def _tags_response(digest: str = _DIGEST) -> _FakeResponse:
+def _tags_response(
+    digest: str = _DIGEST,
+    *,
+    model_tag: str = _MODEL,
+) -> _FakeResponse:
     """Return one exact installed model tag and manifest digest."""
 
     return _FakeResponse(
-        {"models": [{"name": _MODEL, "model": _MODEL, "digest": digest}]}
+        {"models": [{"name": model_tag, "model": model_tag, "digest": digest}]}
     )
 
 
@@ -279,22 +283,38 @@ def test_config_rejects_non_loopback_and_ambiguous_origins() -> None:
             OllamaGroundedAnswerConfig(model_tag=_MODEL, base_url=origin)
 
 
+@pytest.mark.parametrize(
+    ("model_tag", "installed_tag"),
+    [
+        (_MODEL, _MODEL),
+        ("tobestyledintro/qwen3.8-9b-distill:latest",
+         "tobestyledintro/qwen3.8-9b-distill:latest"),
+        ("registry.example:5000/team/local-model:q4_K_M",
+         "registry.example:5000/team/local-model:q4_K_M"),
+        ("team/local-model", "team/local-model:latest"),
+        ("team/local-model:latest", "team/local-model"),
+        ("registry.example:5000/team/local-model",
+         "registry.example:5000/team/local-model:latest"),
+    ],
+)
 def test_adapter_pins_digest_and_sends_closed_deterministic_policy(
     monkeypatch: pytest.MonkeyPatch,
+    model_tag: str,
+    installed_tag: str,
 ) -> None:
-    """Generation checks the digest on both sides and exposes no model tools."""
+    """Namespace identities retain digest checks, local transport, and no tools."""
 
-    factory = _SessionFactory([_tags_response()])
+    factory = _SessionFactory([_tags_response(model_tag=installed_tag)])
     monkeypatch.setattr(ollama_grounding.requests, "Session", factory)
     adapter = OllamaGroundedAnswerAdapter(
-        OllamaGroundedAnswerConfig(model_tag=_MODEL)
+        OllamaGroundedAnswerConfig(model_tag=model_tag)
     )
     request = _request(adapter)
     scripted = [
-        _tags_response(),
+        _tags_response(model_tag=installed_tag),
         _FakeResponse(
             {
-                "model": _MODEL,
+                "model": installed_tag,
                 "done": True,
                 "done_reason": "stop",
                 "message": {
@@ -303,7 +323,7 @@ def test_adapter_pins_digest_and_sends_closed_deterministic_policy(
                 },
             }
         ),
-        _tags_response(),
+        _tags_response(model_tag=installed_tag),
     ]
     factory.responses.extend(scripted)
 
@@ -316,7 +336,7 @@ def test_adapter_pins_digest_and_sends_closed_deterministic_policy(
     ]
     payload = json.loads(cast(bytes, factory.calls[2]["data"]))
     assert payload == {
-        "model": _MODEL,
+        "model": model_tag,
         "messages": [
             {"role": message.role, "content": message.content}
             for message in request.messages
@@ -337,6 +357,58 @@ def test_adapter_pins_digest_and_sends_closed_deterministic_policy(
         for call in factory.calls
     )
     assert all(response.closed for response in scripted)
+
+
+@pytest.mark.parametrize(
+    "model_tag",
+    [
+        "", " model:latest", "model:latest\n", "a" * 201,
+        "/models/model", "../model", "team/../model", "team//model",
+        "team/model/", r"C:\models\model", "C:/models/model",
+        "https://registry.example/team/model", "model?tag=latest",
+        "team/model:cloud", "team/model-cloud",
+    ],
+)
+def test_config_rejects_paths_malformed_names_and_cloud_models(
+    model_tag: str,
+) -> None:
+    """Namespace support does not admit native paths, URLs, or cloud aliases."""
+
+    with pytest.raises(ValueError, match="model_tag"):
+        OllamaGroundedAnswerConfig(model_tag=model_tag)
+
+
+def test_tagless_model_does_not_match_another_installed_variant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only latest is implicit; another installed explicit tag stays unavailable."""
+
+    factory = _SessionFactory([_tags_response(model_tag="team/model:q4_K_M")])
+    monkeypatch.setattr(ollama_grounding.requests, "Session", factory)
+    adapter = OllamaGroundedAnswerAdapter(OllamaGroundedAnswerConfig(model_tag="team/model"))
+    with pytest.raises(GroundedAnswerUnavailableError):
+        _ = adapter.identity
+
+
+def test_tagless_model_rejects_wrong_completion_variant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Alias normalization cannot publish another model's otherwise valid answer."""
+
+    factory = _SessionFactory([_tags_response(model_tag="team/model:latest")])
+    monkeypatch.setattr(ollama_grounding.requests, "Session", factory)
+    adapter = OllamaGroundedAnswerAdapter(OllamaGroundedAnswerConfig(model_tag="team/model"))
+    request = _request(adapter)
+    factory.responses.extend([
+        _tags_response(model_tag="team/model:latest"),
+        _FakeResponse({
+            "model": "team/model:q4_K_M", "done": True, "done_reason": "stop",
+            "message": {"role": "assistant", "content": _answer_content(request)},
+        }),
+        _tags_response(model_tag="team/model:latest"),
+    ])
+    with pytest.raises(GroundedAnswerFailedError, match="invalid response"):
+        adapter.generate(request)
 
 
 def test_adapter_rejects_model_digest_change_after_generation(
@@ -509,8 +581,16 @@ def test_adapter_rejects_http_json_beyond_configured_byte_limit(
         adapter.generate(request)
 
 
+@pytest.mark.parametrize(
+    ("requested_tag", "first_tag", "second_tag"),
+    [(_MODEL, _MODEL, _MODEL),
+     ("team/model", "team/model", "team/model:latest")],
+)
 def test_adapter_rejects_duplicate_installed_tag_records(
     monkeypatch: pytest.MonkeyPatch,
+    requested_tag: str,
+    first_tag: str,
+    second_tag: str,
 ) -> None:
     """Conflicting same-tag manifests cannot select an arbitrary model."""
 
@@ -519,9 +599,9 @@ def test_adapter_rejects_duplicate_installed_tag_records(
             _FakeResponse(
                 {
                     "models": [
-                        {"name": _MODEL, "digest": _DIGEST},
+                        {"name": first_tag, "digest": _DIGEST},
                         {
-                            "name": _MODEL,
+                            "name": second_tag,
                             "digest": hashlib.sha256(b"other").hexdigest(),
                         },
                     ]
@@ -531,7 +611,7 @@ def test_adapter_rejects_duplicate_installed_tag_records(
     )
     monkeypatch.setattr(ollama_grounding.requests, "Session", factory)
     adapter = OllamaGroundedAnswerAdapter(
-        OllamaGroundedAnswerConfig(model_tag=_MODEL)
+        OllamaGroundedAnswerConfig(model_tag=requested_tag)
     )
 
     with pytest.raises(

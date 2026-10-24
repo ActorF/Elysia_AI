@@ -8,7 +8,9 @@ import tseslint from 'typescript-eslint'
 import { defineConfig, globalIgnores } from 'eslint/config'
 
 export default defineConfig([
-  globalIgnores(['dist']),
+  // Packaged dependencies and generated bundles are not maintained source;
+  // scanning them also races with the build's replacement of output folders.
+  globalIgnores(['dist', 'dist-electron', 'build', 'out', 'test-results', 'playwright-report']),
   {
     files: ['**/*.{ts,tsx}'],
     extends: [

@@ -10,8 +10,9 @@
     "U+3000", "U+FEFF"
   ],
   "x-elysia-runtimeInvariants": [
+    "CMD command and cwd are nonblank valid Unicode without NUL; only command must be a single line without CR/LF, at most 8192 and 2048 UTF-8 bytes; cwd is drive-absolute and never UNC and stdout plus stderr total at most 16384 UTF-8 bytes",
     "Work result text is at most 32768 UTF-8 bytes; progress is at most 1000 code points and 4000 UTF-8 bytes. Neither accepts NUL or unpaired surrogates",
-    "Work options require canonical Work mode; permissions are frozen per generation, only four closed calls are allowed, retries never execute tools, and receipts bind request/chat/call identities",
+    "Work options require canonical Work mode; permissions are frozen per generation, at most eight validated calls are allowed, retries never execute tools, and receipts bind request/chat/call identities and exact CMD command plus explicit cwd; only ask/full permit run_command and old auto does not grant CMD",
     "chat.internet.resolve sources contain at most five exact source records with UTF-8 byte limits title 2048, URL 4096, snippet 4096, and compact sources JSON 32768; error is null or sources is empty",
     "Internet source URLs are HTTPS with no credentials, non-default port, backslash, whitespace or control bytes; fetchedAt is canonical valid UTC ISO with milliseconds",
     "Internet query is nonblank and at most 2048 UTF-8 bytes; automaticInternet is Main-only and ignored for Project Sources or non-Chat mode",
@@ -114,6 +115,8 @@
     { "$ref": "#/$defs/projectWorkspaceRequest" },
     { "$ref": "#/$defs/projectArchiveRequest" },
     { "$ref": "#/$defs/projectChatMoveRequest" },
+    { "$ref": "#/$defs/profileGetRequest" },
+    { "$ref": "#/$defs/profileUpdateRequest" },
     { "$ref": "#/$defs/settingsGetRequest" },
     { "$ref": "#/$defs/settingsUpdateRequest" },
     { "$ref": "#/$defs/voiceSettingsGetRequest" },
@@ -603,6 +606,8 @@
             "project.workspace",
             "project.archive",
             "project.chat.move",
+            "profile.get",
+            "profile.update",
             "settings.get",
             "settings.update",
             "voice.settings.get",
@@ -836,6 +841,7 @@
           "maxLength": 1000000,
           "pattern": "[^\\u0009-\\u000D\\u0020\\u0085\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF]"
         },
+        "automaticInternet": { "type": "boolean" },
         "workOptions": { "$ref": "#/$defs/chatWorkOptions" },
         "useProjectKnowledge": { "type": "boolean" },
         "speakReply": { "type": "boolean" }
@@ -1408,7 +1414,8 @@
             "none",
             "read",
             "ask",
-            "auto"
+            "auto",
+            "full"
           ]
         }
       },
@@ -1421,6 +1428,109 @@
     "chatWorkCallId": {
       "type": "string",
       "pattern": "^work_call_[0-9a-f]{32}$"
+    },
+    "chatWorkCommandText": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 8192,
+      "pattern": "^[^\\u0000\\r\\n\\uD800-\\uDFFF]*$"
+    },
+    "chatWorkCommandCwd": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048,
+      "allOf": [
+        {
+          "pattern": "^[^\\u0000\\uD800-\\uDFFF]*$"
+        },
+        {
+          "pattern": "^[A-Za-z]:[\\\\/]"
+        }
+      ]
+    },
+    "chatWorkCommandArguments": {
+      "type": "object",
+      "properties": {
+        "command": {
+          "$ref": "#/$defs/chatWorkCommandText"
+        },
+        "cwd": {
+          "$ref": "#/$defs/chatWorkCommandCwd"
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 120000
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "additionalProperties": false
+    },
+    "chatWorkCommandReceipt": {
+      "type": "object",
+      "properties": {
+        "command": {
+          "$ref": "#/$defs/chatWorkCommandText"
+        },
+        "cwd": {
+          "$ref": "#/$defs/chatWorkCommandCwd"
+        },
+        "stdout": {
+          "type": "string",
+          "maxLength": 16384,
+          "pattern": "^[^\\u0000\\uD800-\\uDFFF]*$"
+        },
+        "stderr": {
+          "type": "string",
+          "maxLength": 16384,
+          "pattern": "^[^\\u0000\\uD800-\\uDFFF]*$"
+        },
+        "exitCode": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": -2147483648,
+          "maximum": 4294967295
+        },
+        "termination": {
+          "enum": [
+            "exit",
+            "timeout",
+            "cancelled",
+            "spawn_failed"
+          ]
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "command",
+        "cwd",
+        "stdout",
+        "stderr",
+        "exitCode",
+        "termination",
+        "truncated"
+      ],
+      "additionalProperties": false,
+      "if": {
+        "properties": {
+          "termination": {
+            "const": "exit"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "exitCode": {
+            "type": "integer"
+          }
+        }
+      }
     },
     "chatWorkResult": {
       "type": "object",
@@ -1448,6 +1558,9 @@
             "failed",
             "timeout"
           ]
+        },
+        "command": {
+          "$ref": "#/$defs/chatWorkCommandReceipt"
         }
       },
       "required": [
@@ -1478,7 +1591,99 @@
             }
           }
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "command"
+            ]
+          },
+          "then": {
+            "properties": {
+              "status": {
+                "not": {
+                  "const": "denied"
+                }
+              }
+            },
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "status": {
+                      "const": "succeeded"
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "command": {
+                      "properties": {
+                        "termination": {
+                          "const": "exit"
+                        },
+                        "exitCode": {
+                          "const": 0
+                        }
+                      }
+                    }
+                  }
+                },
+                "else": {
+                  "properties": {
+                    "command": {
+                      "not": {
+                        "properties": {
+                          "termination": {
+                            "const": "exit"
+                          },
+                          "exitCode": {
+                            "const": 0
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "status": {
+                      "const": "cancelled"
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "command": {
+                      "properties": {
+                        "termination": {
+                          "const": "cancelled"
+                        }
+                      }
+                    }
+                  }
+                },
+                "else": {
+                  "properties": {
+                    "command": {
+                      "properties": {
+                        "termination": {
+                          "not": {
+                            "const": "cancelled"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ]
     },
     "chatWorkResolveParams": {
       "type": "object",
@@ -1661,6 +1866,30 @@
             "arguments"
           ],
           "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "chatId": {
+              "$ref": "#/$defs/workChatId"
+            },
+            "callId": {
+              "$ref": "#/$defs/chatWorkCallId"
+            },
+            "tool": {
+              "const": "run_command"
+            },
+            "arguments": {
+              "$ref": "#/$defs/chatWorkCommandArguments"
+            }
+          },
+          "required": [
+            "chatId",
+            "callId",
+            "tool",
+            "arguments"
+          ],
+          "additionalProperties": false
         }
       ]
     },
@@ -1704,7 +1933,7 @@
         "url": { "type": "string", "minLength": 1, "maxLength": 4096, "pattern": "^https://" },
         "snippet": { "type": "string", "maxLength": 4096 },
         "fetchedAt": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$" },
-        "provider": { "enum": ["web", "wikipedia"] }
+        "provider": { "enum": ["web", "wikipedia", "weather"] }
       }, "required": ["title", "url", "snippet", "fetchedAt", "provider"], "additionalProperties": false
     },
     "chatInternetResolveParams": {
@@ -2060,6 +2289,72 @@
           "properties": {
             "method": { "const": "project.chat.move" },
             "params": { "$ref": "#/$defs/projectChatMoveParams" }
+          }
+        }
+      ]
+    },
+    "profileStateResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "userName"
+      ],
+      "properties": {
+        "kind": {
+          "const": "profile"
+        },
+        "userName": {
+          "type": "string"
+        }
+      }
+    },
+    "profileGetRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/requestEnvelope"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "profile.get"
+            },
+            "params": {
+              "$ref": "#/$defs/settingsGetParams"
+            }
+          }
+        }
+      ]
+    },
+    "profileUpdateRequest": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/requestEnvelope"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "profile.update"
+            },
+            "params": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "expectedUserName",
+                "userName"
+              ],
+              "properties": {
+                "expectedUserName": {
+                  "type": "string"
+                },
+                "userName": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 80,
+                  "pattern": "^[^\\s\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029\\ud800-\\udfff](?:[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029\\ud800-\\udfff]*[^\\s\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029\\ud800-\\udfff])?$"
+                }
+              }
+            }
           }
         }
       ]
@@ -3451,6 +3746,7 @@
             { "$ref": "#/$defs/attachmentStateResult" },
             { "$ref": "#/$defs/knowledgeStateResult" },
             { "$ref": "#/$defs/knowledgeExportResult" },
+            { "$ref": "#/$defs/profileStateResult" },
             { "$ref": "#/$defs/settingsStateResult" },
             { "$ref": "#/$defs/voiceSettingsStateResult" },
             { "$ref": "#/$defs/voiceCaptureResult" },
@@ -3692,7 +3988,9 @@
                     "en",
                     "zh"
                   ]
-                }
+                },
+                "kind": { "enum": ["search", "weather"] },
+                "when": { "enum": ["now", "today", "tomorrow"] }
               },
               "required": [
                 "chatId",
@@ -3700,7 +3998,11 @@
                 "query",
                 "language"
               ],
-              "additionalProperties": false
+              "additionalProperties": false,
+              "allOf": [{
+                "if": { "required": ["when"] },
+                "then": { "required": ["kind"], "properties": { "kind": { "const": "weather" } } }
+              }]
             }
           },
           "required": [
@@ -3710,6 +4012,26 @@
             "requestId",
             "data"
           ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "event" },
+            "protocol": { "$ref": "#/$defs/protocol" },
+            "event": { "const": "chat.research.status" },
+            "requestId": { "$ref": "#/$defs/identifier" },
+            "data": {
+              "type": "object",
+              "properties": {
+                "chatId": { "$ref": "#/$defs/identifier" },
+                "stage": { "enum": ["planning", "searching", "weather", "reading", "answering", "failed"] }
+              },
+              "required": ["chatId", "stage"],
+              "additionalProperties": false
+            }
+          },
+          "required": ["type", "protocol", "event", "requestId", "data"],
           "additionalProperties": false
         },
         {

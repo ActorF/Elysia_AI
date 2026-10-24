@@ -1,5 +1,8 @@
 /** Review one exact display/window capture scope and preserve native ownership through cancellation and resource drain. */
 
+import { t, useTranslation, getDateLocale } from '../i18n/LocaleProvider.tsx'
+import { formatUiError } from '../i18n/ui-error.ts'
+import { HelpHint } from '../design-system/HelpHint.tsx'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { VisionState } from '../../electron/vision-protocol.ts'
 import { parseVisionCaptureRegion, type VisionCaptureClient, type VisionCaptureSources,
@@ -21,6 +24,7 @@ interface VisionCapturePanelProps {
 
 /** Request metadata on a click, review a short-lived exact scope, and admit at most one captured frame. */
 export function VisionCapturePanel({ api, chatId, projectId, ready, disabled, imageLimitReached, onStateChange, onBusyChange }: VisionCapturePanelProps) {
+  useTranslation()
   const [sources, setSources] = useState<VisionCaptureSources | null>(null)
   const [selectionId, setSelectionId] = useState('')
   const [scope, setScope] = useState<'full' | 'region'>('full')
@@ -97,18 +101,18 @@ export function VisionCapturePanel({ api, chatId, projectId, ready, disabled, im
       if (kind === 'list' || kind === 'edit') {
         const next = kind === 'list' ? await api.listVisionCaptureSources(chatId) : await api.cancelVisionCapture(chatId)
         if (token !== version.current) return
-        if (!owned(next.owner)) throw new Error('Capture owner changed.')
+        if (!owned(next.owner)) throw new Error(t("Capture owner changed."))
         setSources(next); setApproval(null)
         if (kind === 'list') setSelectionId('')
       } else if (kind === 'prepare') {
         const next = await api.prepareVisionCapture({ chatId, selectionId: selected!.selectionId, region: effectiveScope === 'region' ? region : null })
         if (token !== version.current) return
-        if (!owned(next.owner) || next.source.selectionId !== selected?.selectionId) throw new Error('Capture scope changed.')
+        if (!owned(next.owner) || next.source.selectionId !== selected?.selectionId) throw new Error(t("Capture scope changed."))
         setApproval(next)
       } else {
         const next = await api.captureVision({ chatId, approvalId: reviewed!.approvalId, granted })
         if (token !== version.current) return
-        if (!owned(next.state.owner)) throw new Error('Capture owner changed.')
+        if (!owned(next.state.owner)) throw new Error(t("Capture owner changed."))
         onStateChange(next.state)
         setNotice(next.cancelled ? 'Capture cancelled. No image was added.' : 'One selected frame was added for review.')
       }
@@ -134,7 +138,7 @@ export function VisionCapturePanel({ api, chatId, projectId, ready, disabled, im
     try {
       const next = await api.cancelVisionCapture(chatId)
       if (token !== version.current) return
-      if (!owned(next.owner)) throw new Error('Capture owner changed.')
+      if (!owned(next.owner)) throw new Error(t("Capture owner changed."))
       setSources(next)
       observe(next.busy, token)
       setNotice(next.busy ? 'Cancellation requested. Waiting for capture resources to close.' : 'Capture cancellation requested.')
@@ -147,59 +151,60 @@ export function VisionCapturePanel({ api, chatId, projectId, ready, disabled, im
   const regionAllowed = selected?.kind === 'display' && selected.width !== null && selected.height !== null
   const effectiveScope = regionAllowed ? scope : 'full'
   let region: VisionCaptureRegion | null = null
-  if (effectiveScope === 'region') {
+  // Number('') is zero, but an erased coordinate is an unfinished edit, not
+  // permission to capture from the top or left edge of the selected display.
+  if (effectiveScope === 'region' && percentages.every((value) => value.trim() !== '')) {
     try { region = parseVisionCaptureRegion({ x: Number(percentages[0]) / 100, y: Number(percentages[1]) / 100,
       width: Number(percentages[2]) / 100, height: Number(percentages[3]) / 100 }) } catch { /* Invalid edits never reach native admission. */ }
   }
   const locked = disabled || !ready || leased || operation !== null || api === undefined
   const expired = approval !== null && clock >= Date.parse(approval.expiresAt)
 
-  return <section className="vision-capture" aria-label="Screenshot permission" aria-busy={leased}>
-    <h3>Capture a screenshot</h3>
-    <p>Choose a display or window, then confirm one screenshot. Listing sources does not capture pixels.</p>
-    <button type="button" className={visibleSources.length === 0 ? 'tool-primary' : 'tool-quiet'} disabled={locked} onClick={() => { void act('list') }}>List displays and windows</button>
+  return <section className="vision-capture" aria-label={t("Screenshot permission")} aria-busy={leased}>
+    <h3>{t("Capture a screenshot")}</h3>
+    <HelpHint label={t("Capture a screenshot")}>{t("Choose a display or window, then confirm one screenshot. Listing sources does not capture pixels.")}</HelpHint>
+    <button type="button" className={visibleSources.length === 0 ? 'tool-primary' : 'tool-quiet'} disabled={locked} onClick={() => { void act('list') }}>{t("List displays and windows")}</button>
     <div className="vision-capture-controls" hidden={sources === null}>
-      <label>Capture source<select value={selected?.selectionId ?? ''} disabled={locked || approval !== null}
+      <label>{t("Capture source")}<select value={selected?.selectionId ?? ''} disabled={locked || approval !== null}
         onChange={(event) => { setSelectionId(event.currentTarget.value) }}>
-        <option value="">Select a display or window</option>
-        {visibleSources.map((source) => <option key={source.selectionId} value={source.selectionId}>{source.kind} · {source.label}</option>)}
+        <option value="">{t("Select a display or window")}</option>
+        {visibleSources.map((source) => <option key={source.selectionId} value={source.selectionId}>{source.kind === 'display' ? t("Display") : t("Window")} · {source.label}</option>)}
       </select></label>
-      <label>Capture scope<select value={effectiveScope} disabled={locked || approval !== null || selected === undefined}
+      <label>{t("Capture scope")}<select value={effectiveScope} disabled={locked || approval !== null || selected === undefined}
         onChange={(event) => { setScope(event.currentTarget.value as 'full' | 'region') }}>
-        <option value="full">One full selected source frame</option>
-        <option value="region" disabled={!regionAllowed}>Region of selected display</option>
+        <option value="full">{t("One full selected source frame")}</option>
+        <option value="region" disabled={!regionAllowed}>{t("Region of selected display")}</option>
       </select></label>
     </div>
     {effectiveScope === 'region' && <div className="vision-capture-region">
-      <p>A region capture temporarily reads one full frame of this selected display, then keeps the crop and discards pixels outside it.</p>
-      {['Left (%)', 'Top (%)', 'Width (%)', 'Height (%)'].map((label, index) => <label key={label}>{label}
+      <p>{t("A region capture temporarily reads one full frame of this selected display, then keeps the crop and discards pixels outside it.")}</p>
+      {[t("Left (%)"), t("Top (%)"), t("Width (%)"), t("Height (%)")].map((label, index) => <label key={label}>{label}
         <input type="number" min={index < 2 ? 0 : 0.1} max={100} step={0.1} value={percentages[index]}
           disabled={locked || approval !== null} onChange={(event) => {
             const next = event.currentTarget.value
             setPercentages((current) => current.map((value, ordinal) => ordinal === index ? next : value))
           }} />
       </label>)}
-      {region === null && <p role="alert">Region percentages must stay inside this selected display.</p>}
+      {region === null && <p role="alert">{t("Region percentages must stay inside this selected display.")}</p>}
     </div>}
     <button type="button" className="tool-primary" hidden={selected === undefined} disabled={locked || selected === undefined || approval !== null || imageLimitReached || effectiveScope === 'region' && region === null}
-      onClick={() => { void act('prepare') }}>Review capture scope</button>
-    {imageLimitReached && <p>Remove an image before adding a screenshot.</p>}
-    {approval !== null && <section className="vision-capture-review" aria-label="Capture scope review">
-      <strong>{approval.region === null ? 'One selected source frame' : 'One selected display region'} · {approval.source.label}</strong>
-      <p>Source kind: {approval.source.kind}. Expires: {approval.expiresAt}.</p>
-      {approval.region !== null && <p>Normalized crop: left {approval.region.x}, top {approval.region.y}, width {approval.region.width}, height {approval.region.height}.
-        One full selected-display frame is temporarily captured before the crop is kept.</p>}
-      {expired && <p role="alert">This capture review expired. Edit the scope and prepare a fresh review.</p>}
+      onClick={() => { void act('prepare') }}>{t("Review capture scope")}</button>
+    {imageLimitReached && <p>{t("Remove an image before adding a screenshot.")}</p>}
+    {approval !== null && <section className="vision-capture-review" aria-label={t("Capture scope review")}>
+      <strong>{approval.region === null ? t("One selected source frame") : t("One selected display region")} · {approval.source.label}</strong>
+      <p>{t("Source kind: ")}{approval.source.kind === 'display' ? t("Display") : t("Window")}{t(". Expires: ")}{new Date(approval.expiresAt).toLocaleString(getDateLocale())}.</p>
+      {approval.region !== null && <p>{t("Normalized crop: left ")}{approval.region.x}{t(", top ")}{approval.region.y}{t(", width ")}{approval.region.width}{t(", height ")}{approval.region.height}{t(". One full selected-display frame is temporarily captured before the crop is kept.")}</p>}
+      {expired && <p role="alert">{t("This capture review expired. Edit the scope and prepare a fresh review.")}</p>}
       <div className="vision-capture-controls">
-        <button type="button" className="tool-primary" disabled={locked || expired || imageLimitReached} onClick={() => { void act('capture') }}>Capture this source once</button>
-        <button type="button" disabled={locked} onClick={() => { void act('capture', false) }}>Deny capture</button>
-        <button type="button" disabled={locked} onClick={() => { void act('edit') }}>Edit capture scope</button>
+        <button type="button" className="tool-primary" disabled={locked || expired || imageLimitReached} onClick={() => { void act('capture') }}>{t("Capture this source once")}</button>
+        <button type="button" disabled={locked} onClick={() => { void act('capture', false) }}>{t("Deny capture")}</button>
+        <button type="button" disabled={locked} onClick={() => { void act('edit') }}>{t("Edit capture scope")}</button>
       </div>
     </section>}
-    {leased && <button type="button" disabled={!ready || cancelPending} onClick={() => { void cancel() }}>Cancel capture</button>}
-    {leased && operation === null && <p role="status">A native capture is still active. Cancel it or wait for its resources to close.</p>}
-    {operation !== null && <p role="status">{operation === 'capture' ? 'Waiting for the one-frame capture and native resources to close…' : 'Preparing capture metadata…'}</p>}
-    {notice !== null && <p role="status">{notice}</p>}
-    {error !== null && <p role="alert">{error}</p>}
+    {leased && <button type="button" disabled={!ready || cancelPending} onClick={() => { void cancel() }}>{t("Cancel capture")}</button>}
+    {leased && operation === null && <p role="status">{t("A native capture is still active. Cancel it or wait for its resources to close.")}</p>}
+    {operation !== null && <p role="status">{operation === 'capture' ? t("Waiting for the one-frame capture and native resources to close…") : t("Preparing capture metadata…")}</p>}
+    {notice !== null && <p role="status">{t(notice)}</p>}
+    {error !== null && <p role="alert">{formatUiError(error)}</p>}
   </section>
 }

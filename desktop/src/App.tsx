@@ -6,6 +6,9 @@
  * while delegating layout and visual states to focused UI components.
  */
 
+import { t, useLocale } from './i18n/LocaleProvider.tsx'
+import { formatUiError } from './i18n/ui-error.ts'
+
 import {
   useCallback,
   useEffect,
@@ -42,6 +45,7 @@ import type {
   DesktopPetState,
 } from '../electron/desktop-pet-contracts.ts'
 import type { DataStorageViewState } from '../electron/data-storage-contracts.ts'
+import { isLocalModelSetupError } from '../electron/local-ollama-origin.js'
 import type {
   PresenceNotificationState,
   PresenceReminderFrequency,
@@ -66,18 +70,21 @@ import { CharacterPanel } from './character/CharacterPanel.tsx'
 import { resolveCharacterEmotion } from './character/character-emotion.ts'
 import { deriveApplicationCharacterState } from './character/character-state.ts'
 import { ChatView } from './chat/ChatView.tsx'
+import { WorkCommandApproval } from './chat/WorkCommandApproval.tsx'
 import { ImageGenerator } from './images/ImageGenerator.tsx'
+import { HelpHint } from './design-system/HelpHint.tsx'
 import { ImageSettingsSection } from './images/ImageSettingsSection.tsx'
 import { WorkPanel } from './work/WorkPanel.tsx'
 import { VisionPanel } from './vision/VisionPanel.tsx'
 import { InternetPanel } from './internet/InternetPanel.tsx'
+import type { InternetPolicyState } from '../electron/internet-policy-protocol.ts'
 import type {
   ChatMessage,
   ChatNotice,
   RetryEditDraft,
   RetryableChatPair,
 } from './chat/types.ts'
-import { EmptyState, InlineAlert } from './design-system/Feedback.tsx'
+import { InlineAlert } from './design-system/Feedback.tsx'
 import { Icon } from './design-system/Icon.tsx'
 import { ProjectView } from './projects/ProjectView.tsx'
 import {
@@ -596,7 +603,7 @@ function focusChatComposer(): void {
 
 function mayLeaveSettings(view: AppView, dirty: boolean): boolean {
   return view !== 'settings' && dirty
-    ? window.confirm('Discard unsaved Settings changes?')
+    ? window.confirm(t('Discard unsaved Settings changes?'))
     : true
 }
 
@@ -643,6 +650,10 @@ interface InFlightTurn {
   attachments: ChatAttachment[]
   baseMessageCount: number
   operationId: string
+  /** Preserve a Stop click that arrives before Main acknowledges this generation. */
+  manualStopRequested?: boolean
+  /** Avoid dispatching the same Stop again when an IPC receipt follows a snapshot. */
+  manualStopDispatched?: boolean
   requestId: string | null
   chatId: string
   kind: 'send' | 'retry'
@@ -876,56 +887,9 @@ function retryableTailText(messages: ChatMessage[], messageId: string): string {
   return messages.find((message) => message.id === messageId)?.text ?? ''
 }
 
-interface PlaceholderViewProps {
-  description: string
-  icon: 'folder' | 'memory'
-  sidebarOpen: boolean
-  title: string
-  onToggleSidebar(): void
-}
-
-function PlaceholderView({
-  description,
-  icon,
-  sidebarOpen,
-  title,
-  onToggleSidebar,
-}: PlaceholderViewProps) {
-  return (
-    <div className="placeholder-view">
-      <header className="topbar page-topbar">
-        <div className="topbar-leading">
-          <button
-            type="button"
-            className="icon-button sidebar-toggle"
-            aria-label={sidebarOpen ? 'Hide navigation' : 'Show navigation'}
-            aria-controls="app-sidebar"
-            aria-expanded={sidebarOpen}
-            aria-keyshortcuts="Control+B Meta+B"
-            title="Toggle navigation (Ctrl+B)"
-            onClick={onToggleSidebar}
-          >
-            <Icon name="menu" />
-          </button>
-          <div className="chat-heading">
-            <strong>{title}</strong>
-            <span>Workspace</span>
-          </div>
-        </div>
-      </header>
-      <main className="placeholder-content">
-        <EmptyState
-          icon={icon}
-          title={`No ${title.toLocaleLowerCase()} to show yet`}
-          description={description}
-        />
-      </main>
-    </div>
-  )
-}
-
 /** Coordinate Backend state, durable drafts, and all top-level renderer workflows. */
 function App() {
+  useLocale()
   const desktopApi = window.elysiaDesktop
   const { theme, resolvedTheme, setTheme } = useTheme()
   const [snapshot, setSnapshot] = useState<BackendSnapshot>(() => (
@@ -947,6 +911,20 @@ function App() {
   const [visionPresentation, setVisionPresentation] = useState<{ open: boolean; initialView: 'capture' | 'review'; attachmentId?: string }>({ open: false, initialView: 'capture' })
   const [internetOperationPending, setInternetOperationPending] = useState(false)
   const [internetLifecycleEpoch, setInternetLifecycleEpoch] = useState(0)
+  const [internetPolicy, setInternetPolicy] = useState<InternetPolicyState | null>(null)
+  const [settingsEntryCategory, setSettingsEntryCategory] = useState<'general' | 'internet'>('general')
+  useEffect(() => {
+    if (typeof desktopApi?.getInternetPolicy !== 'function' || typeof desktopApi.onInternetPolicyChanged !== 'function') return
+    let active = true, events = 0
+    const accept = (next: InternetPolicyState): void => {
+      if (active) setInternetPolicy(current => current !== null && current.revision > next.revision ? current : next)
+    }
+    // Emergency revocation can retain its revision, so even an equal-revision
+    // initial read must not overwrite a policy event delivered after it began.
+    const unsubscribe = desktopApi.onInternetPolicyChanged(next => { events += 1; accept(next) })
+    void desktopApi.getInternetPolicy().then(next => { if (events === 0) accept(next) }, () => {})
+    return () => { active = false; unsubscribe() }
+  }, [desktopApi])
   const [selectedWorkVisionContext, setSelectedWorkVisionContext] = useState<VisionContext | null>(null)
   const [workspaceAttentionKey, setWorkspaceAttentionKey] = useState<string>()
   const [conversationAttentionRevision, setConversationAttentionRevision] = useState(0)
@@ -1075,6 +1053,7 @@ function App() {
   const [workActivitiesByChat, setWorkActivitiesByChat] = useState<Record<string, WorkActivity>>({})
   const [workHistory, setWorkHistory] = useState<{ chatId: string; projectId: string | null; history: WorkAuditState } | null>(null)
   const [workHistoryEpoch, setWorkHistoryEpoch] = useState(0)
+  const [workHistoryReviewRevision, setWorkHistoryReviewRevision] = useState(0)
   const workHistoryEpochRef = useRef(0)
   const workActivitiesRef = useRef<Record<string, WorkActivity>>({})
   const pendingWorkActivitiesRef = useRef(new Map<string, WorkActivity>())
@@ -1342,6 +1321,12 @@ function App() {
     waitingApproval: false,
   })
   const stopPending = activeGeneration && inFlightTurn?.phase === 'stopping'
+  const currentWorkActivity = activeChatId === undefined ? undefined : workActivitiesByChat[activeChatId]
+  const currentCommandApproval = workTurnAvailable && activeView === 'chat' && snapshot.status === 'ready'
+    && snapshot.chatId === activeChatId && currentWorkActivity?.status === 'running'
+    && currentWorkActivity.options.permission === 'ask' && !stopPending
+    && !settledGenerationRequestIdsRef.current.has(currentWorkActivity.requestId)
+    ? currentWorkActivity.commandApproval : undefined
   const speechAvailable = snapshot.capabilities.includes('voice.speech')
   const manualSpeechAvailable = speechAvailable
     && snapshot.capabilities.includes('voice.speech.start')
@@ -1816,7 +1801,7 @@ function App() {
       if (!current.abandoned) {
         setVoiceSpeechWarning(
           error instanceof Error
-            ? `The previous reply has not stopped yet: ${error.message}`
+            ? t('The previous reply has not stopped yet: {error}', { error: formatUiError(error.message) })
             : 'The previous reply has not stopped yet. Keep speaking while cancellation retries.',
         )
       }
@@ -2501,7 +2486,7 @@ function App() {
         return
       }
       recoverVoiceCallRef.current(
-        `${captureError.message} Retrying the microphone (${retryNumber}/${MAX_AUTOMATIC_VOICE_CAPTURE_RECOVERY_ATTEMPTS}).`,
+        t('{error} Retrying the microphone ({attempt}/{max}).', { error: formatUiError(captureError.message), attempt: retryNumber, max: MAX_AUTOMATIC_VOICE_CAPTURE_RECOVERY_ATTEMPTS }),
       )
     }, VOICE_CAPTURE_RECOVERY_DELAY_MS * retryNumber)
     return () => {
@@ -2779,7 +2764,9 @@ function App() {
         // only the eventual send/retry receipt may select the visible record.
         const pending = pendingWorkActivitiesRef.current.get(activity.requestId)
         if (pending !== undefined && (
-          (pending.entries.at(-1)?.sequence ?? -1) > (activity.entries.at(-1)?.sequence ?? -1)
+          pending.revision !== undefined && (activity.revision === undefined || pending.revision >= activity.revision)
+          || (pending.entries.at(-1)?.sequence ?? -1) > (activity.entries.at(-1)?.sequence ?? -1)
+          || (pending.commands?.length ?? 0) > (activity.commands?.length ?? 0)
           || pending.status !== 'running' && activity.status === 'running'
         )) return
         pendingWorkActivitiesRef.current.set(activity.requestId, activity)
@@ -2793,7 +2780,14 @@ function App() {
     } else if (!fromSnapshot) return
     const previous = workActivitiesRef.current[activity.chatId]
     if (previous?.requestId === activity.requestId && (
-      (previous.entries.at(-1)?.sequence ?? -1) > (activity.entries.at(-1)?.sequence ?? -1)
+      // Approval removal may have the same Python sequence and receipt count
+      // as its pending state. Native revisions prevent a delayed snapshot from
+      // resurrecting an already resolved Yes/No prompt.
+      previous.revision !== undefined && (activity.revision === undefined || previous.revision >= activity.revision)
+      || (previous.entries.at(-1)?.sequence ?? -1) > (activity.entries.at(-1)?.sequence ?? -1)
+      // Native command receipts arrive between Python progress entries. An
+      // older snapshot with the same sequence must not erase their evidence.
+      || (previous.commands?.length ?? 0) > (activity.commands?.length ?? 0)
       || previous.status !== 'running' && activity.status === 'running'
     )) return
     workActivitiesRef.current = { ...workActivitiesRef.current, [activity.chatId]: activity }
@@ -4647,7 +4641,19 @@ function App() {
     const activeGeneration = snapshot.activeGeneration
     const currentTurn = inFlightTurnRef.current
 
+    // A research snapshot can commit before its terminal IPC arrives, while
+    // this passive effect runs afterward. Admission checked the snapshot before
+    // settlement, so repeat that fence before reviving local streaming state.
+    if (activeGeneration !== undefined && settledGenerationRequestIdsRef.current.has(activeGeneration.requestId)) {
+      return
+    }
     if (activeGeneration === undefined) {
+      // History refresh may already have removed the settled turn. Converge
+      // its independent UI/ref flags too, but preserve a new pre-ACK send.
+      if (!generationIsBusy(currentTurn)) {
+        streamingRef.current = false
+        setStreaming(false)
+      }
       if (
         currentTurn?.operationId.startsWith('resumed:')
         && snapshot.status === 'ready'
@@ -4705,7 +4711,7 @@ function App() {
           originalAssistantText: current.originalAssistantText
             || canonicalAssistant?.content
             || '',
-          phase: activeGeneration.stopping
+          phase: current.manualStopRequested || activeGeneration.stopping
             ? 'stopping'
             : reply.length > 0 ? 'streaming' : 'starting',
         }
@@ -4755,6 +4761,17 @@ function App() {
       knownChatMessageCountsRef.current.get(activeGeneration.chatId) ?? 0,
     )
     const resumedOperationId = `resumed:${activeGeneration.requestId}`
+    // A snapshot can identify the turn before send/retry's IPC receipt. Carry
+    // an already requested Stop only when that snapshot describes this exact
+    // pending prompt or retry pair, never an unrelated background generation.
+    const pendingManualStop = currentTurn?.manualStopRequested === true
+      && currentTurn.chatId === activeGeneration.chatId
+      && currentTurn.kind === activeGeneration.kind
+      && (currentTurn.requestId === activeGeneration.requestId
+        || currentTurn.requestId === null && (currentTurn.kind === 'send'
+          ? currentTurn.userText === activeGeneration.userText
+          : currentTurn.userMessageId === activeGeneration.userMessageId
+            && currentTurn.assistantMessageId === activeGeneration.assistantMessageId))
     // Snapshot reconciliation must rebuild speech ownership as well as the
     // visible Chat turn. Otherwise a Renderer state reset could leave trusted
     // playback running after text completes with no boundary able to stop it.
@@ -4773,6 +4790,8 @@ function App() {
       attachments: [],
       baseMessageCount,
       operationId: resumedOperationId,
+      manualStopRequested: pendingManualStop,
+      manualStopDispatched: pendingManualStop && currentTurn?.manualStopDispatched === true,
       requestId: activeGeneration.requestId,
       chatId: activeGeneration.chatId,
       kind: activeGeneration.kind,
@@ -4784,7 +4803,7 @@ function App() {
       assistantText: activeGeneration.reply,
       originalAssistantText: canonicalAssistant?.content ?? '',
       useProjectKnowledge: activeGeneration.usesProjectKnowledge === true,
-      phase: activeGeneration.stopping
+      phase: pendingManualStop || activeGeneration.stopping
         ? 'stopping'
         : activeGeneration.reply.length > 0 ? 'streaming' : 'starting',
     }))
@@ -4830,10 +4849,10 @@ function App() {
         (chat) => chat.chatId === pendingSend.chatId,
       )?.title
       const destination = chatTitle === undefined
-        ? 'the original Chat draft'
-        : `${chatTitle}'s draft`
+        ? t('the original Chat draft')
+        : t('the draft in “{chat}”', { chat: chatTitle })
       setNotice(warningNotice(
-        `An unfinished prompt was restored to ${destination}. Review it before sending.`,
+        t('An unfinished prompt was restored to {destination}. Review it before sending.', { destination }),
       ))
     }
   }, [
@@ -5106,6 +5125,17 @@ function App() {
     flushProjectRefresh,
     snapshot.status,
   ])
+
+  useEffect(() => {
+    if (activeView !== 'chat' || snapshot.status !== 'error'
+      || !isLocalModelSetupError(snapshot.initializationErrorCode)) return
+    // Initialization failure keeps the authenticated settings service alive.
+    // Read its configured model for recovery instructions without guessing a
+    // model, downloading weights, or probing the user's audio devices.
+    let active = true
+    queueMicrotask(() => { if (active) void loadSettings() })
+    return () => { active = false }
+  }, [activeView, loadSettings, snapshot.initializationErrorCode, snapshot.status])
 
   useEffect(() => {
     if (
@@ -5824,7 +5854,7 @@ function App() {
             ? (
                 cancelled
                   ? 'The Voice reply was cancelled. Your transcript was restored to the Chat draft.'
-                  : `${event.message} Your transcript was restored to the Chat draft.`
+                  : t('{error} Your transcript was restored to the Chat draft.', { error: formatUiError(event.message) })
               )
             : (
                 cancelled
@@ -5877,17 +5907,10 @@ function App() {
           return
         }
         if (event.operation === 'chat.generate') {
-          const currentTurn = inFlightTurnRef.current
-          if (
-            currentTurn === null
-            || currentTurn.chatId !== activeChatIdRef.current
-            || (
-              currentTurn.requestId !== null
-              && currentTurn.requestId !== event.requestId
-            )
-          ) {
-            return
-          }
+          // Streaming, research and Work already expose their current stage.
+          // The backend's generic generation notice would duplicate those
+          // indicators in a persistent banner above every message composer.
+          return
         }
         if (event.message !== null) {
           setNotice(infoNotice(event.message))
@@ -5899,7 +5922,7 @@ function App() {
 
       if (event.type === 'permission') {
         setNotice(infoNotice(
-          `Permission requested for ${event.capability}: ${event.reason}`,
+          t('Permission requested for {capability}: {reason}', { capability: event.capability, reason: t(event.reason) }),
         ))
       }
     })
@@ -5984,6 +6007,7 @@ function App() {
         }
         activeViewRef.current = 'settings'
         setActiveView('settings')
+        setSettingsEntryCategory('general')
         setSearchOpen(false)
         setSearchQuery('')
         if (panelOpen || panelTargetOpenRef.current) {
@@ -6038,6 +6062,7 @@ function App() {
       return false
     }
     activeViewRef.current = view
+    if (view === 'settings') setSettingsEntryCategory('general')
     setActiveView(view)
     if (view === 'projects') {
       void requestProjectRefresh()
@@ -6317,6 +6342,7 @@ function App() {
           }
         })
         acknowledgeWorkActivity(requestId)
+        void dispatchManualStop(requestId)
         return requestId
       } catch (error: unknown) {
         const normalized = error instanceof Error
@@ -6487,6 +6513,7 @@ function App() {
           return { ...current, requestId }
         })
         acknowledgeWorkActivity(requestId)
+        void dispatchManualStop(requestId)
       } catch (error) {
         if (inFlightTurnRef.current?.operationId === operationId) {
           clearManagedSpeechTurn(operationId)
@@ -6507,12 +6534,32 @@ function App() {
     return true
   }
 
+  async function dispatchManualStop(requestId: string): Promise<void> {
+    const currentTurn = inFlightTurnRef.current
+    if (desktopApi === undefined || currentTurn?.requestId !== requestId
+      || !currentTurn.manualStopRequested || currentTurn.manualStopDispatched
+      || !generationIsBusy(currentTurn) || settledGenerationRequestIdsRef.current.has(requestId)) return
+    const operationId = currentTurn.operationId
+    updateInFlightTurn(current => current?.operationId === operationId
+      ? { ...current, manualStopDispatched: true } : current)
+    try {
+      await desktopApi.stopGeneration(requestId)
+    } catch (error) {
+      const current = inFlightTurnRef.current
+      if (current?.operationId !== operationId || current.phase !== 'stopping') return
+      updateInFlightTurn(turn => turn?.operationId === operationId
+        ? { ...turn, phase: 'streaming', manualStopRequested: false, manualStopDispatched: false } : turn)
+      if (current.chatId === activeChatIdRef.current) setNotice(errorNotice(
+        error instanceof Error ? error.message : 'Could not stop generation.',
+      ))
+    }
+  }
+
   async function stopGeneration(): Promise<void> {
     const currentTurn = inFlightTurnRef.current
     if (
       desktopApi === undefined
       || currentTurn === null
-      || currentTurn.requestId === null
       || currentTurn.chatId !== activeChatIdRef.current
       || !generationIsBusy(currentTurn)
       || currentTurn.phase === 'stopping'
@@ -6522,22 +6569,11 @@ function App() {
 
     const operationId = currentTurn.operationId
     updateInFlightTurn((current) => current?.operationId === operationId
-      ? { ...current, phase: 'stopping' }
+      ? { ...current, phase: 'stopping', manualStopRequested: true }
       : current)
-    try {
-      await desktopApi.stopGeneration(currentTurn.requestId)
-    } catch (error) {
-      updateInFlightTurn((current) => (
-        current?.operationId === operationId && current.phase === 'stopping'
-          ? { ...current, phase: 'streaming' }
-          : current
-      ))
-      setNotice(errorNotice(
-        error instanceof Error
-          ? error.message
-          : 'Could not stop generation.',
-      ))
-    }
+    // Main alone assigns the request ID. A pre-acknowledgement click remains
+    // visible as Stopping and is dispatched by that send/retry's receipt.
+    if (currentTurn.requestId !== null) await dispatchManualStop(currentTurn.requestId)
   }
 
   async function copyText(text: string): Promise<void> {
@@ -6577,7 +6613,7 @@ function App() {
       currentSettings.speechStatus,
     )
     if (readinessMessage !== null) {
-      setNotice(errorNotice(`${readinessMessage} Then try Read aloud again.`))
+      setNotice(errorNotice(t('{message} Then try Read aloud again.', { message: t(readinessMessage) })))
       return
     }
 
@@ -6705,7 +6741,7 @@ function App() {
     const operationId = modelOperationRef.current + 1
     modelOperationRef.current = operationId
     setModelSelectionPending(true)
-    setNotice(infoNotice(`Restarting the local Backend with ${modelName}…`))
+    setNotice(infoNotice(t('Restarting the local Backend with {model}…', { model: modelName })))
     try {
       const nextSnapshot = await desktopApi.selectModel(modelName)
       if (operationId !== modelOperationRef.current) {
@@ -7022,7 +7058,7 @@ function App() {
       return Promise.reject(new Error('Desktop API is unavailable.'))
     }
     return runSessionAction(
-      () => desktopApi.createChat({ title: mode === 'work' ? 'New task' : 'New Chat', mode }),
+      () => desktopApi.createChat({ title: mode === 'work' ? t("New task") : t("New Chat"), mode }),
       'Could not create the Chat.',
     )
   }
@@ -7603,7 +7639,7 @@ function App() {
       setVoiceCapture(EMPTY_AUDIO_CAPTURE_SNAPSHOT)
       setVoiceSpeechWarning(
         error instanceof Error
-          ? `Barge-in is unavailable: ${error.message}`
+          ? t('Barge-in is unavailable: {error}', { error: formatUiError(error.message) })
           : 'Barge-in is unavailable because verified echo cancellation could not start. The reply will continue safely.',
       )
     }
@@ -7722,7 +7758,7 @@ function App() {
         )
         if (speechMessage !== null) {
           setVoiceSpeechWarning(
-            `${speechMessage} Voice Call will continue with text replies.`,
+            t('{message} Voice Call will continue with text replies.', { message: t(speechMessage) }),
           )
         }
       }
@@ -7825,7 +7861,7 @@ function App() {
         && activeChatIdRef.current === chatId
         && activeChatProjectIdRef.current === projectId
       ) {
-        setVoiceSpeechWarning(`${message} Listening resumed.`)
+        setVoiceSpeechWarning(t('{message} Listening resumed.', { message: t(message) }))
       }
     })
   }
@@ -8284,6 +8320,7 @@ function App() {
   if (activeView === 'settings') {
     content = (
       <SettingsView
+        initialCategory={settingsEntryCategory}
         imageSettings={(active) => <ImageSettingsSection active={active} />}
         internetTools={activeChatId === undefined || chatState?.activeChat.mode !== 'chat' || typeof desktopApi?.getInternetResearch !== 'function' ? undefined : (
           <InternetPanel api={desktopApi} chatId={activeChatId} projectId={activeChatProjectId}
@@ -8397,23 +8434,13 @@ function App() {
     )
   } else if (activeView === 'images') {
     content = null
-  } else if (activeView === 'memory') {
-    content = (
-      <PlaceholderView
-        title="Memory"
-        icon="memory"
-        description="Memory browsing and editing will use the scoped Python services when that feature is added."
-        sidebarOpen={sidebarOpen}
-        onToggleSidebar={() => { setSidebarOpen((open) => !open) }}
-      />
-    )
   } else {
     content = (
       <div className="knowledge-chat-shell">
         <ChatView
         attachmentAdding={activeChatAttachmentActivity.adding}
         attachmentError={activeChatAttachmentActivity.error}
-        attachmentLabel={`This message · ${displayedChat}`}
+        attachmentLabel={t('This message · {chat}', { chat: displayedChat })}
         attachmentRemovingIds={activeChatAttachmentActivity.removingIds}
         attachmentScope={activeChatScope}
         attachmentState={activeChatAttachments}
@@ -8433,8 +8460,15 @@ function App() {
         draft={draft}
         generationBusy={generationBusy}
         messages={displayedMessages}
+        messageOwnerId={activeChatId}
+        internetEnabled={typeof desktopApi?.getInternetPolicy === 'function' ? internetPolicy?.enabled ?? null : undefined}
+        onOpenInternetSettings={() => {
+          if (navigate('settings')) setSettingsEntryCategory('internet')
+        }}
         modelSelectionPending={modelSelectionPending || workOperationPending}
         modelOptions={modelOptions}
+        setupModelName={settingsState?.settings.modelName}
+        onOpenSettings={() => { navigate('settings') }}
         notice={notice}
         panelOpen={panelOpen}
         panelTransitionPending={panelTransitionPending}
@@ -8471,6 +8505,29 @@ function App() {
         workBusy={workLeaseRef.current}
         workOptions={workTurnAvailable ? activeWorkOptions : null}
         workOptionsDisabled={workControlsDisabled || workOperationPending || modelSelectionPending || retryPending || snapshot.chatId !== activeChatId}
+        workCommandApproval={currentCommandApproval === undefined ? undefined : (
+          <WorkCommandApproval key={`${currentCommandApproval.requestId}:${currentCommandApproval.callId}`}
+            approval={currentCommandApproval} onResolve={async allow => {
+              const current = workActivitiesRef.current[currentCommandApproval.chatId]
+              const pending = current?.commandApproval
+              // Renderer checks make stale controls inert immediately; Main
+              // independently binds this choice to its frozen native request.
+              if (typeof desktopApi?.resolveWorkCommandApproval !== 'function'
+                || activeViewRef.current !== 'chat' || backendStatusRef.current !== 'ready'
+                || activeChatIdRef.current !== currentCommandApproval.chatId
+                || backendChatIdRef.current !== currentCommandApproval.chatId
+                || activeChatModeRef.current !== 'work' || activeChatArchivedRef.current
+                || current?.status !== 'running' || current.options.permission !== 'ask'
+                || inFlightTurnRef.current?.phase === 'stopping'
+                || settledGenerationRequestIdsRef.current.has(currentCommandApproval.requestId)
+                || pending?.requestId !== currentCommandApproval.requestId
+                || pending.callId !== currentCommandApproval.callId) return false
+              const result = await desktopApi.resolveWorkCommandApproval({ requestId: pending.requestId,
+                chatId: pending.chatId, callId: pending.callId, allow })
+              if (result.activity !== undefined) acceptWorkActivity(result.activity)
+              return result.ok
+            }} />
+        )}
         workActivity={chatState?.activeChat.mode === 'work' && activeChatId !== undefined && snapshot.chatId === activeChatId
           ? workActivitiesByChat[activeChatId] ?? null : null}
         workHistory={chatState?.activeChat.mode === 'work' && snapshot.status === 'ready'
@@ -8508,14 +8565,16 @@ function App() {
             onBusyChange={updateWorkBusy}
             onAttention={revealWorkAttention}
             onHistoryChange={acceptWorkHistory}
+            historyReviewRevision={workHistoryReviewRevision}
           />
         )}
+        onReviewWorkChanges={() => { setWorkHistoryReviewRevision(current => current + 1) }}
         screenshotControl={activeChatId === undefined || typeof desktopApi?.getVisionState !== 'function' ? undefined : (
-          <button type="button" className="tool-button composer-screenshot-button" aria-label="Take screenshot" title="Take screenshot"
+          <button type="button" className="tool-button composer-screenshot-button" aria-label={t("Take screenshot")} title={t("Take screenshot")}
             aria-expanded={visionPresentation.open}
             disabled={snapshot.status !== 'ready' || snapshot.chatId !== activeChatId || chatState?.activeChat.archived !== false || !visionProjectAllowed}
             onClick={() => setVisionPresentation({ open: true, initialView: 'capture' })}>
-            <Icon name="monitor" /><span className="composer-screenshot-label">Vision</span>
+            <Icon name="monitor" /><span className="composer-screenshot-label">{t("Vision")}</span>
           </button>
         )}
         onReviewImage={attachmentId => setVisionPresentation({ open: true, initialView: 'review', attachmentId })}
@@ -8605,10 +8664,10 @@ function App() {
               }}
             />
             <span>
-              <strong>Use Project Sources</strong>
-              <small>{workOptionsBlockSources
-                ? '使用 Sources 前，请选择「仅对话」并关闭深度思考。'
-                : 'Require indexed Project evidence and show citations.'}</small>
+              <strong>{t("Use Project Sources")}</strong>
+              <HelpHint label={t("Use Project Sources")}>{workOptionsBlockSources
+                ? t("使用 Sources 前，请选择「仅对话」并关闭深度思考。")
+                : t("Require indexed Project evidence and show citations.")}</HelpHint>
             </span>
           </label>
         )}
@@ -8623,19 +8682,20 @@ function App() {
       <InlineAlert
         className="global-workspace-alert"
         tone={retryable ? 'error' : 'info'}
-        title={retryable ? 'Local Backend unavailable' : 'Local Backend is starting'}
+        title={retryable ? t("Local Backend unavailable") : t("Local Backend is starting")}
         action={retryable
           ? {
-              label: retryPending ? 'Retrying…' : 'Retry connection',
+              label: retryPending ? t("Retrying…") : t("Retry connection"),
               onClick: () => { void retryConnection() },
               disabled: retryPending,
             }
           : undefined}
       >
-        {snapshot.error
-          ?? (retryable
-            ? 'Reconnect to resume this local view.'
-            : 'This view will unlock automatically when local services are ready.')}
+        {snapshot.error === undefined
+          ? (retryable
+            ? t("Reconnect to resume this local view.")
+            : t("This view will unlock automatically when local services are ready."))
+          : formatUiError(snapshot.error)}
       </InlineAlert>
     )
   } else if (activeView !== 'chat' && notice !== null) {
@@ -8646,10 +8706,10 @@ function App() {
       <InlineAlert
         className="global-workspace-alert"
         tone={notice.tone}
-        title={notice.tone === 'error' ? 'Local action failed' : 'Local update'}
+        title={notice.tone === 'error' ? t("Local action failed") : t("Local update")}
         action={projectNeedsReload
           ? {
-              label: 'Reload Projects',
+              label: t("Reload Projects"),
               onClick: () => {
                 setNotice(null)
                 void requestProjectRefresh()
@@ -8657,7 +8717,7 @@ function App() {
             }
           : detachedTurnFailed
             ? {
-                label: 'Open Chat',
+                label: t("Open Chat"),
                 onClick: () => {
                   if (navigate('chat')) {
                     focusChatComposer()
@@ -8667,7 +8727,7 @@ function App() {
             : undefined}
         onDismiss={() => { setNotice(null) }}
       >
-        {notice.message}
+        {formatUiError(notice.message)}
       </InlineAlert>
     )
   }
@@ -8697,6 +8757,7 @@ function App() {
           modeNavigationDisabled={sectionNavigationDisabled}
           busyChatId={generationBusy ? inFlightTurn?.chatId : undefined}
           chats={chatState?.chats ?? []}
+          projects={projectState?.projects ?? []}
           modal={compactShell}
           mutationPending={sessionUiPending}
           open={sidebarOpen}
@@ -8717,7 +8778,12 @@ function App() {
           onOpen={openChat}
           onPin={pinChat}
           onRename={renameChat}
-          onSearchOpenChange={setSearchOpen}
+          onSearchOpenChange={(open) => {
+            setSearchOpen(open)
+            // Search navigates back to Chat, whose normal compact navigation
+            // closes the drawer. Keep its search field available for input.
+            if (open && compactShell) setSidebarOpen(true)
+          }}
           onSearchQueryChange={setSearchQuery}
           onShowArchivedChange={setShowArchived}
           />
@@ -8741,7 +8807,7 @@ function App() {
         {content}
         {/* Keeping the generator mounted preserves its cancellation owner and
             terminal promise when the user visits another application view. */}
-        <div hidden={activeView !== 'images'}>
+        <div className="image-workspace" hidden={activeView !== 'images'}>
           <ImageGenerator active={activeView === 'images'} sidebarOpen={sidebarOpen}
             onToggleSidebar={() => { setSidebarOpen((open) => !open) }}
             onOpenSettings={() => { navigate('settings') }} />

@@ -134,9 +134,11 @@ test('Classic non-thinking vision models remain usable when thinking metadata is
 
 test('Remote URLs, credentials, arbitrary route configuration and malformed inputs fail before any HTTP request', async () => {
   for (const baseUrl of ['https://127.0.0.1:11434', 'http://example.com', 'http://127.0.0.1.evil.test',
-    'http://user:password@127.0.0.1', 'http://127.0.0.1/api/chat', 'http://127.0.0.1/?secret=x', 'http://127.0.0.1/#fragment']) {
+    'http://user:password@127.0.0.1', 'http://127.0.0.1/api/chat', 'http://127.0.0.1/?secret=x', 'http://127.0.0.1/#fragment',
+    'http://127.1:11434', 'http://2130706433:11434', 'http://0x7f000001:11434', 'http://127.00.0.1:11434']) {
     assert.throws(() => new OllamaVisionAdapter({ baseUrl }), TypeError)
   }
+  assert.doesNotThrow(() => new OllamaVisionAdapter({ baseUrl: 'http://127.0.0.2:11434' }))
   let calls = 0
   const adapter = new OllamaVisionAdapter({ native: { request() { calls += 1; throw new Error('must not happen') } } })
   await assert.rejects(adapter.run(png, 11, 20, model, 'Describe', signal()), isCode('invalid_image'))

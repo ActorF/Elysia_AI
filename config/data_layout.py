@@ -1,7 +1,7 @@
 """Define the upgrade-safe directory contract for private application data.
 
-The application root contains executable code and replaceable model tooling,
-while this layout owns files that must survive an application upgrade. The
+The application root contains executable code, while this layout owns private
+state and separately installed model assets that must survive an upgrade. The
 desktop shell selects the root; Python derives every child path from that
 trusted absolute value so individual services cannot drift to the install
 directory or invent their own storage locations.
@@ -74,6 +74,17 @@ class ProductionDataLayout:
         """Return the durable generated-image Gallery directory."""
 
         return self.workspace / "gallery"
+
+    @property
+    def models(self) -> Path:
+        """Return durable local speech weights and separately installed runtimes.
+
+        These optional downloads belong to the user rather than the replaceable
+        application installation. Its historical ``cache`` subdirectory is a
+        runtime installation, so temporary-data cleanup must not remove it.
+        """
+
+        return self.root / "models"
 
     @property
     def audio(self) -> Path:

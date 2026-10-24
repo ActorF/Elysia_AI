@@ -1,4 +1,4 @@
-/** Style the Elysia model combobox and its viewport-bound rose/plum option list. */
+/** Style the Elysia model combobox and its viewport-bound shared neutral option list. */
 
 .elysia-model-picker {
   display: flex;
@@ -15,20 +15,20 @@
   min-height: 2.25rem;
   padding: 0.375rem 0.625rem;
   color: var(--color-text-secondary);
-  font-size: 0.8125rem;
+  font-size: var(--font-size-sm);
   font-weight: 500;
   text-align: left;
   background: transparent;
   border: 1px solid transparent;
-  border-radius: 0.75rem;
+  border-radius: var(--radius-md);
   transition: background 140ms ease, color 140ms ease, border-color 140ms ease;
 }
 
 .elysia-model-trigger:hover:not([aria-disabled="true"]),
 .elysia-model-trigger[aria-expanded="true"] {
   color: var(--color-text-primary);
-  background: var(--color-accent-soft);
-  border-color: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  background: var(--color-bg-soft);
+  border-color: transparent;
 }
 
 .elysia-model-trigger:focus-visible {
@@ -48,23 +48,8 @@
   white-space: nowrap;
 }
 
-.elysia-model-mark {
-  flex: 0 0 1.25rem;
-  width: 1.25rem;
-  height: 1.25rem;
-  overflow: visible;
-  stroke: var(--color-accent);
-  stroke-width: 1.35;
-}
 
-.elysia-model-mark ellipse:nth-child(2) {
-  stroke: var(--color-accent-secondary);
-}
 
-.elysia-model-mark circle {
-  fill: var(--color-accent);
-  stroke: none;
-}
 
 .elysia-model-chevron {
   flex: 0 0 0.875rem;
@@ -91,17 +76,12 @@
   overflow: hidden;
   padding: 0.4375rem;
   color: var(--color-text-primary);
-  background: #302530;
-  border: 1px solid rgb(237 168 202 / 18%);
-  border-radius: 1rem;
-  box-shadow: 0 0.75rem 2.5rem rgb(14 8 17 / 28%), 0 0.125rem 0.5rem rgb(14 8 17 / 12%);
+  background: var(--color-bg-raised);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-floating);
 }
 
-:root[data-theme="light"] .elysia-model-popover {
-  background: #fff7fb;
-  border-color: rgb(180 81 130 / 14%);
-  box-shadow: 0 0.75rem 2.5rem rgb(94 47 76 / 12%), 0 0.125rem 0.5rem rgb(94 47 76 / 5%);
-}
 
 .elysia-model-heading {
   display: flex;
@@ -111,13 +91,13 @@
   gap: 1rem;
   padding: 0.625rem 0.625rem 0.75rem;
   color: var(--color-text-secondary);
-  font-size: 0.6875rem;
+  font-size: var(--font-size-xs);
   font-weight: 600;
 }
 
 .elysia-model-heading span:last-child {
   color: var(--color-text-muted);
-  font-size: 0.625rem;
+  font-size: var(--font-size-xs);
   font-weight: 400;
 }
 
@@ -137,10 +117,10 @@
   min-height: 2.75rem;
   padding: 0.625rem;
   color: var(--color-text-secondary);
-  font-size: 0.8125rem;
+  font-size: var(--font-size-sm);
   line-height: 1.25rem;
   border: 1px solid transparent;
-  border-radius: 0.625rem;
+  border-radius: var(--radius-md);
   cursor: pointer;
 }
 
@@ -154,13 +134,13 @@
 .elysia-model-option[aria-selected="true"] {
   color: var(--color-text-link);
   font-weight: 600;
-  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+  background: var(--color-bg-hover);
 }
 
 .elysia-model-option.is-active {
   color: var(--color-text-primary);
-  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
-  border-color: color-mix(in srgb, var(--color-accent) 22%, transparent);
+  background: var(--color-bg-hover);
+  border-color: transparent;
 }
 
 .elysia-model-check {
@@ -188,14 +168,7 @@
     outline-color: Highlight;
   }
 
-  .elysia-model-mark,
-  .elysia-model-mark ellipse:nth-child(2) {
-    stroke: currentColor;
-  }
 
-  .elysia-model-mark circle {
-    fill: currentColor;
-  }
 
   .elysia-model-popover {
     color: CanvasText;

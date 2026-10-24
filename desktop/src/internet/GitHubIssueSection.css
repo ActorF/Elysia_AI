@@ -2,5 +2,5 @@
 .github-issue-section { display: grid; gap: var(--space-3); min-width: 0; padding-top: var(--space-2); }
 .github-issue-section > label { display: grid; gap: var(--space-2); }
 .github-issue-section .internet-input-count { font-size: var(--font-size-xs); color: var(--color-text-muted); }
-.github-issue-preview { display: grid; gap: var(--space-2); min-width: 0; padding: var(--space-4); border-radius: var(--radius-lg); background: var(--color-accent-soft); }
+.github-issue-preview { display: grid; gap: var(--space-2); min-width: 0; padding: var(--space-4); border-radius: var(--radius-md); background: var(--color-bg-soft); }
 .github-issue-preview pre { min-width: 0; max-height: 12rem; overflow-y: auto; white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; font: inherit; font-size: var(--font-size-sm); }

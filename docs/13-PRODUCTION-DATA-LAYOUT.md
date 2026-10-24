@@ -12,13 +12,14 @@ submit an arbitrary path.
 
 | Root | Purpose |
 | --- | --- |
-| `AppSettings.base_dir` | Read-only Python resources, workers and locally installed components |
+| `AppSettings.base_dir` | Python resources and worker scripts; source checkouts also retain their existing model installations |
 | `AppSettings.data_layout.root` | Movable private data, logs and application-owned caches |
 | Electron `userData` | Bootstrap pointer, Chromium profile and device-local preferences, including unsent Chat drafts |
 | User-selected external folders | Project workspaces, exports and independently owned model runtimes |
 
-Moving the Python root does not move Chromium's profile, rebase external
-workspace/export paths, or relocate Ollama and optional model components. A
+Moving the Python root carries application-owned models stored in that root.
+It does not move Chromium's profile, rebase external workspace/export paths,
+or relocate Ollama, source-checkout models, and user-selected external runtimes. A
 move is not a backup; backup, restore and installer retention have separate
 acceptance requirements.
 
@@ -42,7 +43,13 @@ unmarked directory is never eligible for old-root deletion.
 │   ├── knowledge/         Sources, operation journal and SQLite index
 │   ├── work/              workflow checkpoints and desktop review copies
 │   ├── vision/history/    explicitly saved Vision images
-│   └── gallery/           generated-image store; desktop integration pending
+│   ├── image-models/      imported image checkpoints and LoRAs
+│   ├── image-runs/        private in-progress image work
+│   ├── image-recovery/    retained image recovery evidence
+│   └── gallery/           generated images and metadata
+├── models/                installed speech assets, never generic cache
+│   ├── weights/           Faster-Whisper and GPT-SoVITS models
+│   └── cache/             installed GPT-SoVITS runtime
 ├── cache/                 rebuildable application cache
 ├── logs/                  local diagnostics
 └── audio/song-covers/     temporary Song Cover jobs and results
@@ -69,7 +76,7 @@ free space, totals, file counts and blocked-entry counts.
 | Temporary audio | Application-owned temporary audio jobs | Yes |
 | Cache | Rebuildable application cache | Yes |
 | Logs | Local diagnostics | Yes |
-| Other | Unclassified entries, including Vision history | No |
+| Other | Durable models/runtimes, Gallery, Vision history, Work data and unclassified entries | No |
 
 Cleanup requires the current storage revision, a one-use scan token and native
 confirmation. Main stops the Backend, removes only the selected owned

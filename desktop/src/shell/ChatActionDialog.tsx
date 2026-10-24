@@ -5,6 +5,9 @@
  * action state and performs every persisted operation through DesktopApi.
  */
 
+import { t, useLocale } from '../i18n/LocaleProvider.tsx'
+import { formatUiError } from '../i18n/ui-error.ts'
+
 import {
   useEffect,
   useId,
@@ -57,6 +60,7 @@ export function ChatActionDialog({
   onCancel,
   onConfirm,
 }: ChatActionDialogProps) {
+  useLocale()
   const dialogRef = useRef<HTMLDialogElement | null>(null)
   const titleId = useId()
   const descriptionId = useId()
@@ -118,6 +122,8 @@ export function ChatActionDialog({
     }
 
     const keepFocusInsideDialog = (event: KeyboardEvent): void => {
+      // The innermost help popup consumes Escape before this action dialog.
+      if (event.key === 'Escape' && document.querySelector('.help-hint-popup:not([hidden])')) return
       if (event.key === 'Escape') {
         event.preventDefault()
         event.stopImmediatePropagation()
@@ -193,15 +199,15 @@ export function ChatActionDialog({
     >
       <form className="chat-action-dialog-card" onSubmit={handleSubmit}>
         <div className="chat-action-dialog-copy">
-          <h2 id={titleId}>{title}</h2>
-          <div id={descriptionId}>{description}</div>
+          <h2 id={titleId}>{t(title)}</h2>
+          <div id={descriptionId}>{typeof description === 'string' ? t(description) : description}</div>
         </div>
 
         {children}
 
         {error !== null && (
           <p className="chat-action-dialog-error" id={errorId} role="alert">
-            {error}
+            {formatUiError(error)}
           </p>
         )}
 
@@ -213,14 +219,13 @@ export function ChatActionDialog({
             disabled={pending}
             onClick={onCancel}
           >
-            Cancel
-          </button>
+            {t("Cancel")}</button>
           <button
             type="submit"
             className={'dialog-button' + (danger ? ' dialog-button-danger' : '')}
             disabled={pending}
           >
-            {pending ? `${confirmLabel}…` : confirmLabel}
+            {pending ? `${t(confirmLabel)}…` : t(confirmLabel)}
           </button>
         </div>
       </form>

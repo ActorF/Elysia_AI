@@ -1,116 +1,187 @@
-/* Keep task and conversation input uncluttered while retaining Elysia's rose/plum accents, voice, music and image entry points. */
+/* Keep one rounded message card with a roomy draft above compact permission,
+   model, voice, and send controls. Container sizing follows the actual chat
+   canvas so sidebars and zoom cannot force controls outside the input. */
 
 .composer-zone .composer-card {
-  padding: .85rem;
+  container: message-composer / inline-size;
+  min-width: 0;
+  padding: .9rem 1rem .7rem;
+  border: 1px solid var(--color-border);
+  border-radius: 1.35rem;
   background: var(--color-bg-surface);
-  border: 1px solid var(--color-border-strong);
-  border-radius: 1.25rem;
-  box-shadow: 0 3px 12px rgb(0 0 0 / 3%);
+  box-shadow: var(--shadow-md);
 }
 
 .composer-zone .composer-card:focus-within {
-  border-color: color-mix(in srgb, var(--color-accent) 48%, var(--color-border));
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 6%, transparent), 0 3px 12px rgb(0 0 0 / 3%);
+  border-color: var(--color-border-focus);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-border-focus) 12%, transparent);
 }
 
-.composer-zone .phone-button,
-.composer-zone .song-cover-button {
-  color: var(--color-accent-secondary);
-  background: transparent;
+.composer-zone .composer-card textarea {
+  min-width: 0;
+  min-height: 4.5rem;
+  max-height: min(10rem, 32vh);
+  padding: .3rem .25rem .75rem;
+  border-radius: 0;
+  font-size: var(--font-size-md);
+  line-height: 1.6;
+  overscroll-behavior: contain;
 }
 
-.composer-zone .send-button:not(.stop-button):not(:disabled) {
-  color: var(--color-accent-contrast);
-  background: var(--color-accent);
-  box-shadow: none;
-}
-
-.composer-zone .send-button {
-  border-radius: var(--radius-full);
-}
-
-.composer-zone .elysia-model-mark { display: block; width: 1.1rem; height: 1.1rem; flex-basis: 1.1rem; }
-.composer-zone .composer-toolbar { flex-wrap: wrap; }
-.composer-zone .composer-tools { flex-wrap: wrap; min-width: 0; }
-.composer-zone .composer-tools:has(.composer-work-options) { flex: 1 1 22rem; }
-.composer-work-options { display: flex; align-items: center; flex-wrap: wrap; gap: .25rem; min-width: 0; }
-.composer-thinking-button {
-  display: inline-flex;
+.composer-zone .composer-toolbar {
+  display: flex;
   align-items: center;
-  gap: .4rem;
-  min-height: 2.25rem;
-  max-width: 100%;
-  padding: .375rem .625rem;
-  border: 1px solid transparent;
-  border-radius: .75rem;
+  justify-content: space-between;
+  flex-wrap: nowrap;
+  gap: .5rem;
+  min-width: 0;
+  margin-top: .3rem;
+}
+
+.composer-zone .composer-tools,
+.composer-zone .composer-controls,
+.composer-zone .voice-tools {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: .2rem;
+  min-width: 0;
+}
+
+.composer-zone .composer-tools {
+  flex: 0 1 auto;
+  max-width: 42%;
+}
+
+.composer-work-options {
+  display: flex;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 11rem;
+}
+
+.composer-zone .composer-controls {
+  flex: 1 1 auto;
+  justify-content: flex-end;
+  margin-left: auto;
+}
+
+.composer-zone .voice-tools { flex: 0 0 auto; margin-left: 0; }
+.composer-zone .composer-controls > .elysia-model-picker {
+  flex: 0 1 auto;
+  width: auto;
+  min-width: 3.25rem;
+  max-width: 15rem;
+}
+.composer-zone .elysia-model-trigger { width: 100%; }
+.composer-zone .elysia-model-value { min-width: 0; }
+.composer-zone :is(.elysia-model-trigger, .work-permission-trigger) {
+  min-height: 2rem;
+  padding: .3rem .45rem;
+  border-radius: .65rem;
+  font-size: var(--font-size-xs);
+}
+
+.composer-zone .composer-toolbar :is(.tool-button, .composer-screenshot-button, .composer-thinking-button) {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  min-height: 2rem;
+  padding: 0;
+  border-radius: 50%;
+}
+.composer-zone .composer-toolbar .tool-button:not(.active):not(.has-hidden-cover) {
   color: var(--color-text-secondary);
   background: transparent;
-  font: inherit;
-  font-size: var(--font-size-xs);
-  white-space: nowrap;
+}
+.composer-zone .composer-toolbar :is(.tool-button, .composer-screenshot-button):hover:not(:disabled) {
+  color: var(--color-text-primary);
+  background: var(--color-bg-hover);
+}
+.composer-zone .composer-toolbar :is(.tool-button, .composer-screenshot-button, .composer-thinking-button) svg {
+  flex: 0 0 auto;
+  width: 1.05rem;
+  height: 1.05rem;
+}
+.composer-zone .composer-toolbar :is(button, [role="combobox"]):focus-visible {
+  outline: 2px solid var(--color-border-focus);
+  outline-offset: 2px;
+}
+
+.composer-thinking-button {
+  color: var(--color-text-secondary);
+  background: transparent;
+  border: 1px solid transparent;
   transition: background 140ms ease, color 140ms ease;
 }
-.composer-thinking-button svg { width: 1rem; height: 1rem; flex: 0 0 auto; }
-.composer-thinking-button:hover:not(:disabled) { background: var(--color-accent-soft); color: var(--color-text-primary); }
-.composer-thinking-button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
-.composer-thinking-button[aria-pressed="true"] { color: var(--color-text-link); }
-.composer-thinking-state { padding: .1rem .35rem; border-radius: .35rem; color: var(--color-text-secondary); background: var(--color-bg-soft); font-size: .6875rem; line-height: 1rem; }
-.composer-thinking-button[aria-pressed="true"] .composer-thinking-state { color: var(--color-text-link); background: var(--color-accent-soft); }
+.composer-thinking-button:hover:not(:disabled) { color: var(--color-text-primary); background: var(--color-bg-hover); }
+.composer-thinking-button[aria-pressed="true"] { color: var(--color-text-link); background: var(--color-accent-soft); }
 .composer-thinking-button:disabled { opacity: var(--opacity-disabled); cursor: not-allowed; }
-.composer-zone .voice-tools { margin-left: auto; }
+
+.composer-zone .composer-toolbar .send-button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  min-height: 2.25rem;
+  margin-left: .2rem;
+  padding: 0;
+  border-radius: 50%;
+}
+.composer-send-icon { stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.composer-zone .composer-toolbar .stop-button { color: var(--color-danger); background: var(--color-danger-soft); }
+.composer-zone .composer-toolbar .send-button:disabled { color: var(--color-text-disabled); background: var(--color-bg-hover); }
+
+.composer-zone .work-command-approval {
+  max-height: min(20rem, 38vh);
+  margin: 0 0 .7rem;
+  overflow: auto;
+  overscroll-behavior: contain;
+  border-radius: .85rem;
+}
 .composer-screenshot-label { display: none; }
+.composer-screenshot-button { color: var(--color-text-secondary); background: transparent; }
+.composer-screenshot-button[aria-expanded="true"] { color: var(--color-accent); background: var(--color-accent-soft); }
+.composer-screenshot-button:disabled { opacity: var(--opacity-disabled); }
 
-.chat-conversation-empty {
-  /* The welcome and composer form one calm starting point. Both occupied rows
-     may shrink and scroll independently when a draft or error grows at zoom. */
-  grid-template-rows: minmax(0, 1fr) minmax(0, auto) minmax(0, .65fr);
+.attachment-review-button { display: inline-grid; flex: 0 0 auto; place-items: center; width: var(--control-height-sm); height: var(--control-height-sm); padding: .35rem; border: 0; border-radius: var(--radius-sm); color: var(--color-accent); background: var(--color-accent-soft); }
+.attachment-review-button svg { width: 1rem; height: 1rem; }
+.attachment-review-button:disabled { opacity: var(--opacity-disabled); }
+
+@container message-composer (max-width: 34rem) {
+  .composer-work-options { max-width: 8rem; }
+  .composer-zone .composer-controls > .elysia-model-picker { max-width: 10rem; }
+  .composer-zone .composer-toolbar { gap: .25rem; }
 }
 
-.chat-conversation-empty .message-scroll { align-self: end; max-height: 100%; }
-.chat-conversation-empty .message-column { min-height: auto; gap: 1.25rem; padding-bottom: 1.5rem; }
-.chat-conversation-empty .conversation-empty { gap: .75rem; padding: 0; }
-.chat-conversation-empty .conversation-starters button {
-  min-height: 2rem;
-  padding: .35rem .75rem;
-  background: transparent;
-  border-color: var(--color-border);
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-xs);
+@container message-composer (max-width: 26rem) {
+  /* Keep every action available at narrow widths; a second compact row is
+     preferable to clipping permissions, voice controls, or the Stop button. */
+  .composer-zone .composer-toolbar { flex-wrap: wrap; row-gap: .35rem; }
+  .composer-zone .composer-tools { flex: 1 1 100%; max-width: 100%; }
+  .composer-zone .composer-controls { flex: 1 1 100%; max-width: 100%; }
+  .composer-zone .composer-controls > .elysia-model-picker { margin-right: auto; max-width: 12rem; }
 }
 
-@media (max-width: 42rem) {
-  .composer-zone .composer-tools { flex-basis: 10rem; }
-  .composer-zone .tool-button { width: 2rem; height: 2rem; }
+@container message-composer (max-width: 18rem) {
+  .composer-zone .composer-controls { flex-wrap: wrap; }
+  .composer-zone .composer-controls > .elysia-model-picker { flex-basis: 100%; max-width: 100%; }
   .composer-zone .voice-tools { margin-left: auto; }
 }
 
 @media (max-height: 40rem) {
-  .chat-conversation-empty { grid-template-rows: minmax(2rem, 1fr) minmax(0, auto); }
-  .chat-conversation-empty .message-scroll { align-self: stretch; }
-  .composer-zone .composer-card { padding: .5rem; }
-}
-
-.composer-screenshot-button {
-  flex: 0 0 auto;
-  width: var(--control-height-sm);
-  height: var(--control-height-sm);
-  color: var(--color-text-secondary);
-  background: transparent;
-  border-radius: var(--radius-full);
-}
-
-.composer-screenshot-button svg { width: var(--icon-size-sm); height: var(--icon-size-sm); }
-.composer-screenshot-button[aria-expanded="true"] { color: var(--color-accent); background: var(--color-accent-soft); }
-.composer-screenshot-button:disabled { opacity: var(--opacity-disabled); }
-.attachment-review-button { display: inline-grid; flex: 0 0 auto; place-items: center; width: 1.8rem; height: 1.8rem; padding: .35rem; border: 0; border-radius: var(--radius-sm); color: var(--color-accent); background: var(--color-accent-soft); }
-.attachment-review-button svg { width: 1rem; height: 1rem; }
-.attachment-review-button:disabled { opacity: var(--opacity-disabled); }
-
-@media (max-width: 420px) {
-  .composer-screenshot-button { width: 1.8rem; height: 1.8rem; }
+  .composer-zone .composer-card { padding-block: .55rem; }
+  .composer-zone .composer-card textarea { min-height: 2.75rem; max-height: min(8rem, 24vh); padding-bottom: .4rem; }
+  .composer-zone .composer-toolbar { margin-top: .15rem; }
 }
 
 @media (forced-colors: active) {
+  .composer-zone .composer-card { border-color: CanvasText; }
   .composer-thinking-button { color: ButtonText; border-color: ButtonText; }
   .composer-thinking-button[aria-pressed="true"] { border-color: Highlight; }
   .composer-thinking-button:disabled { color: GrayText; }

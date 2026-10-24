@@ -29,7 +29,11 @@ async function createWindow() {
     minWidth: 320,
     minHeight: 320,
     title: 'Elysia UI Test',
-    backgroundColor: '#171318',
+    backgroundColor: '#ebe0ec',
+    ...(process.platform === 'win32' ? {
+      titleBarStyle: 'hidden',
+      titleBarOverlay: { color: '#ebe0ec', symbolColor: '#382b38', height: 32 },
+    } : {}),
     show: true,
     webPreferences: {
       preload: preloadPath,
@@ -40,6 +44,16 @@ async function createWindow() {
       backgroundThrottling: false,
       partition: `elysia-ui-test-${process.pid}`,
     },
+  })
+
+  mainWindow.on('enter-full-screen', () => {
+    mainWindow?.webContents.send('window:fullscreen-changed', true)
+  })
+  mainWindow.on('leave-full-screen', () => {
+    mainWindow?.webContents.send('window:fullscreen-changed', false)
+  })
+  mainWindow.webContents.on('did-finish-load', () => {
+    mainWindow?.webContents.send('window:fullscreen-changed', mainWindow.isFullScreen())
   })
 
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))

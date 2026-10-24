@@ -17,14 +17,14 @@ from langchain_core.messages import (
 )
 from langchain_ollama import ChatOllama
 from ollama import ResponseError
-from .chat_model import ChatMessage
+from .chat_model import ChatMessage, normalize_chat_messages
 
 from .exceptions import (
     ChatModelConnectionError,
     ChatModelError,
     ChatModelResponseError,
 )
-from .ollama_chat_model import OllamaChatModel
+from .ollama_chat_model import OllamaChatModel, _validate_ollama_completion
 from .work_assistant import WorkThinkingUnavailableError
 from .local_ollama import (
     LOCAL_OLLAMA_MODEL_ERROR,
@@ -43,6 +43,15 @@ class _LocalModelAuth(Auth):
         # environment changes that could race unrelated clients.
         request.headers.pop("Authorization", None)
         yield request
+
+
+def _langchain_messages(messages: list[ChatMessage]) -> list[BaseMessage]:
+    # Normalize before SDK conversion for both invoke and stream; strict local
+    # templates reject even a second adjacent system message. Evidence stays
+    # in its original user role instead of acquiring system authority.
+    classes = {"system": SystemMessage, "user": HumanMessage, "assistant": AIMessage}
+    return [classes[message["role"]](content=message["content"])
+            for message in normalize_chat_messages(messages)]
 
 
 class LangChainOllamaChatModel:
@@ -112,35 +121,7 @@ class LangChainOllamaChatModel:
         messages: list[ChatMessage],
     ) -> str:
         """Generate one reply through LangChain."""
-        if not messages:
-            raise ValueError(
-                "Chat messages cannot be empty."
-            )
-
-        # Translate the project's lightweight message contract to LangChain.
-        langchain_messages: list[BaseMessage] = []
-
-        for message in messages:
-            role = message["role"]
-            message_content = message["content"].strip()
-
-            if not message_content:
-                raise ValueError(
-                    "Chat message content cannot be empty."
-                )
-
-            if role == "system":
-                langchain_messages.append(
-                    SystemMessage(content=message_content)
-                )
-            elif role == "user":
-                langchain_messages.append(
-                    HumanMessage(content=message_content)
-                )
-            elif role == "assistant":
-                langchain_messages.append(
-                    AIMessage(content=message_content)
-                )
+        langchain_messages = _langchain_messages(messages)
 
         try:
             with gpu_lease("ollama") if using_desktop_gpu() else nullcontext():
@@ -175,6 +156,7 @@ class LangChainOllamaChatModel:
                 "LangChain returned an empty reply."
             )
 
+        _validate_ollama_completion(response.response_metadata)
         return cleaned_reply
 
     def stream_reply(
@@ -198,39 +180,12 @@ class LangChainOllamaChatModel:
 
     def _stream_reply(self, messages: list[ChatMessage], *, thinking: bool) -> Iterator[str]:
         """Yield only public answer chunks from one explicitly configured request."""
-        if not messages:
-            raise ValueError(
-                "Chat messages cannot be empty."
-            )
-
-        # Streaming uses the same role conversion as non-streaming generation.
-        langchain_messages: list[BaseMessage] = []
-
-        for message in messages:
-            role = message["role"]
-            message_content = message["content"].strip()
-
-            if not message_content:
-                raise ValueError(
-                    "Chat message content cannot be empty."
-                )
-
-            if role == "system":
-                langchain_messages.append(
-                    SystemMessage(content=message_content)
-                )
-            elif role == "user":
-                langchain_messages.append(
-                    HumanMessage(content=message_content)
-                )
-            elif role == "assistant":
-                langchain_messages.append(
-                    AIMessage(content=message_content)
-                )
+        langchain_messages = _langchain_messages(messages)
 
         # Whitespace chunks may be yielded to preserve output order, but they
         # cannot make an otherwise empty model response valid.
         has_text = False
+        terminal_received = False
 
         try:
             with gpu_lease("ollama") if using_desktop_gpu() else nullcontext():
@@ -242,10 +197,23 @@ class LangChainOllamaChatModel:
                         if not isinstance(content, str):
                             raise ChatModelResponseError("LangChain returned non-text content.")
 
+                        # The pinned ChatOllama maps native done=True frames to
+                        # response_metadata. LangChain may append a synthetic
+                        # empty chunk_position='last'; that marker alone cannot
+                        # prove Ollama finished instead of closing a partial stream.
+                        metadata = chunk.response_metadata
+                        if terminal_received and content:
+                            raise ChatModelResponseError("Ollama returned text after completing the reply.")
+                        if metadata.get("done") is True or metadata.get("done_reason") is not None:
+                            if terminal_received:
+                                raise ChatModelResponseError("Ollama returned more than one completion response.")
+                            _validate_ollama_completion(metadata)
+                            terminal_received = True
+
                         if not content:
                             # Thinking-only chunks still provide cancellation
                             # points without publishing hidden reasoning text.
-                            if thinking:
+                            if thinking and not terminal_received:
                                 yield ""
                             continue
 
@@ -285,3 +253,5 @@ class LangChainOllamaChatModel:
             raise ChatModelResponseError(
                 "LangChain returned an empty reply."
             )
+        if not terminal_received:
+            _validate_ollama_completion({})

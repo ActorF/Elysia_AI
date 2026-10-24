@@ -1,5 +1,5 @@
 /* Show saved-source metadata as a compact list, keeping explicit expired-content consent beside each restore action. */
 .internet-cache-section, .internet-cache-entries, .internet-cache-entries article { display: grid; gap: var(--space-3); min-width: 0; }
-.internet-cache-entries article { padding-block: var(--space-3); border-top: 1px solid var(--color-border); }
+.internet-cache-entries article { padding-block: var(--space-3); }
 .internet-cache-entries label { display: flex; align-items: baseline; gap: var(--space-2); overflow-wrap: anywhere; }
 .internet-cache-entries input { flex: 0 0 auto; accent-color: var(--color-accent); }
