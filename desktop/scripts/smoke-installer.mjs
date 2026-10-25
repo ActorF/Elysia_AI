@@ -6,7 +6,7 @@
 
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, realpath, rm } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
@@ -17,7 +17,9 @@ const require = createRequire(import.meta.url)
 const manifest = require('../package.json')
 const installer = path.resolve(process.argv[2] ?? path.join(desktopRoot, `out/Elysia-Setup-${manifest.version}.exe`))
 const archiveTool = path.join(path.dirname(require.resolve('electron-winstaller/package.json')), 'vendor/7z.exe')
-const temporary = await mkdtemp(path.join(os.tmpdir(), 'elysia-installer-安装包-'))
+// Resolve Windows TEMP aliases before the packaged resource checks inspect
+// the relocated executable and its backend, while retaining the Unicode path.
+const temporary = await realpath(await mkdtemp(path.join(os.tmpdir(), 'elysia-installer-安装包-')))
 try {
   const embedded = path.join(temporary, 'installer')
   const extracted = path.join(temporary, 'relocated application')

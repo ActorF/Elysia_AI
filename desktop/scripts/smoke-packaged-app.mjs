@@ -2,7 +2,7 @@
 
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdtemp, mkdir, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, realpath, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -10,7 +10,10 @@ import { _electron as electron, expect } from '@playwright/test'
 
 const desktopRoot = fileURLToPath(new URL('..', import.meta.url))
 const executablePath = path.resolve(process.argv[2] ?? path.join(desktopRoot, 'out/win-unpacked/Elysia.exe'))
-const temporary = await mkdtemp(path.join(os.tmpdir(), 'elysia-exe-smoke-'))
+// Windows CI can expose TEMP through an 8.3 alias such as RUNNER~1. Resolve
+// our newly created directory before giving it to the app's no-link storage
+// boundary; the alias itself must not be mistaken for a reviewed data root.
+const temporary = await realpath(await mkdtemp(path.join(os.tmpdir(), 'elysia-exe-smoke-')))
 const profile = path.join(temporary, 'profile')
 await mkdir(profile)
 const env = { ...process.env }
