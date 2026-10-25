@@ -441,6 +441,17 @@ async function createFixture() {
   return { dataRoot, projectRoot, root }
 }
 
+/** Remove only an owned test fixture after its manager and child processes settle. */
+async function removeFixture(fixture) {
+  const root = path.resolve(fixture.root)
+  assert.equal(path.dirname(root), path.resolve(os.tmpdir()))
+  assert.ok(path.basename(root).startsWith('elysia-song-cover-'))
+  // Callers still await shutdown and retain every lifecycle assertion. Windows
+  // may briefly keep the fixture executable locked after its child closes;
+  // bounded filesystem retries tolerate that delay and still fail a held lock.
+  await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+}
+
 test('fails packaged readiness closed and admits only regular development files', async () => {
   const fixture = await createFixture()
   const manager = new SongCoverManager(
@@ -500,7 +511,7 @@ test('fails packaged readiness closed and admits only regular development files'
     })
   } finally {
     await manager.shutdown()
-    await rm(fixture.root, { recursive: true, force: true })
+    await removeFixture(fixture)
   }
 })
 
@@ -608,7 +619,7 @@ test('defaults to source conversion with a closed durable singing request', asyn
     ])
   } finally {
     await manager.shutdown()
-    await rm(fixture.root, { recursive: true, force: true })
+    await removeFixture(fixture)
   }
 })
 
@@ -710,7 +721,7 @@ test('launches the legacy wire engine with fixed private RVC paths', async () =>
     assert.equal(manager.getState().engine, 'legacy-svc')
   } finally {
     await manager.shutdown()
-    await rm(fixture.root, { recursive: true, force: true })
+    await removeFixture(fixture)
   }
 })
 
@@ -743,7 +754,7 @@ test('rejects a redirected private AppData folder before starting a worker', asy
     assert.deepEqual(await readdir(outside), [])
   } finally {
     await manager.shutdown()
-    await rm(fixture.root, { recursive: true, force: true })
+    await removeFixture(fixture)
   }
 })
 
@@ -831,7 +842,7 @@ test('manager independently rejects lyrics metadata outside its engine contract'
     assert.equal(manager.getState().jobId, null)
   } finally {
     await manager.shutdown()
-    await rm(fixture.root, { recursive: true, force: true })
+    await removeFixture(fixture)
   }
 })
 
@@ -941,7 +952,7 @@ test('runs the complete lyrics SVS path with private metadata lookup only', asyn
     )
   } finally {
     await manager.shutdown()
-    await rm(fixture.root, { recursive: true, force: true })
+    await removeFixture(fixture)
   }
 })
 
@@ -996,7 +1007,7 @@ test('rejects lyrics SVS before spawn when synchronized lyrics are absent', asyn
     assert.deepEqual(await readdir(jobsRoot), [])
   } finally {
     await manager.shutdown()
-    await rm(fixture.root, { recursive: true, force: true })
+    await removeFixture(fixture)
   }
 })
 
@@ -1050,7 +1061,7 @@ test('publishes closed startup error codes without provider diagnostics', async 
       assert.equal(JSON.stringify(manager.getState()).includes(fixture.root), false)
     } finally {
       await manager.shutdown()
-      await rm(fixture.root, { recursive: true, force: true })
+      await removeFixture(fixture)
     }
   }
 })
@@ -1086,7 +1097,7 @@ test('classifies alignment failures separately from other runtime failures', asy
     assert.equal(alignmentFailure.errorCode, 'lyrics-alignment')
   } finally {
     await alignmentManager.shutdown()
-    await rm(alignmentFixture.root, { recursive: true, force: true })
+    await removeFixture(alignmentFixture)
   }
 
   const runtimeFixture = await createFixture()
@@ -1112,7 +1123,7 @@ test('classifies alignment failures separately from other runtime failures', asy
     assert.equal(runtimeFailure.errorCode, 'singing-runtime')
   } finally {
     await runtimeManager.shutdown()
-    await rm(runtimeFixture.root, { recursive: true, force: true })
+    await removeFixture(runtimeFixture)
   }
 })
 
@@ -1191,7 +1202,7 @@ test('creates, privately plays, exports, and removes one completed cover', async
   } finally {
     releasePlayback?.()
     await manager.shutdown()
-    await rm(fixture.root, { recursive: true, force: true })
+    await removeFixture(fixture)
   }
 })
 
@@ -1267,7 +1278,7 @@ test('keeps a validated timeline through ready seek, playback, stop, and complet
     await manager.cancel(replacement.jobId)
   } finally {
     await manager.shutdown()
-    await rm(fixture.root, { recursive: true, force: true })
+    await removeFixture(fixture)
   }
 })
 
@@ -1299,7 +1310,7 @@ test('publishes bounded source-conversion progress with safe phase messages', as
     }
   } finally {
     await manager.shutdown()
-    await rm(fixture.root, { recursive: true, force: true })
+    await removeFixture(fixture)
   }
 })
 
@@ -1375,7 +1386,7 @@ test('preserves an existing export when a transactional export fails', async (t)
         assert.equal(manager.getState().outputAvailable, true)
       } finally {
         await manager.shutdown()
-        await rm(fixture.root, { recursive: true, force: true })
+        await removeFixture(fixture)
       }
     })
   }
@@ -1454,7 +1465,7 @@ test('keeps stem paths private and applies only a closed whole-song key shift', 
     )
   } finally {
     await manager.shutdown()
-    await rm(fixture.root, { recursive: true, force: true })
+    await removeFixture(fixture)
   }
 })
 
@@ -1502,7 +1513,7 @@ test('rejects a replaced MP3 identity before playback without leaking paths', as
     await assert.rejects(stat(outputDirectory))
   } finally {
     await manager.shutdown()
-    await rm(fixture.root, { recursive: true, force: true })
+    await removeFixture(fixture)
   }
 })
 
@@ -1566,7 +1577,7 @@ test('retains cleanup ownership when an invalid preview directory is locked', as
   } finally {
     blockedDirectory = null
     await manager.shutdown()
-    await rm(fixture.root, { recursive: true, force: true })
+    await removeFixture(fixture)
   }
 })
 
@@ -1642,7 +1653,7 @@ test('does not let delayed invalid-preview cleanup overwrite a replacement', asy
     releaseDelayedCleanup?.()
     delayedDirectory = null
     await manager.shutdown()
-    await rm(fixture.root, { recursive: true, force: true })
+    await removeFixture(fixture)
   }
 })
 
@@ -1710,7 +1721,7 @@ test('publishes invalid output after pending playback is stopped', async () => {
     releaseDelayedCleanup?.()
     delayedDirectory = null
     await manager.shutdown()
-    await rm(fixture.root, { recursive: true, force: true })
+    await removeFixture(fixture)
   }
 })
 
@@ -1759,7 +1770,7 @@ test('rejects a replaced WAV hard-link identity on export without leaking paths'
     await assert.rejects(stat(exportPath))
   } finally {
     await manager.shutdown()
-    await rm(fixture.root, { recursive: true, force: true })
+    await removeFixture(fixture)
   }
 })
 
@@ -1798,7 +1809,7 @@ test('rejects a hard-link export alias without truncating the managed WAV', asyn
     assert.equal(manager.getState().outputAvailable, true)
   } finally {
     await manager.shutdown()
-    await rm(fixture.root, { recursive: true, force: true })
+    await removeFixture(fixture)
   }
 })
 
@@ -1842,7 +1853,7 @@ test('times out a silent worker, releases its slot, and removes its private job'
     await manager.cancel(replacement.jobId)
   } finally {
     await manager.shutdown()
-    await rm(fixture.root, { recursive: true, force: true })
+    await removeFixture(fixture)
   }
 })
 
@@ -1905,7 +1916,7 @@ for (const scenario of [
       )))
     } finally {
       await manager.shutdown()
-      await rm(fixture.root, { recursive: true, force: true })
+      await removeFixture(fixture)
     }
   })
 }
@@ -1952,7 +1963,7 @@ test(`recovers an exact crash-left WSL UUID from ${manifest}`, async () => {
     await assert.rejects(stat(jobDirectory))
   } finally {
     await manager.shutdown()
-    await rm(fixture.root, { recursive: true, force: true })
+    await removeFixture(fixture)
   }
 })
 
@@ -2006,7 +2017,7 @@ for (const scenario of [
       await assert.rejects(stat(jobDirectory))
     } finally {
       await manager.shutdown()
-      await rm(fixture.root, { recursive: true, force: true })
+      await removeFixture(fixture)
     }
   })
 }
@@ -2065,7 +2076,7 @@ for (const scenario of [
     } finally {
       await rm(responsePath, { force: true })
       await manager.shutdown().catch(() => {})
-      await rm(fixture.root, { recursive: true, force: true })
+      await removeFixture(fixture)
     }
   })
 }
@@ -2150,7 +2161,7 @@ test('tree-stops a timed-out cleanup before retaining its exact retry lease', {
   } finally {
     await rm(hangMarker, { force: true })
     await manager.shutdown().catch(() => {})
-    await rm(fixture.root, { recursive: true, force: true })
+    await removeFixture(fixture)
   }
 })
 
@@ -2202,7 +2213,7 @@ test('rejects overlong unterminated worker stdout and releases its slot', {
     assert.equal(manager.hasActiveWork(), false)
   } finally {
     await manager.shutdown()
-    await rm(fixture.root, { recursive: true, force: true })
+    await removeFixture(fixture)
   }
 })
 
@@ -2248,7 +2259,7 @@ test('settles failed startup cleanup and rejects the first job safely', async ()
     // proves that retry settles instead of making the fixture platform-specific.
     blockStartupCleanup = false
     await manager.shutdown()
-    await rm(fixture.root, { recursive: true, force: true })
+    await removeFixture(fixture)
   }
 })
 
@@ -2309,7 +2320,7 @@ test('tracks and retries failed startup cleanup before admitting audio', async (
   } finally {
     releaseFirstCleanup?.()
     await manager.shutdown()
-    await rm(fixture.root, { recursive: true, force: true })
+    await removeFixture(fixture)
   }
 })
 
@@ -2373,7 +2384,7 @@ for (const [sourceName, testName] of [
       await assert.rejects(stat(jobDirectory))
     } finally {
       await manager.shutdown()
-      await rm(fixture.root, { recursive: true, force: true })
+      await removeFixture(fixture)
     }
   })
 }
@@ -2407,7 +2418,7 @@ test('cancels only the exact active worker and deletes incomplete output', async
     await assert.rejects(stat(jobDirectory))
   } finally {
     await manager.shutdown()
-    await rm(fixture.root, { recursive: true, force: true })
+    await removeFixture(fixture)
   }
 })
 
@@ -2468,7 +2479,7 @@ test('retains and retries an exact private directory after cleanup fails', async
   } finally {
     blockedDirectory = null
     await manager.shutdown()
-    await rm(fixture.root, { recursive: true, force: true })
+    await removeFixture(fixture)
   }
 })
 
@@ -2533,7 +2544,7 @@ test('retains failed-worker audio until exact cleanup can be retried', async () 
   } finally {
     blockedDirectory = null
     await manager.shutdown()
-    await rm(fixture.root, { recursive: true, force: true })
+    await removeFixture(fixture)
   }
 })
 
@@ -2558,7 +2569,7 @@ test('coalesces concurrent cancellation for one owned process tree', async () =>
     assert.equal(manager.hasActiveWork(), false)
   } finally {
     await manager.shutdown()
-    await rm(fixture.root, { recursive: true, force: true })
+    await removeFixture(fixture)
   }
 })
 
@@ -2625,7 +2636,7 @@ test('coalesces timeout cleanup with concurrent user cancellation', {
   } finally {
     releaseCleanup?.()
     await manager.shutdown()
-    await rm(fixture.root, { recursive: true, force: true })
+    await removeFixture(fixture)
   }
 })
 
@@ -2679,7 +2690,7 @@ test('cancels an SVS launch through its shared AbortSignal before worker admissi
     assert.equal(manager.hasActiveWork(), false)
   } finally {
     await manager.shutdown()
-    await rm(fixture.root, { recursive: true, force: true })
+    await removeFixture(fixture)
   }
 })
 
@@ -2720,7 +2731,7 @@ test('invalidates pending auto-play when a completed job is cancelled', async ()
   } finally {
     releasePreferences?.({ outputDeviceId: null, volumePercent: 100 })
     await manager.shutdown()
-    await rm(fixture.root, { recursive: true, force: true })
+    await removeFixture(fixture)
   }
 })
 
@@ -2758,7 +2769,7 @@ test('keeps output ready without playing when preferences are unavailable', asyn
     assert.equal(playCalls, 0)
   } finally {
     await manager.shutdown()
-    await rm(fixture.root, { recursive: true, force: true })
+    await removeFixture(fixture)
   }
 })
 
@@ -2799,7 +2810,7 @@ test('bounds automatic playback preference lookup after conversion', async () =>
     assert.equal(manager.hasManagedOutput(), true)
   } finally {
     await manager.shutdown()
-    await rm(fixture.root, { recursive: true, force: true })
+    await removeFixture(fixture)
   }
 })
 
@@ -2856,7 +2867,7 @@ test('invalidates manual playback while it awaits private preferences', async ()
   } finally {
     releasePreferences?.({ outputDeviceId: null, volumePercent: 100 })
     await manager.shutdown()
-    await rm(fixture.root, { recursive: true, force: true })
+    await removeFixture(fixture)
   }
 })
 
@@ -2933,7 +2944,7 @@ test('keeps completed output published when replacement cleanup fails', async ()
   } finally {
     blockedDirectory = null
     await manager.shutdown()
-    await rm(fixture.root, { recursive: true, force: true })
+    await removeFixture(fixture)
   }
 })
 
@@ -2960,7 +2971,7 @@ test('reserves the worker slot before asynchronous launch preparation', async ()
     )
   } finally {
     await manager.shutdown()
-    await rm(fixture.root, { recursive: true, force: true })
+    await removeFixture(fixture)
   }
 })
 
@@ -2982,7 +2993,7 @@ test('shutdown waits for a pending launch reservation without orphaning a worker
     assert.equal(manager.hasActiveWork(), false)
   } finally {
     await manager.shutdown()
-    await rm(fixture.root, { recursive: true, force: true })
+    await removeFixture(fixture)
   }
 })
 
@@ -3050,7 +3061,7 @@ test('blocks shutdown until active process-tree termination is confirmed', async
   } finally {
     allowTermination = true
     await manager.shutdown().catch(() => {})
-    await rm(fixture.root, { recursive: true, force: true })
+    await removeFixture(fixture)
   }
 })
 
@@ -3105,7 +3116,7 @@ test('never upgrades a closed parent after tree termination was uncertain', asyn
     assert.equal(terminationAttempts, 1)
     assert.equal((await stat(jobDirectory)).isDirectory(), true)
   } finally {
-    await rm(fixture.root, { recursive: true, force: true })
+    await removeFixture(fixture)
   }
 })
 
@@ -3136,7 +3147,7 @@ test('cancels a failed spawn without retaining a nonexistent process', async () 
     assert.equal(manager.hasManagedOutput(), false)
   } finally {
     await manager.shutdown()
-    await rm(fixture.root, { recursive: true, force: true })
+    await removeFixture(fixture)
   }
 })
 
@@ -3167,7 +3178,7 @@ test('maps worker text to fixed Main-owned progress messages', async () => {
     )
   } finally {
     await manager.shutdown()
-    await rm(fixture.root, { recursive: true, force: true })
+    await removeFixture(fixture)
   }
 })
 
@@ -3225,7 +3236,7 @@ test('GPU queue waiting can be cancelled before any Song Cover worker starts', a
     ollama.release()
     await manager.shutdown()
     await gpu.close()
-    await rm(fixture.root, { recursive: true, force: true })
+    await removeFixture(fixture)
   }
 })
 
@@ -3246,7 +3257,7 @@ test('GPU ownership ends after successful worker cleanup while playback may cont
     playback.resolve()
     await manager.shutdown()
     await gpu.close()
-    await rm(fixture.root, { recursive: true, force: true })
+    await removeFixture(fixture)
   }
 })
 
@@ -3280,7 +3291,7 @@ test('GPU cancellation retains the lease until process-tree termination is confi
     await manager.shutdown()
     assert.equal(releaseCalls, 1)
     await gpu.close()
-    await rm(fixture.root, { recursive: true, force: true })
+    await removeFixture(fixture)
   }
 })
 
@@ -3301,7 +3312,7 @@ test('GPU worker failure frees capacity only after cleanup and permits a later g
   } finally {
     await manager.shutdown()
     await gpu.close()
-    await rm(fixture.root, { recursive: true, force: true })
+    await removeFixture(fixture)
   }
 })
 
@@ -3327,7 +3338,7 @@ test('GPU ownership survives failed WSL cleanup until an exact recovery retry su
     await rm(badResponse, { force: true })
     await manager.shutdown()
     await gpu.close()
-    await rm(fixture.root, { recursive: true, force: true })
+    await removeFixture(fixture)
   }
 })
 
@@ -3350,7 +3361,7 @@ test('GPU termination uncertainty retains physical ownership through a successfu
     allowTermination = true
     await manager.shutdown()
     await gpu.close()
-    await rm(fixture.root, { recursive: true, force: true })
+    await removeFixture(fixture)
   }
 })
 
@@ -3377,7 +3388,7 @@ test('GPU child error alone cannot release capacity before its owned process clo
     termination.resolve()
     await manager.shutdown()
     await gpu.close()
-    await rm(fixture.root, { recursive: true, force: true })
+    await removeFixture(fixture)
   }
 })
 
@@ -3418,7 +3429,7 @@ test('GPU coordinator shutdown aborts native work and joins the manager physical
     cleanupRelease.resolve()
     await manager.shutdown()
     await gpu.close()
-    await rm(fixture.root, { recursive: true, force: true })
+    await removeFixture(fixture)
   }
 })
 
@@ -3433,6 +3444,6 @@ test('GPU admission is released when synchronous spawn fails before any physical
   } finally {
     await manager.shutdown()
     await gpu.close()
-    await rm(fixture.root, { recursive: true, force: true })
+    await removeFixture(fixture)
   }
 })
