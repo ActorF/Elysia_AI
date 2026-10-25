@@ -114,9 +114,20 @@ jobs:
           cache: npm
           cache-dependency-path: desktop/package-lock.json
 
+      - name: Use canonical Windows temporary paths
+        shell: pwsh
+        run: |
+          # Normalize the runner-owned TEMP root rather than weakening the
+          # application storage checks or changing individual test fixtures.
+          node -e 'const fs = require("node:fs"); const root = fs.realpathSync.native(process.env.RUNNER_TEMP); fs.appendFileSync(process.env.GITHUB_ENV, "TEMP=" + root + "\nTMP=" + root + "\n");'
+
       - name: Install desktop dependencies
         working-directory: desktop
         run: npm ci
+
+      - name: Test Windows desktop contracts
+        working-directory: desktop
+        run: npm run test:contract
 
       - name: Build unpacked Windows package
         working-directory: desktop

@@ -1,7 +1,9 @@
 /** Verify approved CMD dispatch, private helper inputs, bounded receipts, and cancellation leases. */
 
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import { EventEmitter } from 'node:events'
+import { existsSync } from 'node:fs'
 import { PassThrough } from 'node:stream'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -140,8 +142,18 @@ test('nonzero helper exit cannot promote a reported success', async () => {
 
 test('real Windows helper returns Unicode and machine identity through the native adapter', { skip: process.platform !== 'win32' }, async () => {
   const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
+  // CI installs Python on PATH without creating a checkout virtual environment.
+  // Resolve that executable before invoking the production host, whose trusted
+  // interpreter must remain absolute even when the test uses a PATH override.
+  const venvPython = path.join(projectRoot, '.venv', 'Scripts', 'python.exe')
+  const pythonCommand = process.env.ELYSIA_TEST_PYTHON ?? (existsSync(venvPython) ? venvPython : 'python')
+  const interpreter = spawnSync(pythonCommand, ['-c', 'import sys; print(sys.executable)'],
+    { encoding: 'utf8', timeout: 5_000, maxBuffer: 4096, windowsHide: true, shell: false })
+  assert.equal(interpreter.status, 0, 'The native CMD contract requires an available Python interpreter.')
+  const pythonExecutable = interpreter.stdout.trim()
+  assert.ok(path.isAbsolute(pythonExecutable), 'Python must report an absolute executable path.')
   const execute = createWorkCommandNativeRunner({ isCurrent: () => true, projectRoot,
-    pythonExecutable: path.join(projectRoot, '.venv', 'Scripts', 'python.exe'), defaultCwd: projectRoot })
+    pythonExecutable, defaultCwd: projectRoot })
   const result = await execute(request({ command: 'echo 中文回执 & echo %COMPUTERNAME% & echo %USERNAME%' }), new AbortController().signal)
   assert.equal(result.status, 'succeeded')
   assert.match(result.command.stdout, /中文回执/u)
