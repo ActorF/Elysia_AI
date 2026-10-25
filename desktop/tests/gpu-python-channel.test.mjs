@@ -1,4 +1,4 @@
-/** Verify real inherited fd5 duplex I/O, desktop startup, and absent-asset readiness. */
+/** Verify fixed private IPC ownership, fd5 duplex I/O, and desktop startup readiness. */
 
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
@@ -168,6 +168,65 @@ test('a promised but absent fd5 fails closed before the real backend exposes req
   assert.deepEqual(result.frames, [])
   assert.match(result.stderr, /Desktop GPU admission channel is unavailable/u)
 })
+
+test('the missing fd5 diagnostic survives file-only application logging', async () => {
+  // Linux's normal startup configures app.log before the broker is checked.
+  // Force the same logging destination on every platform so this regression
+  // cannot pass only because a dependency installed a stderr handler first.
+  const source = [
+    'import logging, os, runpy',
+    'from pathlib import Path',
+    'logging.basicConfig(filename=Path(os.environ["ELYSIA_DATA_ROOT"])/"bootstrap.log", force=True)',
+    `runpy.run_path(${JSON.stringify(path.join(PROJECT, 'desktop_backend.py'))}, run_name="__main__")`,
+  ].join('\n')
+  const stdin = `${JSON.stringify({ protocol: { name: 'elysia.desktop', version: 1 },
+    type: 'request', id: 'hello', method: 'handshake', params: {
+      client: { name: 'elysia-electron', version: '0.1.0' }, sessionToken: 'a'.repeat(64),
+    } })}\n`
+  const result = await runPython(['-u', '-c', source], { stdin, broker: false })
+  assert.equal(result.stdout, '', 'A failed broker bootstrap cannot accept the handshake.')
+  assert.deepEqual(result.frames, [])
+  assert.equal(result.stderr.trim(), 'Desktop GPU admission channel is unavailable.')
+})
+
+for (const [descriptor, factory] of [
+  [3, 'AudioChannelWriter.from_inherited_fd3'],
+  [4, 'ImageChannelWriter.from_inherited_fd4'],
+  [5, 'GpuAdmissionClient.from_inherited_fd5'],
+]) {
+  test(`rejecting a regular file at fd${descriptor} preserves its owner and inheritance`, async () => {
+    // Only this isolated child replaces the fixed slot; the test driver's
+    // handles and unrelated files never participate in descriptor ownership.
+    const source = [
+      'import os',
+      'from pathlib import Path',
+      'from desktop_protocol import AudioChannelWriter, AudioChannelError, ImageChannelWriter, ImageChannelError',
+      'from gpu_admission import GpuAdmissionClient, GpuAdmissionError',
+      'filename = Path(os.environ["ELYSIA_DATA_ROOT"])/"owned.log"',
+      'opened = os.open(filename, os.O_WRONLY | os.O_CREAT, 0o600)',
+      `if opened != ${descriptor}:`,
+      `    os.dup2(opened, ${descriptor})`,
+      '    os.close(opened)',
+      `os.set_inheritable(${descriptor}, True)`,
+      'try:',
+      `    ${factory}()`,
+      'except (AudioChannelError, ImageChannelError, GpuAdmissionError):',
+      '    pass',
+      'else:',
+      '    raise AssertionError("A regular file cannot become an IPC channel")',
+      `assert os.get_inheritable(${descriptor})`,
+      `os.write(${descriptor}, b"still-owned")`,
+      `os.close(${descriptor})`,
+      'assert filename.read_bytes() == b"still-owned"',
+      'print("preserved", flush=True)',
+    ].join('\n')
+    const result = await runPython(['-u', '-c', source], { broker: false })
+    assert.equal(result.code, 0, result.stderr)
+    assert.equal(result.stdout.trim(), 'preserved')
+    assert.equal(result.stderr, '')
+    assert.deepEqual(result.frames, [])
+  })
+}
 
 test('real broker mode reports missing speech assets without requesting idle GPU residency', async () => {
   const source = [

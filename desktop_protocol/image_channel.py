@@ -359,16 +359,20 @@ class ImageChannelWriter:
         """
 
         stream: BinaryIO | None = None
+        owns_descriptor = False
         try:
-            os.set_inheritable(IMAGE_CHANNEL_FD, False)
             if not _is_image_pipe_descriptor():
                 raise ValueError
+            # Without an inherited pipe, imports may reuse fd4 for logging.
+            # Claim it only after validation so rejection preserves that file.
+            owns_descriptor = True
+            os.set_inheritable(IMAGE_CHANNEL_FD, False)
             stream = os.fdopen(IMAGE_CHANNEL_FD, "wb", buffering=0, closefd=True)
             return cls(stream)
         except Exception:
             if stream is not None:
                 _safe_close(stream)
-            else:
+            elif owns_descriptor:
                 try:
                     os.close(IMAGE_CHANNEL_FD)
                 except OSError:

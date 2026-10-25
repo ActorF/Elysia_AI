@@ -115,11 +115,12 @@ class GpuAdmissionClient:
 
     @classmethod
     def from_inherited_fd5(cls) -> GpuAdmissionClient:
-        """Own only Electron's fixed duplex IPC descriptor and stop inheritance."""
+        """Own Electron's fixed IPC pipe, leaving unrelated descriptors untouched."""
 
         stream: BinaryIO | None = None
         write_stream: BinaryIO | None = None
         read_fd: int | None = None
+        owns_descriptor = False
         try:
             # The image pipe helper performs the same native handle-kind check;
             # fd5 is checked independently rather than accepting a caller path.
@@ -127,7 +128,6 @@ class GpuAdmissionClient:
             import ctypes
             import importlib
 
-            os.set_inheritable(5, False)
             if os.name == "nt":
                 native = getattr(importlib.import_module("msvcrt"), "get_osfhandle")(5)
                 file_type = ctypes.WinDLL("kernel32", use_last_error=True).GetFileType
@@ -139,6 +139,11 @@ class GpuAdmissionClient:
                 valid = stat.S_ISFIFO(mode) or stat.S_ISSOCK(mode)
             if not valid:
                 raise ValueError
+            # Missing inherited descriptors can be reused by import-time log
+            # files. Ownership begins only after the OS confirms an IPC pipe;
+            # rejecting another handle must not change or close that resource.
+            owns_descriptor = True
+            os.set_inheritable(5, False)
             # Duplicate before starting either I/O operation. Distinct CRT
             # descriptors avoid the Windows read/write lock inversion while
             # preserving one private duplex connection and fixed fd ownership.
@@ -170,7 +175,7 @@ class GpuAdmissionClient:
                     write_stream.close()
                 except OSError:
                     pass
-            else:
+            elif owns_descriptor:
                 try:
                     os.close(5)
                 except OSError:

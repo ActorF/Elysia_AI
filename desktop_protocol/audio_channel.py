@@ -334,14 +334,15 @@ class AudioChannelWriter:
         FFmpeg, or another descendant from retaining the pipe and delaying EOF.
         """
 
+        # Console launches may reuse this absent IPC slot for a log file.
+        # Do not modify or close another owner's handle when rejecting it.
+        if not _is_local_pipe_descriptor(AUDIO_CHANNEL_FD):
+            raise AudioChannelIOError(_IO_MESSAGE)
         try:
             os.set_inheritable(AUDIO_CHANNEL_FD, False)
         except Exception:
             _close_inherited_fd3_safely()
             raise AudioChannelIOError(_IO_MESSAGE) from None
-        if not _is_local_pipe_descriptor(AUDIO_CHANNEL_FD):
-            _close_inherited_fd3_safely()
-            raise AudioChannelIOError(_IO_MESSAGE)
         try:
             stream = os.fdopen(
                 AUDIO_CHANNEL_FD,

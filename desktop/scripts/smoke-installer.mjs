@@ -24,8 +24,10 @@ try {
   execFileSync(archiveTool, ['x', '-y', `-o${embedded}`, installer], { windowsHide: true, stdio: 'pipe' })
   execFileSync(archiveTool, ['x', '-y', `-o${extracted}`, path.join(embedded, '$PLUGINSDIR/app-64.7z')],
     { windowsHide: true, stdio: 'pipe' })
+  // The inner smoke has a 120-second work budget plus bounded process and
+  // profile cleanup. Let it finish that cleanup before this outer guard fires.
   const result = execFileSync(process.execPath, [path.join(desktopRoot, 'scripts/smoke-packaged-app.mjs'), path.join(extracted, 'Elysia.exe')],
-    { windowsHide: true, encoding: 'utf8', timeout: 120_000 })
+    { windowsHide: true, encoding: 'utf8', timeout: 180_000 })
   assert.match(result, /Packaged EXE passed/u)
   console.log('NSIS payload passed: extracted installer launches from a new Unicode path without Python on PATH.')
 } finally {

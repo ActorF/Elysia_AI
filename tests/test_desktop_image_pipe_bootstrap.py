@@ -29,7 +29,7 @@ def test_inherited_image_pipe_is_fixed_unbuffered_and_not_inheritable(monkeypatc
 
 @pytest.mark.parametrize("stage", ["inheritance", "descriptor", "fdopen", "constructor"])
 def test_bootstrap_failure_releases_only_image_owner_and_detaches_errors(monkeypatch: Any, stage: str) -> None:
-    """Reject file/console handles and close provisional owners without diagnostics."""
+    """Leave rejected handles alone and close only validated provisional IPC owners."""
 
     stream = BytesIO()
     closed: list[int] = []
@@ -47,5 +47,5 @@ def test_bootstrap_failure_releases_only_image_owner_and_detaches_errors(monkeyp
         channel.ImageChannelWriter.from_inherited_fd4()
     assert "private" not in str(caught.value)
     assert caught.value.__context__ is None
-    assert closed == ([] if stage == "constructor" else [4])
+    assert closed == ([] if stage in {"descriptor", "constructor"} else [4])
     assert stream.closed is (stage == "constructor")

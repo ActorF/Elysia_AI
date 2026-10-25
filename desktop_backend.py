@@ -5214,6 +5214,9 @@ def main() -> None:
         except GpuAdmissionError:
             # Electron promised exclusive GPU admission. Losing that private
             # capability must not silently enable unconstrained model fallback.
+            # Application logging normally targets a file, so the launcher
+            # also needs a fixed diagnostic on stderr before the protocol ends.
+            print("Desktop GPU admission channel is unavailable.", file=sys.stderr, flush=True)
             logger.error("Desktop GPU admission channel is unavailable.")
             return
         configure_gpu_client(gpu_client)

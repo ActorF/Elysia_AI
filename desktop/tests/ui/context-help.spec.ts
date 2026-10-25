@@ -34,9 +34,15 @@ test.afterEach(async () => { await application?.close(); application = undefined
 for (const width of [390, 1180]) {
   test(`supplemental settings help stays hidden until requested and fits a ${width}px window`, async () => {
     await page.setViewportSize({ width, height: 700 })
-    if (!await page.getByRole('button', { name: 'Settings', exact: true }).isVisible()) {
+    const sidebar = page.locator('#app-sidebar')
+    if (width === 390) {
+      // Viewport emulation can return before the media-query update closes
+      // navigation. A single visibility read may still see its closing frame.
+      await expect(sidebar).toHaveAttribute('aria-hidden', 'true')
       await page.getByRole('button', { name: 'Show navigation', exact: true }).click()
+      await expect(sidebar).toHaveAttribute('aria-modal', 'true')
     }
+    await expect(sidebar).toHaveAttribute('aria-hidden', 'false')
     await page.getByRole('button', { name: 'Settings', exact: true }).click()
     const trigger = page.locator('.settings-category-panel:visible .help-hint-trigger').first()
     await expect(trigger).toBeVisible()

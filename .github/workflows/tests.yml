@@ -42,6 +42,8 @@ jobs:
 
   windows-native-integration:
     runs-on: windows-latest
+    # Native smoke failures must not hold a hosted runner for its six-hour default.
+    timeout-minutes: 45
 
     defaults:
       run:

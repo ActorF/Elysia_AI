@@ -494,6 +494,7 @@ def test_inherited_factory_sanitizes_descriptor_failure(
         return BytesIO()
 
     monkeypatch.setattr(os, "set_inheritable", _fail_inheritance)
+    monkeypatch.setattr(audio_channel_module, "_is_local_pipe_descriptor", lambda _descriptor: True)
     monkeypatch.setattr(os, "fdopen", _record_open)
     monkeypatch.setattr(os, "close", closed.append)
     with pytest.raises(AudioChannelIOError) as captured:
@@ -507,9 +508,10 @@ def test_inherited_factory_sanitizes_descriptor_failure(
 def test_inherited_factory_rejects_a_non_pipe_fd3(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Never send private speech bytes to a regular file or device handle."""
+    """Reject another owner's file without changing its flags, wrapping, or closing it."""
 
     closed: list[int] = []
+    inheritance_changes: list[tuple[int, bool]] = []
     opened = False
 
     def _record_open(*_args: object, **_kwargs: object) -> BytesIO:
@@ -517,7 +519,7 @@ def test_inherited_factory_rejects_a_non_pipe_fd3(
         opened = True
         return BytesIO()
 
-    monkeypatch.setattr(os, "set_inheritable", lambda _fd, _flag: None)
+    monkeypatch.setattr(os, "set_inheritable", lambda fd, flag: inheritance_changes.append((fd, flag)))
     monkeypatch.setattr(
         audio_channel_module,
         "_is_local_pipe_descriptor",
@@ -529,7 +531,8 @@ def test_inherited_factory_rejects_a_non_pipe_fd3(
     with pytest.raises(AudioChannelIOError):
         AudioChannelWriter.from_inherited_fd3()
     assert not opened
-    assert closed == [AUDIO_CHANNEL_FD]
+    assert closed == []
+    assert inheritance_changes == []
 
 
 def test_inherited_factory_closes_fd3_when_wrapping_fails(

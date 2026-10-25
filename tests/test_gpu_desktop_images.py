@@ -254,13 +254,24 @@ def test_backend_installs_gpu_client_before_services_and_closes_it_after_run(mon
     assert events == ["fd5", "install", "fd3", "fd4", "backend", "run", "gpu-close"]
 
 
-def test_backend_refuses_promised_but_missing_gpu_channel_before_services(monkeypatch: pytest.MonkeyPatch) -> None:
-    """An Electron launch never falls back to unconstrained GPU work on fd5 failure."""
+def test_backend_refuses_promised_but_missing_gpu_channel_before_services(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Reject missing GPU authority and emit a sanitized diagnostic regardless of logging handlers."""
 
     events: list[str] = []
     _bootstrap(monkeypatch, events, failed=True)
+    # The launcher still needs its stderr diagnostic when logging is routed to
+    # app.log or another non-console destination by normal startup imports.
+    logged: list[str] = []
+    monkeypatch.setattr(desktop_backend.logger, "error", logged.append)
     desktop_backend.main()
     assert events == ["fd5"]
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "Desktop GPU admission channel is unavailable.\n"
+    assert logged == ["Desktop GPU admission channel is unavailable."]
 
 
 def test_non_electron_backend_preserves_library_gpu_policy(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -1,6 +1,6 @@
 # Elysia Desktop
 
-**0.1.0 · 2026-10-24 delivery snapshot.** Electron + React/TypeScript with a local Python backend. For the installer and first launch, use the [project README](../README.md) or [English overview](../README.en.md).
+**0.1.0 · 2026-10-25 delivery snapshot.** Electron + React/TypeScript with a local Python backend. For the installer and first launch, use the [project README](../README.md) or [English overview](../README.en.md).
 
 ## Run from source
 

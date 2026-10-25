@@ -15,7 +15,7 @@
 
 [View dark mode](./docs/assets/desktop-dark.png)
 
-**Delivery snapshot: 0.1.0 · 2026-10-24.** This is a preview release. These instructions describe this version; model quality and optional features depend on your local setup.
+**Delivery snapshot: 0.1.0 · 2026-10-25.** This is a preview release. These instructions describe this version; model quality and optional features depend on your local setup.
 
 ## What it does
 
