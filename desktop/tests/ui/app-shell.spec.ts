@@ -2416,10 +2416,21 @@ test('keeps bottom Chat action menus and keyboard targets inside the history vie
   await setChatState({ activeChat: { ...chats[0], messages: [] }, chats })
   await emitSnapshot(readySnapshot({ chatId: chats[0].chatId, chatTitle: chats[0].title }))
 
-  for (const [width, height, zoom] of [[1180, 780, 1], [960, 640, 1.5]]) {
+  for (const { width, height, zoom, compact } of [
+    { width: 1180, height: 780, zoom: 1, compact: false },
+    { width: 960, height: 640, zoom: 1.5, compact: true },
+  ]) {
     await setWindowAndZoom(width, height, zoom)
     const sidebar = page.locator('#app-sidebar')
-    if (await sidebar.getAttribute('aria-hidden') === 'true') await pressControlShortcut('b')
+    if (compact) {
+      // Renderer media-query delivery can follow the main-process zoom update.
+      // Await its closed drawer before opening it, so a delayed resize cannot
+      // hide the history while this test is exercising its action menu.
+      await expect(sidebar).toHaveAttribute('aria-hidden', 'true')
+      await page.getByRole('button', { name: 'Show navigation' }).click()
+      await expect(sidebar).toHaveAttribute('aria-modal', 'true')
+    }
+    await expect(sidebar).toHaveAttribute('aria-hidden', 'false')
     const trigger = page.locator('.chat-more-button').last()
     await trigger.scrollIntoViewIfNeeded()
     await trigger.click()
