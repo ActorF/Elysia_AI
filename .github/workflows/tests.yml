@@ -117,9 +117,9 @@ jobs:
       - name: Use canonical Windows temporary paths
         shell: pwsh
         run: |
-          # Normalize the runner-owned TEMP root rather than weakening the
-          # application storage checks or changing individual test fixtures.
-          node -e 'const fs = require("node:fs"); const root = fs.realpathSync.native(process.env.RUNNER_TEMP); fs.appendFileSync(process.env.GITHUB_ENV, "TEMP=" + root + "\nTMP=" + root + "\n");'
+          # Keep the existing TEMP volume and its DOS short-path capability;
+          # only expand aliases before fixtures reach strict storage checks.
+          node -e 'const fs = require("node:fs"); const root = fs.realpathSync.native(require("node:os").tmpdir()); fs.appendFileSync(process.env.GITHUB_ENV, "TEMP=" + root + "\nTMP=" + root + "\n");'
 
       - name: Install desktop dependencies
         working-directory: desktop

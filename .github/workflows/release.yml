@@ -34,9 +34,9 @@ jobs:
           cache-dependency-path: desktop/package-lock.json
       - name: Use canonical Windows temporary paths
         run: |
-          # Runner TEMP may use an 8.3 alias. Fixtures must honor the same
-          # canonical-directory boundary as application-managed storage.
-          node -e 'const fs = require("node:fs"); const root = fs.realpathSync.native(process.env.RUNNER_TEMP); fs.appendFileSync(process.env.GITHUB_ENV, "TEMP=" + root + "\nTMP=" + root + "\n");'
+          # Expand the existing TEMP alias without changing its volume: native
+          # DOS short-path tests still need the profile drive's 8.3 support.
+          node -e 'const fs = require("node:fs"); const root = fs.realpathSync.native(require("node:os").tmpdir()); fs.appendFileSync(process.env.GITHUB_ENV, "TEMP=" + root + "\nTMP=" + root + "\n");'
       - name: Install Python dependencies
         run: python -m pip install -r requirements.txt
       - name: Install desktop dependencies
